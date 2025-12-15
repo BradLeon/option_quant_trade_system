@@ -49,7 +49,7 @@ python examples/data_layer_demo.py --ibkr
 | **历史K线** | ✅ | ✅ | ✅ |
 | **期权链** | ✅ 美股 | ✅ 美股/港股 | ✅ 美股 |
 | **期权Greeks** | ❌ | ✅ | ✅ |
-| **期权Bid/Ask** | ⚠️ 非交易时段为0 | ✅ | ✅ |
+| **期权Bid/Ask** | ⚠️ 非交易时段为0* | ✅ | ✅ |
 | **基本面数据** | ✅ | ❌ | ❌ |
 | **宏观数据** | ✅ (VIX/TNX等) | ⚠️ 仅K线 | ⚠️ 仅K线 |
 | **Put/Call Ratio** | ✅ (计算) | ❌ | ❌ |
@@ -82,6 +82,13 @@ vix_data = provider.get_macro_data("^VIX", start_date, end_date)
 # Put/Call Ratio
 pcr = provider.get_put_call_ratio("SPY")
 ```
+
+**\*期权数据注意事项：**
+- **Bid/Ask**: 在非交易时段（美东时间 9:30-16:00 之外）通常为 0
+- **Open Interest**: 临近到期的期权可能显示为 0
+- **Implied Volatility**: 当 Bid/Ask 为 0 时无法计算，显示为接近 0 的值
+- **Greeks**: 不提供（始终为 None）
+- **建议**: 在美股交易时段内测试以获得完整期权数据
 
 **支持的基本面字段：**
 - 估值：market_cap, pe_ratio, pb_ratio, ps_ratio, eps

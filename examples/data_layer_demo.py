@@ -127,7 +127,8 @@ def demo_yahoo_provider():
         if hk_fundamental.eps:
             logger.info(f"   EPS: HK${hk_fundamental.eps:.2f}")
         if hk_fundamental.dividend_yield:
-            logger.info(f"   Dividend Yield: {hk_fundamental.dividend_yield * 100:.2f}%")
+            # Note: yfinance returns dividend_yield as a percentage value
+            logger.info(f"   Dividend Yield: {hk_fundamental.dividend_yield:.2f}%")
         logger.info("   --- Growth ---")
         if hk_fundamental.revenue_growth is not None:
             logger.info(f"   Revenue Growth: {hk_fundamental.revenue_growth * 100:.2f}%")
@@ -220,7 +221,8 @@ def demo_yahoo_provider():
         if fundamental.eps:
             logger.info(f"   EPS: ${fundamental.eps:.2f}")
         if fundamental.dividend_yield:
-            logger.info(f"   Dividend Yield: {fundamental.dividend_yield * 100:.2f}%")
+            # Note: yfinance returns dividend_yield as a percentage value (e.g., 0.37 means 0.37%)
+            logger.info(f"   Dividend Yield: {fundamental.dividend_yield:.2f}%")
         logger.info("   --- Growth ---")
         if fundamental.revenue_growth is not None:
             logger.info(f"   Revenue Growth: {fundamental.revenue_growth * 100:.2f}%")
@@ -240,7 +242,13 @@ def demo_yahoo_provider():
             logger.info(f"   Target Price: ${fundamental.target_price:.2f}")
 
     # B4. Get option chain
+    # Note: Yahoo Finance option data has limitations:
+    # - Bid/Ask: Often 0 outside US market hours (9:30 AM - 4:00 PM ET)
+    # - Open Interest: May be 0 for near-expiry options
+    # - IV: Cannot be calculated without bid/ask spread
+    # - Greeks: Not provided (always None)
     logger.info(f"\nB4. Getting option chain for {us_symbol}...")
+    logger.info("   (Note: Bid/Ask may be 0 outside US market hours)")
     chain = provider.get_option_chain(
         us_symbol,
         expiry_start=date.today(),
@@ -460,8 +468,15 @@ def demo_ibkr_provider():
         logger.info("      Historical data is available without subscription.")
 
 
-def _display_option_quotes(quotes: list, currency: str = "$"):
-    """Helper to display option quotes with contract details."""
+def _display_option_quotes(quotes: list, currency: str = "$", provider: str = ""):
+    """Helper to display option quotes with contract details.
+
+    Note on Yahoo Finance limitations:
+    - Bid/Ask: Often 0 outside market hours (9:30 AM - 4:00 PM ET)
+    - Open Interest: May be 0 for near-expiry options (positions closed)
+    - Implied Volatility: Cannot be calculated without bid/ask, shows near-zero
+    - Greeks: Not provided by Yahoo Finance (always None)
+    """
     if not quotes:
         logger.info("   No quotes available")
         return
@@ -469,7 +484,10 @@ def _display_option_quotes(quotes: list, currency: str = "$"):
     # Count contracts with different types of data
     with_price = sum(1 for q in quotes if q.last_price or q.bid or q.ask)
     with_greeks = sum(1 for q in quotes if q.greeks and q.greeks.delta is not None)
-    logger.info(f"   Summary: {with_price} with price data, {with_greeks} with Greeks")
+    with_oi = sum(1 for q in quotes if q.open_interest and q.open_interest > 0)
+    with_iv = sum(1 for q in quotes if q.iv and q.iv > 0.01)  # IV > 1% is meaningful
+
+    logger.info(f"   Summary: {with_price} with price, {with_oi} with OI, {with_iv} with IV, {with_greeks} with Greeks")
 
     for q in quotes:
         # Contract details
@@ -480,23 +498,30 @@ def _display_option_quotes(quotes: list, currency: str = "$"):
 
         # Price info
         price_parts = []
-        if q.last_price is not None:
+        if q.last_price is not None and q.last_price > 0:
             price_parts.append(f"Last={currency}{q.last_price:.2f}")
+        # Only show bid/ask if they have meaningful values
         if q.bid is not None and q.ask is not None:
-            price_parts.append(f"Bid/Ask={currency}{q.bid:.2f}/{currency}{q.ask:.2f}")
-        elif q.bid is not None:
-            price_parts.append(f"Bid={currency}{q.bid:.2f}")
-        elif q.ask is not None:
-            price_parts.append(f"Ask={currency}{q.ask:.2f}")
+            if q.bid > 0 or q.ask > 0:
+                price_parts.append(f"Bid/Ask={currency}{q.bid:.2f}/{currency}{q.ask:.2f}")
+            else:
+                price_parts.append("Bid/Ask=N/A")  # Zero during non-trading hours
         if q.volume is not None and q.volume > 0:
-            price_parts.append(f"Vol={q.volume}")
+            price_parts.append(f"Vol={int(q.volume)}")
         if q.open_interest is not None:
-            price_parts.append(f"OI={q.open_interest}")
+            if q.open_interest > 0:
+                price_parts.append(f"OI={q.open_interest}")
+            else:
+                price_parts.append("OI=N/A")
 
         # Greeks info
         greeks_parts = []
         if q.iv is not None:
-            greeks_parts.append(f"IV={q.iv:.2%}")
+            # IV near zero (< 1%) is usually invalid/unavailable
+            if q.iv > 0.01:
+                greeks_parts.append(f"IV={q.iv:.2%}")
+            else:
+                greeks_parts.append("IV=N/A")
         if q.greeks:
             if q.greeks.delta is not None:
                 greeks_parts.append(f"Δ={q.greeks.delta:.3f}")

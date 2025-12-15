@@ -200,9 +200,15 @@
 
 **限制：**
 - 数据有延迟（非实时）
-- 期权不提供Greeks
+- 期权不提供Greeks（Delta, Gamma, Theta, Vega 始终为 None）
 - 港股期权不支持
-- Bid/Ask在非交易时段为0
+
+**期权数据注意事项：**
+- **Bid/Ask**: 在非交易时段（美东时间 9:30-16:00 之外）通常为 0
+- **Open Interest**: 临近到期的期权可能显示为 0（持仓已平仓）
+- **Implied Volatility**: 当 Bid/Ask 为 0 时无法计算，显示为接近 0 的值
+- **lastPrice**: 最近成交价通常可用，但可能不是当日价格
+- **建议**: 在美股交易时段内测试以获得完整数据
 
 ### Futu OpenAPI Provider
 
