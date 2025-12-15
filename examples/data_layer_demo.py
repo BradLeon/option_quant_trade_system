@@ -27,17 +27,23 @@ from pathlib import Path
 
 
 class UnicodeDecodeFormatter(logging.Formatter):
-    """Custom formatter that decodes Unicode escape sequences in log messages."""
+    """Custom formatter that decodes Unicode escape sequences in log messages.
+
+    Only decodes strings that contain \\uXXXX patterns (from IBKR API),
+    leaves properly encoded UTF-8 strings (from Futu API) unchanged.
+    """
 
     def format(self, record):
-        # Decode Unicode escape sequences in the message
+        # Only decode if string contains \uXXXX escape patterns
         if hasattr(record, 'msg') and isinstance(record.msg, str):
-            try:
-                # Decode unicode_escape to properly display Chinese characters
-                record.msg = codecs.decode(record.msg, 'unicode_escape')
-            except (UnicodeDecodeError, ValueError):
-                # If decoding fails, keep original message
-                pass
+            # Check if string contains unicode escape sequences like \u5e02
+            if '\\u' in record.msg:
+                try:
+                    # Decode unicode_escape to properly display Chinese characters
+                    record.msg = codecs.decode(record.msg, 'unicode_escape')
+                except (UnicodeDecodeError, ValueError):
+                    # If decoding fails, keep original message
+                    pass
         return super().format(record)
 
 
@@ -52,8 +58,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Enable DEBUG for ibkr_provider to see raw ticker values
+# Enable DEBUG for providers to see raw data
 logging.getLogger("src.data.providers.ibkr_provider").setLevel(logging.DEBUG)
+logging.getLogger("src.data.providers.futu_provider").setLevel(logging.DEBUG)
 
 
 def demo_yahoo_provider():
@@ -267,16 +274,73 @@ def demo_ibkr_provider():
         logger.info("      Historical data is available without subscription.")
 
 
+def _display_option_quotes(quotes: list, currency: str = "$"):
+    """Helper to display option quotes with contract details."""
+    if not quotes:
+        logger.info("   No quotes available")
+        return
+
+    # Count contracts with different types of data
+    with_price = sum(1 for q in quotes if q.last_price or q.bid or q.ask)
+    with_greeks = sum(1 for q in quotes if q.greeks and q.greeks.delta is not None)
+    logger.info(f"   Summary: {with_price} with price data, {with_greeks} with Greeks")
+
+    for q in quotes:
+        # Contract details
+        contract_info = (f"{q.contract.symbol} "
+                        f"({q.contract.option_type.value.upper()} "
+                        f"strike={currency}{q.contract.strike_price:.2f} "
+                        f"exp={q.contract.expiry_date})")
+
+        # Price info
+        price_parts = []
+        if q.last_price is not None:
+            price_parts.append(f"Last={currency}{q.last_price:.2f}")
+        if q.bid is not None and q.ask is not None:
+            price_parts.append(f"Bid/Ask={currency}{q.bid:.2f}/{currency}{q.ask:.2f}")
+        elif q.bid is not None:
+            price_parts.append(f"Bid={currency}{q.bid:.2f}")
+        elif q.ask is not None:
+            price_parts.append(f"Ask={currency}{q.ask:.2f}")
+        if q.volume is not None and q.volume > 0:
+            price_parts.append(f"Vol={q.volume}")
+        if q.open_interest is not None:
+            price_parts.append(f"OI={q.open_interest}")
+
+        # Greeks info
+        greeks_parts = []
+        if q.iv is not None:
+            greeks_parts.append(f"IV={q.iv:.2%}")
+        if q.greeks:
+            if q.greeks.delta is not None:
+                greeks_parts.append(f"Δ={q.greeks.delta:.3f}")
+            if q.greeks.gamma is not None:
+                greeks_parts.append(f"Γ={q.greeks.gamma:.4f}")
+            if q.greeks.theta is not None:
+                greeks_parts.append(f"Θ={q.greeks.theta:.3f}")
+            if q.greeks.vega is not None:
+                greeks_parts.append(f"V={q.greeks.vega:.3f}")
+
+        # Build output
+        all_parts = price_parts + greeks_parts
+        if all_parts:
+            logger.info(f"   {contract_info}: {', '.join(all_parts)}")
+        else:
+            logger.info(f"   {contract_info}: (no market data)")
+
+
 def demo_futu_provider():
     """Demonstrate Futu OpenD provider usage (requires OpenD running).
 
-    Tests with 0700.HK - Tencent Holdings (HK stock).
+    Tests with:
+    - HK.00700 - Tencent Holdings (HK stock)
+    - US.AAPL - Apple Inc (US stock)
     """
     from src.data.providers.futu_provider import FutuProvider, FUTU_AVAILABLE
     from src.data.models.stock import KlineType
 
     logger.info("=" * 60)
-    logger.info("Futu OpenD Provider Demo (0700.HK - Tencent)")
+    logger.info("Futu OpenD Provider Demo")
     logger.info("=" * 60)
 
     if not FUTU_AVAILABLE:
@@ -286,66 +350,155 @@ def demo_futu_provider():
 
     try:
         with FutuProvider() as provider:
-            symbol = "HK.00700"  # Tencent Holdings
+            # ============================================================
+            # Part A: Hong Kong Market - Tencent (HK.00700)
+            # ============================================================
+            logger.info("\n" + "=" * 40)
+            logger.info("Part A: Hong Kong Market - Tencent (HK.00700)")
+            logger.info("=" * 40)
 
-            # 1. Get stock quote
-            logger.info(f"\n1. Getting stock quote for {symbol} via Futu...")
-            quote = provider.get_stock_quote(symbol)
+            hk_symbol = "HK.00700"
+
+            # A1. Get stock quote
+            logger.info(f"\nA1. Getting stock quote for {hk_symbol}...")
+            quote = provider.get_stock_quote(hk_symbol)
             if quote:
                 logger.info(f"   Symbol: {quote.symbol}")
-                logger.info(f"   Price: HK${quote.close:.2f}")
-                logger.info(f"   Volume: {quote.volume:,}")
-                logger.info(f"   Change: {quote.change_percent:.2f}%")
+                logger.info(f"   Price: HK${quote.close:.2f}" if quote.close else "   Price: N/A")
+                logger.info(f"   Volume: {quote.volume:,}" if quote.volume else "   Volume: N/A")
+                if quote.change_percent is not None:
+                    logger.info(f"   Change: {quote.change_percent:.2f}%")
                 logger.info(f"   Source: {quote.source}")
 
-            # 2. Get historical data
-            logger.info(f"\n2. Getting 10-day historical data for {symbol}...")
+            # A2. Get historical data
+            logger.info(f"\nA2. Getting 10-day historical data for {hk_symbol}...")
             end_date = date.today()
             start_date = end_date - timedelta(days=10)
-            klines = provider.get_history_kline(symbol, KlineType.DAY, start_date, end_date)
+            klines = provider.get_history_kline(hk_symbol, KlineType.DAY, start_date, end_date)
             logger.info(f"   Retrieved {len(klines)} daily bars")
             if klines:
                 latest = klines[-1]
                 logger.info(f"   Latest: {latest.timestamp.date()} O:{latest.open:.2f} H:{latest.high:.2f} L:{latest.low:.2f} C:{latest.close:.2f}")
 
-            # 3. Get option chain
-            logger.info(f"\n3. Getting option chain for {symbol}...")
+            # A3. Get option chain (Futu限制: 时间跨度不能超过30天)
+            logger.info(f"\nA3. Getting option chain for {hk_symbol}...")
             chain = provider.get_option_chain(
-                symbol,
+                hk_symbol,
                 expiry_start=date.today(),
                 expiry_end=date.today() + timedelta(days=30),
             )
             if chain:
                 logger.info(f"   Underlying: {chain.underlying}")
                 logger.info(f"   Expiry dates: {len(chain.expiry_dates)}")
-                logger.info(f"   Calls: {len(chain.calls)}")
-                logger.info(f"   Puts: {len(chain.puts)}")
+                logger.info(f"   Calls: {len(chain.calls)}, Puts: {len(chain.puts)}")
                 if chain.expiry_dates:
-                    logger.info(f"   First expiry: {chain.expiry_dates[0]}")
-                # Show sample option quote
+                    logger.info(f"   Expiries: {chain.expiry_dates[:3]}...")
+
+                # A4. Fetch market data for selected option contracts
                 if chain.calls:
-                    sample = chain.calls[0]
-                    sample_info = (f"   Sample Call: {sample.contract.underlying} "
-                                  f"{sample.contract.expiry_date} "
-                                  f"HK${sample.contract.strike_price} C")
-                    if sample.last_price:
-                        sample_info += f" Last: HK${sample.last_price:.2f}"
-                    logger.info(sample_info)
-                    if sample.greeks and sample.greeks.delta is not None:
-                        greeks_info = f"   Greeks: Delta={sample.greeks.delta:.4f}"
-                        if sample.iv:
-                            greeks_info += f" IV={sample.iv:.2%}"
-                        logger.info(greeks_info)
+                    logger.info(f"\nA4. Fetching market data for HK option contracts...")
+                    # Select contracts near ATM
+                    if quote and quote.close:
+                        underlying_price = quote.close
+                    else:
+                        strikes = [c.contract.strike_price for c in chain.calls]
+                        underlying_price = (min(strikes) + max(strikes)) / 2
+
+                    all_calls = sorted(chain.calls, key=lambda c: abs(c.contract.strike_price - underlying_price))
+                    selected_contracts = [c.contract for c in all_calls[:5]]
+                    logger.info(f"   Selecting {len(selected_contracts)} contracts near ATM (underlying=HK${underlying_price:.2f})")
+
+                    quotes = provider.get_option_quotes_batch(selected_contracts)
+                    _display_option_quotes(quotes, currency="HK$")
+            else:
+                logger.info("   No option chain available for HK market")
+
+            # ============================================================
+            # Part B: US Market - Apple (US.AAPL)
+            # ============================================================
+            logger.info("\n" + "=" * 40)
+            logger.info("Part B: US Market - Apple (US.AAPL)")
+            logger.info("=" * 40)
+
+            us_symbol = "US.AAPL"
+            us_quote = None
+
+            # B1. Get stock quote (may fail without US market subscription)
+            logger.info(f"\nB1. Getting stock quote for {us_symbol}...")
+            try:
+                us_quote = provider.get_stock_quote(us_symbol)
+                if us_quote:
+                    logger.info(f"   Symbol: {us_quote.symbol}")
+                    logger.info(f"   Price: ${us_quote.close:.2f}" if us_quote.close else "   Price: N/A")
+                    logger.info(f"   Volume: {us_quote.volume:,}" if us_quote.volume else "   Volume: N/A")
+                    if us_quote.change_percent is not None:
+                        logger.info(f"   Change: {us_quote.change_percent:.2f}%")
+                    logger.info(f"   Source: {us_quote.source}")
+                else:
+                    logger.warning("   No stock quote available (skipping, will use strike range for ATM)")
+            except Exception as e:
+                logger.warning(f"   Stock quote failed: {e} (skipping)")
+
+            # B2. Get historical data (may fail without US market subscription)
+            logger.info(f"\nB2. Getting 10-day historical data for {us_symbol}...")
+            try:
+                us_klines = provider.get_history_kline(us_symbol, KlineType.DAY, start_date, end_date)
+                logger.info(f"   Retrieved {len(us_klines)} daily bars")
+                if us_klines:
+                    latest = us_klines[-1]
+                    logger.info(f"   Latest: {latest.timestamp.date()} O:{latest.open:.2f} H:{latest.high:.2f} L:{latest.low:.2f} C:{latest.close:.2f}")
+            except Exception as e:
+                logger.warning(f"   Historical data failed: {e} (skipping)")
+
+            # B3. Get option chain (Futu限制: 时间跨度不能超过30天)
+            # Note: Option chain API may work even without stock quote permission
+            logger.info(f"\nB3. Getting option chain for {us_symbol}...")
+            us_chain = provider.get_option_chain(
+                us_symbol,
+                expiry_start=date.today(),
+                expiry_end=date.today() + timedelta(days=30),
+            )
+            if us_chain:
+                logger.info(f"   Underlying: {us_chain.underlying}")
+                logger.info(f"   Expiry dates: {len(us_chain.expiry_dates)}")
+                logger.info(f"   Calls: {len(us_chain.calls)}, Puts: {len(us_chain.puts)}")
+                if us_chain.expiry_dates:
+                    logger.info(f"   Expiries: {us_chain.expiry_dates[:3]}...")
+
+                # B4. Fetch market data for selected option contracts
+                if us_chain.calls:
+                    logger.info(f"\nB4. Fetching market data for US option contracts...")
+                    # Select contracts near ATM - use strike range if no stock quote
+                    strikes = [c.contract.strike_price for c in us_chain.calls]
+                    if us_quote and us_quote.close:
+                        underlying_price = us_quote.close
+                    else:
+                        # Estimate ATM from strike range (middle of range)
+                        underlying_price = (min(strikes) + max(strikes)) / 2
+                        logger.info(f"   (No stock quote, estimating ATM from strike range)")
+
+                    all_calls = sorted(us_chain.calls, key=lambda c: abs(c.contract.strike_price - underlying_price))
+                    selected_contracts = [c.contract for c in all_calls[:5]]
+                    logger.info(f"   Selecting {len(selected_contracts)} contracts near ATM (est. underlying=${underlying_price:.2f})")
+
+                    us_quotes = provider.get_option_quotes_batch(selected_contracts)
+                    _display_option_quotes(us_quotes, currency="$")
+            else:
+                logger.info("   No option chain available (may need US options subscription)")
 
             logger.info("\nFutu demo completed!")
 
     except Exception as e:
         logger.error(f"Futu demo failed: {e}")
+        import traceback
+        traceback.print_exc()
         logger.info("\nTo use Futu provider:")
         logger.info("  1. Download and install Futu OpenD")
         logger.info("  2. Start OpenD and login with your Futu account")
         logger.info("  3. Default connection: 127.0.0.1:11111")
-        logger.info("\nNote: Futu account must have HK market permissions.")
+        logger.info("\nNote: Different markets require different subscriptions:")
+        logger.info("  - HK market: Basic Futu account")
+        logger.info("  - US market: US market data subscription")
 
 
 def demo_csv_export(klines, fundamental, chain):

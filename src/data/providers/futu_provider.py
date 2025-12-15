@@ -443,6 +443,11 @@ class FutuProvider(DataProvider):
                 rho=row.get("rho"),
             )
 
+            # IV is stored as percentage (e.g., 25 = 25%)
+            iv = row.get("implied_volatility")
+            if iv is not None:
+                iv = iv / 100.0
+
             return OptionQuote(
                 contract=contract,
                 timestamp=datetime.now(),
@@ -450,8 +455,8 @@ class FutuProvider(DataProvider):
                 bid=row.get("bid_price"),
                 ask=row.get("ask_price"),
                 volume=row.get("volume"),
-                open_interest=row.get("position"),
-                iv=row.get("implied_volatility"),
+                open_interest=row.get("open_interest"),
+                iv=iv,
                 greeks=greeks,
                 source=self.name,
             )
@@ -459,6 +464,135 @@ class FutuProvider(DataProvider):
         except Exception as e:
             logger.error(f"Error getting option quote: {e}")
             return None
+
+    def get_option_quotes_batch(
+        self,
+        contracts: list[OptionContract],
+        min_volume: int | None = None,
+    ) -> list[OptionQuote]:
+        """Fetch market data for multiple option contracts.
+
+        Args:
+            contracts: List of OptionContract to fetch quotes for
+            min_volume: Filter out options with volume below this (post-fetch filter)
+
+        Returns:
+            List of OptionQuote with market data (Greeks, prices, volume, etc.)
+        """
+        self._ensure_connected()
+
+        if not contracts:
+            return []
+
+        # Extract symbols from contracts
+        symbols = [c.symbol for c in contracts]
+        contract_map = {c.symbol: c for c in contracts}
+
+        logger.info(f"Fetching quotes for {len(contracts)} option contracts...")
+
+        try:
+            # Use get_market_snapshot which returns bid/ask and option Greeks
+            self._check_rate_limit("quote")
+            ret, data = self._quote_ctx.get_market_snapshot(symbols)
+            if ret != RET_OK:
+                logger.error(f"Get market snapshot failed: {data}")
+                return []
+
+            results = []
+            skipped = 0
+
+            # Debug: print all available columns
+            logger.debug(f"Available columns in snapshot data: {list(data.columns)}")
+
+            for _, row in data.iterrows():
+                code = row["code"]
+                contract = contract_map.get(code)
+                if not contract:
+                    logger.debug(f"Contract not found for code: {code}")
+                    skipped += 1
+                    continue
+
+                # Debug: print all values for first contract
+                if len(results) == 0:
+                    logger.debug(f"Raw row data for {code}: {row.to_dict()}")
+
+                # Helper to safely extract numeric value (handles NaN and 'N/A')
+                def safe_float(val):
+                    if val is None or val == "N/A":
+                        return None
+                    try:
+                        f = float(val)
+                        return f if f == f else None  # NaN check
+                    except (ValueError, TypeError):
+                        return None
+
+                def safe_int(val):
+                    f = safe_float(val)
+                    return int(f) if f is not None else None
+
+                # Extract price data
+                last_price = safe_float(row.get("last_price"))
+                if last_price is not None and last_price <= 0:
+                    last_price = None
+
+                bid = safe_float(row.get("bid_price"))
+                if bid is not None and bid <= 0:
+                    bid = None
+
+                ask = safe_float(row.get("ask_price"))
+                if ask is not None and ask <= 0:
+                    ask = None
+
+                volume = safe_int(row.get("volume"))
+
+                # Extract Greeks (get_market_snapshot uses option_ prefix)
+                greeks = Greeks(
+                    delta=safe_float(row.get("option_delta")),
+                    gamma=safe_float(row.get("option_gamma")),
+                    theta=safe_float(row.get("option_theta")),
+                    vega=safe_float(row.get("option_vega")),
+                    rho=safe_float(row.get("option_rho")),
+                )
+
+                # IV is stored as percentage (e.g., 25 = 25%)
+                iv = safe_float(row.get("option_implied_volatility"))
+                if iv is not None:
+                    iv = iv / 100.0  # Convert percentage to decimal
+
+                # Open interest
+                open_interest = safe_int(row.get("option_open_interest"))
+
+                # Debug logging
+                logger.debug(f"Quote for {code}: last={last_price}, bid={bid}, ask={ask}, "
+                            f"vol={volume}, iv={iv}, delta={greeks.delta}")
+
+                quote = OptionQuote(
+                    contract=contract,
+                    timestamp=datetime.now(),
+                    last_price=last_price,
+                    bid=bid,
+                    ask=ask,
+                    volume=volume,
+                    open_interest=open_interest,
+                    iv=iv,
+                    greeks=greeks,
+                    source=self.name,
+                )
+
+                # Apply volume filter
+                if min_volume is not None and (quote.volume is None or quote.volume < min_volume):
+                    logger.debug(f"Filtered by volume: {code} (vol={quote.volume}, min={min_volume})")
+                    skipped += 1
+                    continue
+
+                results.append(quote)
+
+            logger.info(f"Fetched {len(results)} option quotes from {len(contracts)} contracts (skipped={skipped})")
+            return results
+
+        except Exception as e:
+            logger.error(f"Error getting option quotes batch: {e}")
+            return []
 
     def get_fundamental(self, symbol: str) -> Fundamental | None:
         """Get fundamental data for a stock.
