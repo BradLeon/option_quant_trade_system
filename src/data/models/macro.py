@@ -39,6 +39,9 @@ class MacroIndicator(Enum):
     EEM = "EEM"  # Emerging Markets ETF
     FXI = "FXI"  # China Large-Cap ETF
 
+    # Sentiment Indicators (calculated, not direct tickers)
+    PCR = "PCR"  # Put/Call Ratio (calculated from SPY options)
+
 
 @dataclass
 class MacroData:

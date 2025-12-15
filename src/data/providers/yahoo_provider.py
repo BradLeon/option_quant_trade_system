@@ -350,6 +350,14 @@ class YahooProvider(DataProvider):
                 fifty_two_week_low=info.get("fiftyTwoWeekLow"),
                 avg_volume=info.get("averageVolume"),
                 shares_outstanding=info.get("sharesOutstanding"),
+                # Growth metrics
+                revenue_growth=info.get("revenueGrowth"),
+                earnings_growth=info.get("earningsGrowth"),
+                # Analyst ratings
+                recommendation=info.get("recommendationKey"),
+                recommendation_mean=info.get("recommendationMean"),
+                analyst_count=info.get("numberOfAnalystOpinions"),
+                target_price=info.get("targetMeanPrice"),
                 source=self.name,
             )
 
@@ -400,3 +408,52 @@ class YahooProvider(DataProvider):
         except Exception as e:
             logger.error(f"Error getting macro data for {indicator}: {e}")
             return []
+
+    def get_put_call_ratio(self, symbol: str = "SPY") -> float | None:
+        """Calculate Put/Call Ratio from option chain volume.
+
+        CBOE Put/Call Ratio is not directly available via yfinance.
+        This method calculates PCR from option chain data for a given symbol.
+
+        Args:
+            symbol: Symbol to calculate PCR for (default: SPY for market-wide sentiment).
+
+        Returns:
+            Put/Call Ratio (put_volume / call_volume), or None if unavailable.
+            - PCR < 0.7: Bullish sentiment
+            - PCR 0.7-1.0: Neutral
+            - PCR > 1.0: Bearish sentiment
+        """
+        self._check_rate_limit()
+        symbol = self.normalize_symbol(symbol)
+
+        try:
+            ticker = yf.Ticker(symbol)
+            expiry_dates = ticker.options
+
+            if not expiry_dates:
+                logger.warning(f"No options available for {symbol}")
+                return None
+
+            # Use the nearest expiry date for most relevant sentiment
+            exp_date = expiry_dates[0]
+            chain = ticker.option_chain(exp_date)
+
+            # Sum up volumes (handle NaN values)
+            call_volume = chain.calls["volume"].fillna(0).sum()
+            put_volume = chain.puts["volume"].fillna(0).sum()
+
+            if call_volume > 0:
+                pcr = put_volume / call_volume
+                logger.debug(
+                    f"PCR for {symbol} (exp={exp_date}): "
+                    f"put_vol={put_volume:.0f}, call_vol={call_volume:.0f}, pcr={pcr:.3f}"
+                )
+                return pcr
+            else:
+                logger.warning(f"No call volume for {symbol}, cannot calculate PCR")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error calculating put/call ratio for {symbol}: {e}")
+            return None

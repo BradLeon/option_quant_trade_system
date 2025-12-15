@@ -61,10 +61,16 @@ logger = logging.getLogger(__name__)
 # Enable DEBUG for providers to see raw data
 logging.getLogger("src.data.providers.ibkr_provider").setLevel(logging.DEBUG)
 logging.getLogger("src.data.providers.futu_provider").setLevel(logging.DEBUG)
+logging.getLogger("src.data.providers.yahoo_provider").setLevel(logging.DEBUG)
 
 
 def demo_yahoo_provider():
-    """Demonstrate Yahoo Finance provider usage."""
+    """Demonstrate Yahoo Finance provider usage.
+
+    Tests with:
+    - 0700.HK - Tencent Holdings (HK stock)
+    - AAPL - Apple Inc (US stock)
+    """
     from src.data.providers.yahoo_provider import YahooProvider
     from src.data.models.stock import KlineType
 
@@ -73,65 +79,245 @@ def demo_yahoo_provider():
     logger.info("=" * 60)
 
     provider = YahooProvider()
-
-    # 1. Get stock quote
-    logger.info("\n1. Getting stock quote for AAPL...")
-    quote = provider.get_stock_quote("AAPL")
-    if quote:
-        logger.info(f"   Symbol: {quote.symbol}")
-        logger.info(f"   Price: ${quote.close:.2f}")
-        logger.info(f"   Volume: {quote.volume:,}")
-        logger.info(f"   Change: {quote.change_percent:.2f}%")
-        logger.info(f"   Source: {quote.source}")
-
-    # 2. Get historical K-line data
-    logger.info("\n2. Getting 30-day historical data for AAPL...")
     end_date = date.today()
-    start_date = end_date - timedelta(days=30)
+    start_date = end_date - timedelta(days=10)
 
-    klines = provider.get_history_kline("AAPL", KlineType.DAY, start_date, end_date)
+    # Store for export demo
+    klines, fundamental, chain = None, None, None
+
+    # ============================================================
+    # Part A: Hong Kong Market - Tencent (0700.HK)
+    # ============================================================
+    logger.info("\n" + "=" * 40)
+    logger.info("Part A: Hong Kong Market - Tencent (0700.HK)")
+    logger.info("=" * 40)
+
+    hk_symbol = "0700.HK"
+
+    # A1. Get stock quote
+    logger.info(f"\nA1. Getting stock quote for {hk_symbol}...")
+    hk_quote = provider.get_stock_quote(hk_symbol)
+    if hk_quote:
+        logger.info(f"   Symbol: {hk_quote.symbol}")
+        logger.info(f"   Price: HK${hk_quote.close:.2f}" if hk_quote.close else "   Price: N/A")
+        logger.info(f"   Volume: {hk_quote.volume:,}" if hk_quote.volume else "   Volume: N/A")
+        if hk_quote.change_percent is not None:
+            logger.info(f"   Change: {hk_quote.change_percent:.2f}%")
+        logger.info(f"   Source: {hk_quote.source}")
+    else:
+        logger.warning(f"   No quote available for {hk_symbol}")
+
+    # A2. Get historical data
+    logger.info(f"\nA2. Getting 10-day historical data for {hk_symbol}...")
+    hk_klines = provider.get_history_kline(hk_symbol, KlineType.DAY, start_date, end_date)
+    logger.info(f"   Retrieved {len(hk_klines)} daily bars")
+    if hk_klines:
+        latest = hk_klines[-1]
+        logger.info(f"   Latest: {latest.timestamp.date()} O:{latest.open:.2f} H:{latest.high:.2f} L:{latest.low:.2f} C:{latest.close:.2f}")
+
+    # A3. Get fundamental data for HK stock
+    logger.info(f"\nA3. Getting fundamental data for {hk_symbol}...")
+    hk_fundamental = provider.get_fundamental(hk_symbol)
+    if hk_fundamental:
+        logger.info("   --- Valuation ---")
+        if hk_fundamental.market_cap:
+            logger.info(f"   Market Cap: HK${hk_fundamental.market_cap:,.0f}")
+        if hk_fundamental.pe_ratio:
+            logger.info(f"   P/E Ratio: {hk_fundamental.pe_ratio:.2f}")
+        if hk_fundamental.eps:
+            logger.info(f"   EPS: HK${hk_fundamental.eps:.2f}")
+        if hk_fundamental.dividend_yield:
+            logger.info(f"   Dividend Yield: {hk_fundamental.dividend_yield * 100:.2f}%")
+        logger.info("   --- Growth ---")
+        if hk_fundamental.revenue_growth is not None:
+            logger.info(f"   Revenue Growth: {hk_fundamental.revenue_growth * 100:.2f}%")
+        if hk_fundamental.earnings_growth is not None:
+            logger.info(f"   Earnings Growth: {hk_fundamental.earnings_growth * 100:.2f}%")
+        logger.info("   --- Analyst Ratings ---")
+        if hk_fundamental.recommendation:
+            logger.info(f"   Recommendation: {hk_fundamental.recommendation.upper()}")
+        if hk_fundamental.recommendation_mean:
+            rating_map = {1: "Strong Buy", 2: "Buy", 3: "Hold", 4: "Underperform", 5: "Sell"}
+            rating_label = rating_map.get(round(hk_fundamental.recommendation_mean), "N/A")
+            logger.info(f"   Recommendation Mean: {hk_fundamental.recommendation_mean:.2f} ({rating_label})")
+        if hk_fundamental.analyst_count:
+            logger.info(f"   Analyst Count: {hk_fundamental.analyst_count}")
+        if hk_fundamental.target_price:
+            logger.info(f"   Target Price: HK${hk_fundamental.target_price:.2f}")
+    else:
+        logger.warning(f"   No fundamental data available for {hk_symbol}")
+
+    # A4. Get option chain (Yahoo may not have HK options)
+    logger.info(f"\nA4. Getting option chain for {hk_symbol}...")
+    hk_chain = provider.get_option_chain(
+        hk_symbol,
+        expiry_start=date.today(),
+        expiry_end=date.today() + timedelta(days=45),
+    )
+    if hk_chain and (hk_chain.calls or hk_chain.puts):
+        logger.info(f"   Underlying: {hk_chain.underlying}")
+        logger.info(f"   Expiry dates: {len(hk_chain.expiry_dates)}")
+        logger.info(f"   Calls: {len(hk_chain.calls)}, Puts: {len(hk_chain.puts)}")
+        if hk_chain.expiry_dates:
+            logger.info(f"   Expiries: {hk_chain.expiry_dates[:3]}...")
+
+        # A5. Display option quotes (Yahoo already includes quote data in option chain)
+        if hk_chain.calls:
+            logger.info(f"\nA5. Option quotes for {hk_symbol}...")
+            # Select contracts near ATM
+            if hk_quote and hk_quote.close:
+                underlying_price = hk_quote.close
+            else:
+                strikes = [c.contract.strike_price for c in hk_chain.calls]
+                underlying_price = (min(strikes) + max(strikes)) / 2
+
+            all_calls = sorted(hk_chain.calls, key=lambda c: abs(c.contract.strike_price - underlying_price))
+            selected_quotes = all_calls[:5]
+            logger.info(f"   Selecting {len(selected_quotes)} contracts near ATM (underlying=HK${underlying_price:.2f})")
+            _display_option_quotes(selected_quotes, currency="HK$")
+    else:
+        logger.info("   No option chain available for HK market (Yahoo may not support HK options)")
+
+    # ============================================================
+    # Part B: US Market - Apple (AAPL)
+    # ============================================================
+    logger.info("\n" + "=" * 40)
+    logger.info("Part B: US Market - Apple (AAPL)")
+    logger.info("=" * 40)
+
+    us_symbol = "AAPL"
+
+    # B1. Get stock quote
+    logger.info(f"\nB1. Getting stock quote for {us_symbol}...")
+    us_quote = provider.get_stock_quote(us_symbol)
+    if us_quote:
+        logger.info(f"   Symbol: {us_quote.symbol}")
+        logger.info(f"   Price: ${us_quote.close:.2f}" if us_quote.close else "   Price: N/A")
+        logger.info(f"   Volume: {us_quote.volume:,}" if us_quote.volume else "   Volume: N/A")
+        if us_quote.change_percent is not None:
+            logger.info(f"   Change: {us_quote.change_percent:.2f}%")
+        logger.info(f"   Source: {us_quote.source}")
+    else:
+        logger.warning(f"   No quote available for {us_symbol}")
+
+    # B2. Get historical data
+    logger.info(f"\nB2. Getting 10-day historical data for {us_symbol}...")
+    klines = provider.get_history_kline(us_symbol, KlineType.DAY, start_date, end_date)
     logger.info(f"   Retrieved {len(klines)} daily bars")
     if klines:
         latest = klines[-1]
         logger.info(f"   Latest: {latest.timestamp.date()} O:{latest.open:.2f} H:{latest.high:.2f} L:{latest.low:.2f} C:{latest.close:.2f}")
 
-    # 3. Get fundamental data
-    logger.info("\n3. Getting fundamental data for AAPL...")
-    fundamental = provider.get_fundamental("AAPL")
+    # B3. Get fundamental data
+    logger.info(f"\nB3. Getting fundamental data for {us_symbol}...")
+    fundamental = provider.get_fundamental(us_symbol)
     if fundamental:
-        logger.info(f"   Market Cap: ${fundamental.market_cap:,.0f}")
-        logger.info(f"   P/E Ratio: {fundamental.pe_ratio:.2f}")
-        logger.info(f"   EPS: ${fundamental.eps:.2f}")
-        logger.info(f"   Dividend Yield: {(fundamental.dividend_yield or 0) * 100:.2f}%")
+        logger.info("   --- Valuation ---")
+        if fundamental.market_cap:
+            logger.info(f"   Market Cap: ${fundamental.market_cap:,.0f}")
+        if fundamental.pe_ratio:
+            logger.info(f"   P/E Ratio: {fundamental.pe_ratio:.2f}")
+        if fundamental.eps:
+            logger.info(f"   EPS: ${fundamental.eps:.2f}")
+        if fundamental.dividend_yield:
+            logger.info(f"   Dividend Yield: {fundamental.dividend_yield * 100:.2f}%")
+        logger.info("   --- Growth ---")
+        if fundamental.revenue_growth is not None:
+            logger.info(f"   Revenue Growth: {fundamental.revenue_growth * 100:.2f}%")
+        if fundamental.earnings_growth is not None:
+            logger.info(f"   Earnings Growth: {fundamental.earnings_growth * 100:.2f}%")
+        logger.info("   --- Analyst Ratings ---")
+        if fundamental.recommendation:
+            logger.info(f"   Recommendation: {fundamental.recommendation.upper()}")
+        if fundamental.recommendation_mean:
+            # 1=Strong Buy, 2=Buy, 3=Hold, 4=Underperform, 5=Sell
+            rating_map = {1: "Strong Buy", 2: "Buy", 3: "Hold", 4: "Underperform", 5: "Sell"}
+            rating_label = rating_map.get(round(fundamental.recommendation_mean), "N/A")
+            logger.info(f"   Recommendation Mean: {fundamental.recommendation_mean:.2f} ({rating_label})")
+        if fundamental.analyst_count:
+            logger.info(f"   Analyst Count: {fundamental.analyst_count}")
+        if fundamental.target_price:
+            logger.info(f"   Target Price: ${fundamental.target_price:.2f}")
 
-    # 4. Get macro data (VIX)
-    logger.info("\n4. Getting VIX data for last 30 days...")
+    # B4. Get option chain
+    logger.info(f"\nB4. Getting option chain for {us_symbol}...")
+    chain = provider.get_option_chain(
+        us_symbol,
+        expiry_start=date.today(),
+        expiry_end=date.today() + timedelta(days=45),
+    )
+    if chain:
+        logger.info(f"   Underlying: {chain.underlying}")
+        logger.info(f"   Expiry dates: {len(chain.expiry_dates)}")
+        logger.info(f"   Calls: {len(chain.calls)}, Puts: {len(chain.puts)}")
+        if chain.expiry_dates:
+            logger.info(f"   Expiries: {chain.expiry_dates[:3]}...")
+
+        # B5. Display option quotes (Yahoo already includes quote data in option chain)
+        if chain.calls:
+            logger.info(f"\nB5. Option quotes for {us_symbol}...")
+            # Select contracts near ATM
+            if us_quote and us_quote.close:
+                underlying_price = us_quote.close
+            else:
+                strikes = [c.contract.strike_price for c in chain.calls]
+                underlying_price = (min(strikes) + max(strikes)) / 2
+
+            all_calls = sorted(chain.calls, key=lambda c: abs(c.contract.strike_price - underlying_price))
+            selected_quotes = all_calls[:5]
+            logger.info(f"   Selecting {len(selected_quotes)} contracts near ATM (underlying=${underlying_price:.2f})")
+            _display_option_quotes(selected_quotes, currency="$")
+    else:
+        logger.warning("   No option chain available")
+
+    # ============================================================
+    # Part C: Macro Data - VIX and Put/Call Ratio
+    # ============================================================
+    logger.info("\n" + "=" * 40)
+    logger.info("Part C: Macro Data - VIX and Put/Call Ratio")
+    logger.info("=" * 40)
+
+    # C1. Get VIX data
+    logger.info("\nC1. Getting VIX data (last 10 days)...")
     vix_data = provider.get_macro_data("^VIX", start_date, end_date)
     logger.info(f"   Retrieved {len(vix_data)} data points")
     if vix_data:
         latest_vix = vix_data[-1]
         logger.info(f"   Latest VIX: {latest_vix.value:.2f}")
+        # VIX interpretation
+        if latest_vix.value < 15:
+            sentiment = "Low volatility (complacency)"
+        elif latest_vix.value < 20:
+            sentiment = "Normal volatility"
+        elif latest_vix.value < 30:
+            sentiment = "Elevated volatility (caution)"
+        else:
+            sentiment = "High volatility (fear)"
+        logger.info(f"   Interpretation: {sentiment}")
 
-    # 5. Get option chain
-    logger.info("\n5. Getting option chain for AAPL...")
-    chain = provider.get_option_chain(
-        "AAPL",
-        expiry_start=date.today(),
-        expiry_end=date.today() + timedelta(days=45),
-    )
-    if chain:
-        logger.info(f"   Expiry dates: {len(chain.expiry_dates)}")
-        logger.info(f"   Calls: {len(chain.calls)}")
-        logger.info(f"   Puts: {len(chain.puts)}")
-        if chain.expiry_dates:
-            logger.info(f"   First expiry: {chain.expiry_dates[0]}")
-        # Show sample option quote
-        if chain.calls:
-            sample_call = chain.calls[0]
-            logger.info(f"   Sample Call: {sample_call.contract.underlying} "
-                       f"{sample_call.contract.expiry_date} "
-                       f"${sample_call.contract.strike_price} C "
-                       f"Last: ${sample_call.last_price:.2f}")
+    # C2. Calculate Put/Call Ratio (from SPY options)
+    logger.info("\nC2. Calculating Put/Call Ratio (from SPY options)...")
+    pcr = provider.get_put_call_ratio("SPY")
+    if pcr is not None:
+        logger.info(f"   SPY Put/Call Ratio: {pcr:.3f}")
+        # PCR interpretation
+        if pcr < 0.7:
+            sentiment = "Bullish sentiment (more calls than puts)"
+        elif pcr < 1.0:
+            sentiment = "Neutral sentiment"
+        else:
+            sentiment = "Bearish sentiment (more puts than calls)"
+        logger.info(f"   Interpretation: {sentiment}")
+    else:
+        logger.warning("   Could not calculate Put/Call Ratio")
+
+    # C3. Get 10-Year Treasury Yield
+    logger.info("\nC3. Getting 10-Year Treasury Yield (last 10 days)...")
+    tnx_data = provider.get_macro_data("^TNX", start_date, end_date)
+    logger.info(f"   Retrieved {len(tnx_data)} data points")
+    if tnx_data:
+        latest_tnx = tnx_data[-1]
+        logger.info(f"   Latest 10Y Yield: {latest_tnx.value:.2f}%")
 
     logger.info("\nYahoo Finance demo completed!")
     return klines, fundamental, chain

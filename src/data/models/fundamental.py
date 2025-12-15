@@ -35,6 +35,14 @@ class Fundamental:
     fifty_two_week_low: float | None = None
     avg_volume: int | None = None
     shares_outstanding: int | None = None
+    # Growth metrics
+    revenue_growth: float | None = None  # Revenue growth rate (YoY)
+    earnings_growth: float | None = None  # Earnings growth rate (YoY)
+    # Analyst ratings
+    recommendation: str | None = None  # Analyst recommendation (buy/hold/sell)
+    recommendation_mean: float | None = None  # Mean recommendation (1=Strong Buy, 5=Sell)
+    analyst_count: int | None = None  # Number of analyst opinions
+    target_price: float | None = None  # Mean target price
     source: str = "unknown"
 
     def to_dict(self) -> dict[str, Any]:
@@ -53,6 +61,12 @@ class Fundamental:
             "debt_to_equity": self.debt_to_equity,
             "current_ratio": self.current_ratio,
             "roe": self.roe,
+            "revenue_growth": self.revenue_growth,
+            "earnings_growth": self.earnings_growth,
+            "recommendation": self.recommendation,
+            "recommendation_mean": self.recommendation_mean,
+            "analyst_count": self.analyst_count,
+            "target_price": self.target_price,
             "source": self.source,
         }
 
@@ -87,6 +101,12 @@ class Fundamental:
             fifty_two_week_low=data.get("fifty_two_week_low"),
             avg_volume=data.get("avg_volume"),
             shares_outstanding=data.get("shares_outstanding"),
+            revenue_growth=data.get("revenue_growth"),
+            earnings_growth=data.get("earnings_growth"),
+            recommendation=data.get("recommendation"),
+            recommendation_mean=data.get("recommendation_mean"),
+            analyst_count=data.get("analyst_count"),
+            target_price=data.get("target_price"),
             source=data.get("source", "unknown"),
         )
 
