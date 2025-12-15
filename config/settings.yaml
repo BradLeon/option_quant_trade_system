@@ -1,0 +1,76 @@
+# Option Quant Trade System Configuration
+
+# Data Provider Settings
+providers:
+  # Primary data source for US market
+  us_primary: ibkr
+  # Primary data source for HK market
+  hk_primary: futu
+  # Fallback data source when primary fails
+  fallback: yahoo
+
+  futu:
+    host: "127.0.0.1"
+    port: 11111
+    # Rate limits (requests per interval)
+    rate_limits:
+      quote: 60  # per 30 seconds
+      option_chain: 10  # per 30 seconds
+      history_kline: 60  # per 30 seconds (first page)
+    # Reconnection settings
+    reconnect:
+      max_retries: 3
+      initial_delay: 5  # seconds
+      backoff_multiplier: 2
+
+  ibkr:
+    host: "127.0.0.1"
+    # TWS ports: Live=7496, Paper=7497
+    # IB Gateway ports: Live=4001, Paper=4002
+    port: 7497
+    client_id: 1
+    # Request timeout in seconds
+    timeout: 30
+    # Reconnection settings
+    reconnect:
+      max_retries: 3
+      initial_delay: 5  # seconds
+      backoff_multiplier: 2
+
+  yahoo:
+    # Rate limit to avoid being blocked
+    rate_limit: 2  # requests per second
+    # Timeout for requests
+    timeout: 30  # seconds
+
+# Database Settings (Supabase)
+database:
+  # Connection settings are read from environment variables:
+  # SUPABASE_URL and SUPABASE_KEY
+
+  # Cache settings
+  cache:
+    # Default TTL for cached data (in seconds)
+    default_ttl: 3600  # 1 hour
+    # TTL for different data types
+    stock_quote_ttl: 60  # 1 minute (real-time data)
+    kline_ttl: 86400  # 1 day (historical data rarely changes)
+    option_ttl: 300  # 5 minutes
+    fundamental_ttl: 86400  # 1 day
+    macro_ttl: 3600  # 1 hour
+
+# Logging Settings
+logging:
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: logs/app.log
+
+# Market Settings
+markets:
+  # Default market for stock symbols
+  default: US
+  # Supported markets
+  supported:
+    - US   # United States
+    - HK   # Hong Kong
+    - CN   # China A-shares
