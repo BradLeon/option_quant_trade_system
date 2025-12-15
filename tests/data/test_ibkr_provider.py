@@ -22,14 +22,26 @@ class TestIBKRProviderInit:
 
     def test_default_init(self):
         """Test default initialization."""
-        with patch("src.data.providers.ibkr_provider.IBKR_AVAILABLE", True):
-            from src.data.providers.ibkr_provider import IBKRProvider
+        import os
+        # Remove environment variables to test true defaults
+        env_backup = {}
+        for key in ["IBKR_HOST", "IBKR_PORT", "IBKR_CLIENT_ID"]:
+            if key in os.environ:
+                env_backup[key] = os.environ.pop(key)
+        try:
+            # Mock load_dotenv to prevent loading .env file
+            with patch("src.data.providers.ibkr_provider.load_dotenv"):
+                with patch("src.data.providers.ibkr_provider.IBKR_AVAILABLE", True):
+                    from src.data.providers.ibkr_provider import IBKRProvider
 
-            provider = IBKRProvider()
-            assert provider.name == "ibkr"
-            assert provider._host == "127.0.0.1"
-            assert provider._port == 7497
-            assert provider._client_id == 1
+                    provider = IBKRProvider()
+                    assert provider.name == "ibkr"
+                    assert provider._host == "127.0.0.1"
+                    assert provider._port == 7497
+                    assert provider._client_id == 1
+        finally:
+            # Restore environment variables
+            os.environ.update(env_backup)
 
     def test_custom_init(self):
         """Test initialization with custom parameters."""
@@ -191,7 +203,7 @@ class TestIBKRProviderWithMock:
         assert klines[0].ktype == KlineType.DAY
 
     def test_get_option_chain(self, provider_with_mock, mock_ib):
-        """Test getting option chain."""
+        """Test getting option chain with configurable filters."""
         # Mock stock contract
         mock_stock = MagicMock()
         mock_stock.symbol = "AAPL"
@@ -207,16 +219,22 @@ class TestIBKRProviderWithMock:
         # Mock ticker for underlying price
         mock_ticker = MagicMock()
         mock_ticker.last = 150.0
+        mock_ticker.close = 150.0
 
         mock_ib.qualifyContracts.return_value = [mock_stock]
         mock_ib.reqSecDefOptParams.return_value = [mock_chain]
         mock_ib.reqMktData.return_value = mock_ticker
         mock_ib.sleep.return_value = None
+        mock_ib.cancelMktData.return_value = None
 
+        # Disable default expiry_min_days/expiry_max_days to use explicit date range
         chain = provider_with_mock.get_option_chain(
             "AAPL",
             expiry_start=date(2024, 1, 1),
             expiry_end=date(2024, 3, 31),
+            expiry_min_days=None,  # Disable default
+            expiry_max_days=None,  # Disable default
+            strike_range_pct=0.10,
         )
 
         assert chain is not None
@@ -224,6 +242,47 @@ class TestIBKRProviderWithMock:
         assert len(chain.expiry_dates) > 0
         assert len(chain.calls) > 0
         assert len(chain.puts) > 0
+
+    def test_get_option_chain_with_strike_filter(self, provider_with_mock, mock_ib):
+        """Test getting option chain with strike price filter."""
+        mock_stock = MagicMock()
+        mock_stock.symbol = "AAPL"
+        mock_stock.secType = "STK"
+        mock_stock.conId = 12345
+
+        mock_chain = MagicMock()
+        mock_chain.exchange = "SMART"
+        mock_chain.expirations = ["20240120"]
+        mock_chain.strikes = [140.0, 145.0, 150.0, 155.0, 160.0]
+
+        mock_ticker = MagicMock()
+        mock_ticker.last = 150.0
+        mock_ticker.close = 150.0
+
+        mock_ib.qualifyContracts.return_value = [mock_stock]
+        mock_ib.reqSecDefOptParams.return_value = [mock_chain]
+        mock_ib.reqMktData.return_value = mock_ticker
+        mock_ib.sleep.return_value = None
+        mock_ib.cancelMktData.return_value = None
+
+        # Test strike_min/max filter with explicit date range
+        chain = provider_with_mock.get_option_chain(
+            "AAPL",
+            expiry_start=date(2024, 1, 1),
+            expiry_end=date(2024, 3, 31),
+            expiry_min_days=None,  # Disable default
+            expiry_max_days=None,  # Disable default
+            strike_range_pct=None,  # Disable percentage range
+            strike_min=145.0,
+            strike_max=155.0,
+        )
+
+        assert chain is not None
+        # Should only include strikes 145, 150, 155
+        for call in chain.calls:
+            assert 145.0 <= call.contract.strike_price <= 155.0
+        for put in chain.puts:
+            assert 145.0 <= put.contract.strike_price <= 155.0
 
     def test_get_option_quote_with_greeks(self, provider_with_mock, mock_ib):
         """Test getting option quote with Greeks."""

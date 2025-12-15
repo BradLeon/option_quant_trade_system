@@ -19,16 +19,41 @@ Note:
     - Futu demo requires OpenD gateway running locally
 """
 
+import codecs
 import logging
+import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-# Configure logging
+
+class UnicodeDecodeFormatter(logging.Formatter):
+    """Custom formatter that decodes Unicode escape sequences in log messages."""
+
+    def format(self, record):
+        # Decode Unicode escape sequences in the message
+        if hasattr(record, 'msg') and isinstance(record.msg, str):
+            try:
+                # Decode unicode_escape to properly display Chinese characters
+                record.msg = codecs.decode(record.msg, 'unicode_escape')
+            except (UnicodeDecodeError, ValueError):
+                # If decoding fails, keep original message
+                pass
+        return super().format(record)
+
+
+# Configure logging with custom formatter for Unicode support
+handler = logging.StreamHandler(stream=sys.stdout)
+handler.setFormatter(UnicodeDecodeFormatter(
+    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+))
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[handler],
 )
 logger = logging.getLogger(__name__)
+
+# Enable DEBUG for ibkr_provider to see raw ticker values
+logging.getLogger("src.data.providers.ibkr_provider").setLevel(logging.DEBUG)
 
 
 def demo_yahoo_provider():
@@ -151,63 +176,83 @@ def demo_ibkr_provider():
                 latest = klines[-1]
                 logger.info(f"   Latest: {latest.timestamp.date()} O:{latest.open:.2f} H:{latest.high:.2f} L:{latest.low:.2f} C:{latest.close:.2f}")
 
-            # 3. Get option chain
-            logger.info("\n3. Getting option chain for AAPL...")
-            chain = provider.get_option_chain(
-                "AAPL",
-                expiry_start=date.today(),
-                expiry_end=date.today() + timedelta(days=30),
-            )
+            # 3. Get option chain (structure only, no market data)
+            logger.info("\n3. Getting option chain structure for AAPL...")
+            logger.info("   Filters: 15-45 days to expiry (default), ±20% strike range (default)")
+            chain = provider.get_option_chain("AAPL")  # Using defaults
             if chain:
                 logger.info(f"   Expiry dates: {len(chain.expiry_dates)}")
                 logger.info(f"   Calls: {len(chain.calls)}")
                 logger.info(f"   Puts: {len(chain.puts)}")
                 if chain.expiry_dates:
                     logger.info(f"   Expiries: {chain.expiry_dates}")
-                # Show sample option with Greeks if available
+                # Show sample contracts (no market data yet)
                 if chain.calls:
                     sample = chain.calls[0]
-                    logger.info(f"   Sample Call: {sample.contract.underlying} "
-                               f"{sample.contract.expiry_date} "
-                               f"${sample.contract.strike_price} C")
-                    if sample.greeks:
-                        g = sample.greeks
-                        greeks_str = []
-                        if g.delta is not None:
-                            greeks_str.append(f"Delta={g.delta:.4f}")
-                        if g.gamma is not None:
-                            greeks_str.append(f"Gamma={g.gamma:.4f}")
-                        if g.theta is not None:
-                            greeks_str.append(f"Theta={g.theta:.4f}")
-                        if g.vega is not None:
-                            greeks_str.append(f"Vega={g.vega:.4f}")
-                        if greeks_str:
-                            logger.info(f"   Greeks: {' '.join(greeks_str)}")
+                    logger.info(f"   Sample Call: {sample.contract.symbol} "
+                               f"(strike=${sample.contract.strike_price}, "
+                               f"expiry={sample.contract.expiry_date})")
 
-            # 4. Get option quote for specific contract
-            logger.info("\n4. Getting specific option quote...")
+            # 4. Fetch market data for selected contracts using batch API
+            logger.info("\n4. Fetching market data for option contracts...")
             if chain and chain.calls:
-                # Use first available call contract
-                first_call = chain.calls[0]
-                expiry = first_call.contract.expiry_date
-                strike = first_call.contract.strike_price
-                # Format: AAPL20241220C00150000
-                opt_symbol = f"AAPL{expiry.strftime('%Y%m%d')}C{int(strike * 1000):08d}"
-                logger.info(f"   Requesting quote for: {opt_symbol}")
-                opt_quote = provider.get_option_quote(opt_symbol)
-                if opt_quote:
-                    if opt_quote.last_price:
-                        logger.info(f"   Last: ${opt_quote.last_price:.2f}")
+                # Get underlying price from quote, or use middle of strike range
+                if quote and quote.close:
+                    underlying_price = quote.close
+                else:
+                    strikes = [c.contract.strike_price for c in chain.calls]
+                    underlying_price = (min(strikes) + max(strikes)) / 2
+
+                # Select contracts around ATM for better liquidity
+                # Sort by strike distance from underlying price
+                all_calls = sorted(chain.calls, key=lambda c: abs(c.contract.strike_price - underlying_price))
+                # Take 10 contracts nearest to ATM
+                selected_contracts = [c.contract for c in all_calls[:10]]
+                logger.info(f"   Selecting {len(selected_contracts)} contracts near ATM (underlying=${underlying_price:.2f})...")
+
+                quotes = provider.get_option_quotes_batch(selected_contracts)
+
+                logger.info(f"   Received {len(quotes)} quotes")
+
+                # Count contracts with different types of data
+                with_price = sum(1 for q in quotes if q.last_price or q.bid or q.ask)
+                with_greeks = sum(1 for q in quotes if q.greeks and q.greeks.delta is not None)
+                logger.info(f"   Summary: {with_price} with price data, {with_greeks} with Greeks")
+
+                for q in quotes:
+                    # Build detail parts - price info
+                    price_parts = []
+                    if q.last_price is not None:
+                        price_parts.append(f"Last=${q.last_price:.2f}")
+                    if q.bid is not None and q.ask is not None:
+                        price_parts.append(f"Bid/Ask=${q.bid:.2f}/${q.ask:.2f}")
+                    elif q.bid is not None:
+                        price_parts.append(f"Bid=${q.bid:.2f}")
+                    elif q.ask is not None:
+                        price_parts.append(f"Ask=${q.ask:.2f}")
+                    if q.volume is not None and q.volume > 0:
+                        price_parts.append(f"Vol={q.volume}")
+
+                    # Greeks info
+                    greeks_parts = []
+                    if q.iv is not None:
+                        greeks_parts.append(f"IV={q.iv:.2%}")
+                    if q.greeks:
+                        if q.greeks.delta is not None:
+                            greeks_parts.append(f"Δ={q.greeks.delta:.3f}")
+                        if q.greeks.gamma is not None:
+                            greeks_parts.append(f"Γ={q.greeks.gamma:.4f}")
+                        if q.greeks.theta is not None:
+                            greeks_parts.append(f"Θ={q.greeks.theta:.3f}")
+                        if q.greeks.vega is not None:
+                            greeks_parts.append(f"V={q.greeks.vega:.3f}")
+
+                    # Build output
+                    all_parts = price_parts + greeks_parts
+                    if all_parts:
+                        logger.info(f"   {q.contract.symbol}: {', '.join(all_parts)}")
                     else:
-                        logger.info("   Last: N/A")
-                    if opt_quote.bid and opt_quote.ask:
-                        logger.info(f"   Bid/Ask: ${opt_quote.bid:.2f} / ${opt_quote.ask:.2f}")
-                    else:
-                        logger.info("   Bid/Ask: N/A")
-                    if opt_quote.iv:
-                        logger.info(f"   IV: {opt_quote.iv:.2%}")
-                    if opt_quote.greeks:
-                        logger.info(f"   Greeks: Delta={opt_quote.greeks.delta:.4f}")
+                        logger.info(f"   {q.contract.symbol}: (no data - illiquid or not calculated)")
 
             logger.info("\nIBKR demo completed!")
 
