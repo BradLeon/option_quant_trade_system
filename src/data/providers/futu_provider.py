@@ -192,18 +192,42 @@ class FutuProvider(DataProvider):
             self.connect()
 
     def normalize_symbol(self, symbol: str) -> str:
-        """Normalize symbol to Futu format (e.g., US.AAPL).
+        """Normalize symbol to Futu format (e.g., US.AAPL, HK.00700).
+
+        Handles various input formats:
+        - Plain symbol: AAPL → US.AAPL
+        - Yahoo HK format: 0700.HK → HK.00700
+        - Yahoo US format: AAPL (no suffix) → US.AAPL
+        - Futu format: US.AAPL, HK.00700 (unchanged)
 
         Args:
-            symbol: Stock symbol.
+            symbol: Stock symbol in any supported format.
 
         Returns:
             Symbol in Futu format.
         """
         symbol = symbol.upper()
+
+        # Handle Yahoo-style HK format: 0700.HK → HK.00700
+        if symbol.endswith(".HK"):
+            code = symbol[:-3]  # Remove .HK suffix
+            code = code.zfill(5)  # Pad to 5 digits (e.g., 700 → 00700)
+            return f"HK.{code}"
+
+        # Handle Yahoo-style SZ format: 000001.SZ → SZ.000001
+        if symbol.endswith(".SZ"):
+            code = symbol[:-3]
+            return f"SZ.{code}"
+
+        # Handle Yahoo-style SS format (Shanghai): 600000.SS → SH.600000
+        if symbol.endswith(".SS"):
+            code = symbol[:-3]
+            return f"SH.{code}"
+
         if "." not in symbol:
             # Default to US market
             return f"US.{symbol}"
+
         return symbol
 
     def get_stock_quote(self, symbol: str) -> StockQuote | None:

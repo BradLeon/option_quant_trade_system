@@ -1,0 +1,84 @@
+# Data Provider Routing Configuration
+# 数据路由器配置文件
+#
+# This file defines provider capabilities and routing rules for the
+# intelligent data router. The router selects the best provider based
+# on data type and market.
+
+# Provider Capabilities (能力声明)
+providers:
+  ibkr:
+    markets: [us]
+    data_types:
+      - stock_quote
+      - stock_quotes
+      - history_kline
+      - option_chain
+      - option_quote
+      - option_quotes
+      - macro_data
+    features:
+      realtime: true
+      option_greeks: true
+    priority: 100  # Highest priority for US market
+
+  futu:
+    markets: [us, hk]
+    data_types:
+      - stock_quote
+      - stock_quotes
+      - history_kline
+      - option_chain
+      - option_quote
+      - option_quotes
+      - macro_data
+    features:
+      realtime: true
+      option_greeks: true
+    priority: 90  # Primary for HK, fallback for US
+
+  yahoo:
+    markets: [us, hk, cn]
+    data_types:
+      - stock_quote
+      - stock_quotes
+      - history_kline
+      - option_chain  # US options only, no Greeks
+      - fundamental
+      - macro_data
+    features:
+      realtime: false
+      option_greeks: false
+    priority: 10  # Fallback option, always available
+
+# Routing Rules (路由规则)
+# Rules are evaluated in order - first match wins
+routing_rules:
+  # Fundamental data → Yahoo only (唯一提供者)
+  - data_type: fundamental
+    providers: [yahoo]
+
+  # Macro data (VIX, TNX, etc.) → Yahoo preferred (最全面)
+  - data_type: macro_data
+    providers: [yahoo]
+
+  # HK options → Futu only (Yahoo不支持港股期权)
+  - market: hk
+    data_type: [option_chain, option_quote, option_quotes]
+    providers: [futu]
+
+  # HK stocks → Futu preferred (实时行情)
+  - market: hk
+    providers: [futu, yahoo]
+
+  # US options → IBKR → Futu → Yahoo (IBKR有最好的Greeks)
+  - market: us
+    data_type: [option_chain, option_quote, option_quotes]
+    providers: [ibkr, futu, yahoo]
+
+  # US stocks → IBKR → Futu → Yahoo (IBKR实时)
+  - market: us
+    providers: [ibkr, futu, yahoo]
+
+  # Default fallback → Yahoo (总是可用)
+  - providers: [yahoo]
