@@ -712,6 +712,121 @@ def demo_futu_provider():
         logger.info("  - US market: US market data subscription")
 
 
+def demo_router():
+    """Demonstrate intelligent data routing functionality.
+
+    Shows how the UnifiedDataProvider routes requests to appropriate
+    providers based on data type and market.
+    """
+    from src.data.providers import UnifiedDataProvider
+    from src.data.models import DataType
+    from datetime import timedelta
+
+    logger.info("=" * 60)
+    logger.info("Data Router Demo - Intelligent Routing")
+    logger.info("=" * 60)
+
+    # Initialize with default routing config
+    provider = UnifiedDataProvider()
+
+    end_date = date.today()
+    start_date = end_date - timedelta(days=10)
+
+    # ============================================================
+    # Part 1: Show Routing Information
+    # ============================================================
+    logger.info("\n" + "=" * 40)
+    logger.info("Part 1: Routing Configuration")
+    logger.info("=" * 40)
+
+    test_cases = [
+        ("AAPL", DataType.STOCK_QUOTE, "US stock quote"),
+        ("HK.00700", DataType.STOCK_QUOTE, "HK stock quote"),
+        ("AAPL", DataType.OPTION_CHAIN, "US option chain"),
+        ("HK.00700", DataType.OPTION_CHAIN, "HK option chain"),
+        ("AAPL", DataType.FUNDAMENTAL, "Fundamental data"),
+        ("^VIX", DataType.MACRO_DATA, "Macro data (VIX)"),
+    ]
+
+    for symbol, data_type, description in test_cases:
+        info = provider.get_routing_info(data_type, symbol)
+        logger.info(f"\n{description} ({symbol}):")
+        logger.info(f"   Market: {info['market']}")
+        logger.info(f"   Configured: {info['configured_providers']}")
+        logger.info(f"   Available: {info['available_providers']}")
+
+    # ============================================================
+    # Part 2: Auto-Routed Requests
+    # ============================================================
+    logger.info("\n" + "=" * 40)
+    logger.info("Part 2: Auto-Routed Data Requests")
+    logger.info("=" * 40)
+
+    # US stock quote - should route to IBKR → Futu → Yahoo
+    logger.info("\n2.1 US Stock Quote (AAPL) - Route: IBKR → Futu → Yahoo")
+    quote_us = provider.get_stock_quote("AAPL")
+    if quote_us:
+        logger.info(f"   Price: ${quote_us.close:.2f}")
+        logger.info(f"   Source: {quote_us.source}")
+    else:
+        logger.warning("   No quote available")
+
+    # HK stock quote - should route to Futu → Yahoo
+    logger.info("\n2.2 HK Stock Quote (0700.HK) - Route: Futu → Yahoo")
+    quote_hk = provider.get_stock_quote("0700.HK")
+    if quote_hk:
+        logger.info(f"   Price: HK${quote_hk.close:.2f}")
+        logger.info(f"   Source: {quote_hk.source}")
+    else:
+        logger.warning("   No quote available")
+
+    # Fundamental data - should always use Yahoo
+    logger.info("\n2.3 Fundamental Data (AAPL) - Route: Yahoo only")
+    fundamental = provider.get_fundamental("AAPL")
+    if fundamental:
+        logger.info(f"   Market Cap: ${fundamental.market_cap:,.0f}")
+        logger.info(f"   P/E Ratio: {fundamental.pe_ratio:.2f}")
+        logger.info(f"   Source: {fundamental.source}")
+    else:
+        logger.warning("   No fundamental data available")
+
+    # Macro data - should use Yahoo
+    logger.info("\n2.4 Macro Data (VIX) - Route: Yahoo")
+    vix_data = provider.get_macro_data("^VIX", start_date, end_date)
+    if vix_data:
+        latest = vix_data[-1]
+        logger.info(f"   VIX: {latest.value:.2f}")
+        logger.info(f"   Source: {latest.source}")
+    else:
+        logger.warning("   No VIX data available")
+
+    # Put/Call Ratio
+    logger.info("\n2.5 Put/Call Ratio (SPY) - Route: Yahoo")
+    pcr = provider.get_put_call_ratio("SPY")
+    if pcr is not None:
+        logger.info(f"   PCR: {pcr:.3f}")
+    else:
+        logger.warning("   PCR not available")
+
+    # ============================================================
+    # Part 3: Mixed Market Batch Request
+    # ============================================================
+    logger.info("\n" + "=" * 40)
+    logger.info("Part 3: Mixed Market Batch Request")
+    logger.info("=" * 40)
+
+    mixed_symbols = ["AAPL", "MSFT", "0700.HK", "9988.HK"]
+    logger.info(f"\nFetching quotes for: {mixed_symbols}")
+
+    quotes = provider.get_stock_quotes(mixed_symbols)
+    for q in quotes:
+        currency = "HK$" if "HK" in q.symbol or q.symbol.isdigit() else "$"
+        logger.info(f"   {q.symbol}: {currency}{q.close:.2f} (via {q.source})")
+
+    provider.close()
+    logger.info("\nData Router demo completed!")
+
+
 def demo_csv_export(klines, fundamental, chain):
     """Demonstrate CSV export functionality."""
     from src.data.formatters.csv_exporter import CSVExporter
@@ -755,6 +870,7 @@ Examples:
   python examples/data_layer_demo.py --yahoo      # Yahoo Finance only
   python examples/data_layer_demo.py --ibkr       # IBKR TWS only (AAPL)
   python examples/data_layer_demo.py --futu       # Futu OpenD only (0700.HK)
+  python examples/data_layer_demo.py --router     # Data router demo (auto-routing)
   python examples/data_layer_demo.py --ibkr --futu  # Both IBKR and Futu
         """
     )
@@ -771,13 +887,17 @@ Examples:
         help="Run Futu OpenD demo - requires OpenD running (0700.HK Tencent)"
     )
     parser.add_argument(
+        "--router", action="store_true",
+        help="Run data router demo - demonstrates intelligent routing"
+    )
+    parser.add_argument(
         "--export", action="store_true",
         help="Run CSV export demo (requires --yahoo)"
     )
     args = parser.parse_args()
 
     # If no specific provider selected, run Yahoo by default
-    run_all = not (args.yahoo or args.ibkr or args.futu)
+    run_all = not (args.yahoo or args.ibkr or args.futu or args.router)
 
     logger.info("Option Quant Trade System - Data Layer Demo")
     logger.info("=" * 60)
@@ -796,6 +916,10 @@ Examples:
         # Futu demo
         if args.futu or run_all:
             demo_futu_provider()
+
+        # Router demo
+        if args.router:
+            demo_router()
 
         # CSV export demo
         if args.export and klines:
