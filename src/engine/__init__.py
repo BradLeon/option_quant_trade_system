@@ -39,15 +39,50 @@ from src.engine.volatility import (
 
 # Returns and Risk
 from src.engine.returns import (
+    StrategyType,
     calc_annualized_return,
     calc_calmar_ratio,
+    calc_covered_call_metrics,
     calc_expected_return,
     calc_expected_std,
     calc_kelly,
     calc_kelly_from_trades,
     calc_max_drawdown,
+    calc_option_expected_return,
+    calc_option_kelly_fraction,
+    calc_option_return_std,
+    calc_option_sharpe_ratio,
+    calc_option_sharpe_ratio_annualized,
+    calc_option_win_probability,
     calc_sharpe_ratio,
+    calc_short_put_metrics,
+    calc_short_strangle_metrics,
     calc_win_rate,
+)
+
+# B-S Model and Strategies
+from src.engine.bs import (
+    calc_bs_call_price,
+    calc_bs_put_price,
+    calc_call_exercise_prob,
+    calc_call_itm_prob,
+    calc_d1,
+    calc_d2,
+    calc_d3,
+    calc_n,
+    calc_put_exercise_prob,
+    calc_put_itm_prob,
+)
+from src.engine.strategy import (
+    CoveredCallStrategy,
+    OptionLeg,
+    OptionStrategy,
+    OptionType,
+    PositionSide,
+    ShortPutStrategy,
+    ShortStrangleStrategy,
+    StrategyMetrics,
+    StrategyParams,
 )
 
 # Sentiment
@@ -118,6 +153,38 @@ __all__ = [
     "calc_calmar_ratio",
     "calc_kelly",
     "calc_kelly_from_trades",
+    # B-S Model
+    "calc_d1",
+    "calc_d2",
+    "calc_d3",
+    "calc_n",
+    "calc_bs_call_price",
+    "calc_bs_put_price",
+    "calc_put_exercise_prob",
+    "calc_call_exercise_prob",
+    "calc_put_itm_prob",
+    "calc_call_itm_prob",
+    # Option Strategies
+    "OptionType",
+    "PositionSide",
+    "OptionLeg",
+    "StrategyParams",
+    "StrategyMetrics",
+    "OptionStrategy",
+    "ShortPutStrategy",
+    "CoveredCallStrategy",
+    "ShortStrangleStrategy",
+    # Option expected returns interface
+    "StrategyType",
+    "calc_short_put_metrics",
+    "calc_covered_call_metrics",
+    "calc_short_strangle_metrics",
+    "calc_option_expected_return",
+    "calc_option_return_std",
+    "calc_option_sharpe_ratio",
+    "calc_option_sharpe_ratio_annualized",
+    "calc_option_kelly_fraction",
+    "calc_option_win_probability",
     # Sentiment
     "interpret_vix",
     "get_vix_zone",

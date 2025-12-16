@@ -133,6 +133,109 @@
 
 ---
 
+### Requirement: Black-Scholes Core Calculations
+系统 SHALL 提供 Black-Scholes 模型基础计算功能。
+
+#### Scenario: Calculate d1
+- **WHEN** 提供 S (现价), K (行权价), r (无风险利率), σ (波动率), T (到期时间)
+- **THEN** 返回 d1 = [ln(S/K) + (r + σ²/2)×T] / (σ×√T)
+
+#### Scenario: Calculate d2
+- **WHEN** 提供 d1, σ, T
+- **THEN** 返回 d2 = d1 - σ×√T
+
+#### Scenario: Calculate N(d)
+- **WHEN** 提供 d 值
+- **THEN** 返回标准正态分布累积概率 N(d)
+
+#### Scenario: Calculate B-S Call/Put Price
+- **WHEN** 提供 S, K, r, σ, T
+- **THEN** 返回理论期权价格
+
+---
+
+### Requirement: Option Exercise Probability
+系统 SHALL 计算期权行权概率。
+
+#### Scenario: Calculate Put Exercise Probability
+- **WHEN** 提供 S, K, r, σ, T
+- **THEN** 返回 Put 行权概率 = N(-d2)
+
+#### Scenario: Calculate Call Exercise Probability
+- **WHEN** 提供 S, K, r, σ, T
+- **THEN** 返回 Call 行权概率 = N(d2)
+
+---
+
+### Requirement: Option Strategy Expected Return
+系统 SHALL 基于 B-S 模型计算期权策略的期望收益。
+
+#### Scenario: Short Put Expected Return
+- **WHEN** 提供 S (现价), K (行权价), C (权利金), σ (IV), T (到期时间), r (无风险利率)
+- **THEN** 返回期望收益 E[π] = C - N(-d2) × [K - e^(rT) × S × N(-d1) / N(-d2)]
+
+#### Scenario: Covered Call Expected Return
+- **WHEN** 提供 S, K, C, σ, T, r 和可选的 stock_cost_basis
+- **THEN** 返回考虑股票持仓和期权收益的综合期望收益
+
+#### Scenario: Short Strangle Expected Return
+- **WHEN** 提供 S, K_put, K_call, C_put, C_call, σ, T, r
+- **THEN** 返回两腿期望收益之和
+
+---
+
+### Requirement: Option Strategy Return Variance
+系统 SHALL 计算期权策略收益的方差。
+
+#### Scenario: Calculate Return Variance
+- **WHEN** 提供策略参数
+- **THEN** 返回 Var[π] = E[π²] - (E[π])²
+- **AND** 使用 d3 参数计算 E[S_T²] 相关项
+
+---
+
+### Requirement: Option Sharpe Ratio
+系统 SHALL 计算期权交易的夏普比率。
+
+#### Scenario: Calculate Option Sharpe Ratio
+- **WHEN** 提供策略类型和参数
+- **THEN** 返回 SR = (E[π] - Rf) / Std[π]
+- **AND** Rf = margin_ratio × K × (e^(rT) - 1) 为无风险收益金额
+
+#### Scenario: Calculate Annualized Sharpe Ratio
+- **WHEN** 提供策略参数
+- **THEN** 返回 SR_annual = SR / √T
+
+---
+
+### Requirement: Option Kelly Fraction
+系统 SHALL 计算期权策略的 Kelly 仓位比例。
+
+#### Scenario: Calculate Option Kelly
+- **WHEN** 提供策略类型和参数
+- **THEN** 返回 f* = E[π] / Var[π]
+- **AND** 若期望收益为负则返回 0
+
+---
+
+### Requirement: Strategy Metrics Calculation
+系统 SHALL 提供一次性计算所有策略指标的功能。
+
+#### Scenario: Calculate All Metrics
+- **WHEN** 调用 calc_short_put_metrics / calc_covered_call_metrics / calc_short_strangle_metrics
+- **THEN** 返回 StrategyMetrics 包含:
+  - expected_return (期望收益)
+  - return_std (收益标准差)
+  - return_variance (收益方差)
+  - max_profit (最大盈利)
+  - max_loss (最大亏损)
+  - breakeven (盈亏平衡点)
+  - win_probability (胜率)
+  - sharpe_ratio (夏普比率)
+  - kelly_fraction (Kelly仓位)
+
+---
+
 ### Requirement: Maximum Drawdown Calculation
 系统 SHALL 计算最大回撤。
 

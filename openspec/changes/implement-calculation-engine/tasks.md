@@ -4,6 +4,42 @@
 - [x] 1.2 创建 `src/engine/base.py` 定义基础类型 (TrendSignal, RatingSignal, Position)
 - [x] 1.3 创建 `src/engine/__init__.py` 模块导出
 
+## 1.5 B-S 模型基础层
+
+- [x] 1.5.1 创建 `src/engine/bs/core.py`
+  - `calc_d1(S, K, r, σ, T) -> float`
+  - `calc_d2(d1, σ, T) -> float`
+  - `calc_d3(d2, σ, T) -> float`
+  - `calc_n(d) -> float`
+  - `calc_bs_call_price(S, K, r, σ, T) -> float`
+  - `calc_bs_put_price(S, K, r, σ, T) -> float`
+- [x] 1.5.2 创建 `src/engine/bs/probability.py`
+  - `calc_put_exercise_prob(S, K, r, σ, T) -> float`
+  - `calc_call_exercise_prob(S, K, r, σ, T) -> float`
+  - `calc_put_itm_prob(S, K, r, σ, T) -> float`
+  - `calc_call_itm_prob(S, K, r, σ, T) -> float`
+- [x] 1.5.3 编写 B-S 模块单元测试
+
+## 1.6 期权策略实现层
+
+- [x] 1.6.1 创建 `src/engine/strategy/base.py`
+  - `OptionType`, `PositionSide` 枚举
+  - `OptionLeg`, `StrategyParams`, `StrategyMetrics` 数据类
+  - `OptionStrategy` 抽象基类
+- [x] 1.6.2 创建 `src/engine/strategy/short_put.py`
+  - `ShortPutStrategy` 实现
+  - `calc_expected_return()`, `calc_return_variance()`
+  - `calc_exercise_probability()`, `calc_expected_loss_if_exercised()`
+- [x] 1.6.3 创建 `src/engine/strategy/covered_call.py`
+  - `CoveredCallStrategy` 实现
+  - 支持 `stock_cost_basis` 参数
+  - `calc_assignment_probability()`
+- [x] 1.6.4 创建 `src/engine/strategy/strangle.py`
+  - `ShortStrangleStrategy` 实现
+  - 支持双腿独立 IV
+  - `calc_put_exercise_probability()`, `calc_call_exercise_probability()`
+- [x] 1.6.5 编写策略模块单元测试
+
 ## 2. Greeks 模块
 
 - [x] 2.1 创建 `src/engine/greeks/calculator.py`
@@ -37,6 +73,13 @@
   - `calc_kelly(win_rate: float, win_loss_ratio: float) -> float`
   - `calc_kelly_from_trades(trades: list[float]) -> float`
 - [x] 4.4 编写收益风险模块单元测试
+- [x] 4.5 创建 `src/engine/returns/option_expected.py` 期权策略无关接口
+  - `calc_short_put_metrics(S, K, C, σ, T, r) -> StrategyMetrics`
+  - `calc_covered_call_metrics(S, K, C, σ, T, r) -> StrategyMetrics`
+  - `calc_short_strangle_metrics(S, K_p, K_c, C_p, C_c, σ, T, r) -> StrategyMetrics`
+  - `calc_option_expected_return(strategy_type, **kwargs) -> float`
+  - `calc_option_sharpe_ratio(strategy_type, **kwargs) -> float`
+  - `calc_option_kelly_fraction(strategy_type, **kwargs) -> float`
 
 ## 5. 市场情绪模块
 

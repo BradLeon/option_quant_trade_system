@@ -28,6 +28,16 @@
 src/engine/
 ├── __init__.py
 ├── base.py              # 基础类型和接口定义
+├── bs/                  # Black-Scholes 基础计算层
+│   ├── __init__.py
+│   ├── core.py          # d1, d2, d3, N(d), B-S定价
+│   └── probability.py   # 行权概率、ITM概率
+├── strategy/            # 期权策略实现层
+│   ├── __init__.py
+│   ├── base.py          # OptionStrategy基类、OptionLeg、StrategyMetrics
+│   ├── short_put.py     # Short Put策略
+│   ├── covered_call.py  # Covered Call策略
+│   └── strangle.py      # Short Strangle策略
 ├── greeks/              # 希腊值相关
 │   ├── __init__.py
 │   └── calculator.py    # Greeks计算/获取
@@ -40,7 +50,8 @@ src/engine/
 │   ├── __init__.py
 │   ├── basic.py         # 基础收益计算
 │   ├── risk.py          # 风险指标(夏普、最大回撤)
-│   └── kelly.py         # Kelly公式
+│   ├── kelly.py         # Kelly公式
+│   └── option_expected.py  # 期权策略无关接口
 ├── sentiment/           # 市场情绪
 │   ├── __init__.py
 │   ├── vix.py           # VIX指标
@@ -88,6 +99,19 @@ def calculate_xxx(input_data: InputType) -> XxxResult:
 
 | 模块 | 算子 | 输入 | 输出 |
 |------|------|------|------|
+| **B-S Core** | calc_d1 | S, K, r, σ, T | float |
+| | calc_d2 | d1, σ, T | float |
+| | calc_d3 | d2, σ, T | float |
+| | calc_n | d | float (0-1) |
+| | calc_bs_call_price | S, K, r, σ, T | float |
+| | calc_bs_put_price | S, K, r, σ, T | float |
+| **B-S Probability** | calc_put_exercise_prob | S, K, r, σ, T | float (0-1) |
+| | calc_call_exercise_prob | S, K, r, σ, T | float (0-1) |
+| | calc_put_itm_prob | S, K, r, σ, T | float (0-1) |
+| | calc_call_itm_prob | S, K, r, σ, T | float (0-1) |
+| **Strategy** | ShortPutStrategy | S, K, C, σ, T, r | StrategyMetrics |
+| | CoveredCallStrategy | S, K, C, σ, T, r | StrategyMetrics |
+| | ShortStrangleStrategy | S, K_p, K_c, C_p, C_c, σ, T, r | StrategyMetrics |
 | **Greeks** | get_greeks | OptionQuote | Greeks |
 | **Volatility** | calc_hv | prices[], window | float |
 | | get_iv | OptionQuote | float |
@@ -100,6 +124,8 @@ def calculate_xxx(input_data: InputType) -> XxxResult:
 | | calc_sharpe_ratio | returns[], risk_free_rate | float |
 | | calc_kelly | win_rate, win_loss_ratio | float |
 | | calc_max_drawdown | equity_curve[] | float |
+| | calc_option_sharpe_ratio | strategy_type, params | float |
+| | calc_option_kelly_fraction | strategy_type, params | float |
 | **Sentiment** | get_vix | (from data layer) | float |
 | | calc_spy_trend | prices[], window | TrendSignal |
 | | calc_pcr | put_vol, call_vol | float |
@@ -148,6 +174,87 @@ class Position:
     vega: float | None = None
     beta: float | None = None
     market_value: float | None = None
+```
+
+### 5. 期权策略架构设计
+
+采用三层架构分离关注点：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  策略无关接口层 (option_expected.py)                          │
+│  calc_option_sharpe_ratio(strategy_type, **params)          │
+│  calc_short_put_metrics(S, K, C, σ, T, r) → StrategyMetrics │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────┐
+│  策略实现层 (strategy/)                                       │
+│  ShortPutStrategy, CoveredCallStrategy, ShortStrangleStrategy│
+│  - calc_expected_return() → E[π]                             │
+│  - calc_return_variance() → Var[π]                           │
+│  - calc_sharpe_ratio() → SR                                  │
+│  - calc_kelly_fraction() → f*                                │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────┐
+│  B-S 基础计算层 (bs/)                                         │
+│  calc_d1, calc_d2, calc_d3, calc_n                           │
+│  calc_bs_call_price, calc_bs_put_price                       │
+│  calc_put_exercise_prob, calc_call_exercise_prob             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**核心公式：**
+
+```python
+# 期望收益 (Short Put)
+# E[π] = C - N(-d2) × [K - e^(rT) × S × N(-d1) / N(-d2)]
+
+# 期望收益方差
+# Var[π] = E[π²] - (E[π])²
+
+# 夏普比率 (期权)
+# SR = (E[π] - Rf) / Std[π]
+# 其中 Rf = margin_ratio × K × (e^(rT) - 1)  # 无风险收益金额，非利率
+
+# 年化夏普比率
+# SR_annual = SR / √T
+
+# Kelly公式 (期权)
+# f* = E[π] / Var[π]
+```
+
+**策略类设计：**
+
+```python
+@dataclass
+class OptionLeg:
+    option_type: OptionType  # CALL / PUT
+    side: PositionSide       # LONG / SHORT
+    strike: float
+    premium: float
+    volatility: float | None = None  # 可指定单腿IV
+
+@dataclass
+class StrategyMetrics:
+    expected_return: float      # E[π]
+    return_std: float           # Std[π]
+    return_variance: float      # Var[π]
+    max_profit: float
+    max_loss: float
+    breakeven: float | list[float]
+    win_probability: float
+    sharpe_ratio: float | None
+    kelly_fraction: float | None
+
+class OptionStrategy(ABC):
+    @abstractmethod
+    def calc_expected_return(self) -> float: ...
+    @abstractmethod
+    def calc_return_variance(self) -> float: ...
+    def calc_sharpe_ratio(self, margin_ratio: float = 1.0) -> float | None: ...
+    def calc_kelly_fraction(self) -> float: ...
+    def calc_metrics(self) -> StrategyMetrics: ...
 ```
 
 ## Risks / Trade-offs

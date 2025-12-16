@@ -3,6 +3,7 @@
 import pytest
 
 from src.engine.returns import (
+    StrategyType,
     calc_annualized_return,
     calc_calmar_ratio,
     calc_expected_return,
@@ -10,7 +11,10 @@ from src.engine.returns import (
     calc_kelly,
     calc_kelly_from_trades,
     calc_max_drawdown,
+    calc_option_sharpe_ratio,
+    calc_option_sharpe_ratio_annualized,
     calc_sharpe_ratio,
+    calc_short_put_metrics,
     calc_win_rate,
 )
 
@@ -132,3 +136,71 @@ class TestAnnualizedReturn:
         """Test annualized return with empty list."""
         ann_return = calc_annualized_return([])
         assert ann_return is None
+
+
+class TestOptionSharpeRatio:
+    """Tests for option-specific Sharpe ratio calculation using strategy interface."""
+
+    def test_calc_option_sharpe_ratio_basic(self):
+        """Test option Sharpe ratio using new strategy-based interface.
+
+        Example: Sell put K=550, C=6.5, S=580, σ=20%, T=30 days, r=3%
+        """
+        sr = calc_option_sharpe_ratio(
+            strategy_type=StrategyType.SHORT_PUT,
+            spot_price=580,
+            strike_price=550,
+            premium=6.5,
+            volatility=0.20,
+            time_to_expiry=30 / 365,
+            risk_free_rate=0.03,
+            margin_ratio=0.2,
+        )
+        assert sr is not None
+        # Should have positive Sharpe ratio for OTM put
+        assert sr > 0
+
+    def test_calc_option_sharpe_ratio_via_metrics(self):
+        """Test option metrics calculation with Sharpe ratio."""
+        metrics = calc_short_put_metrics(
+            spot_price=580,
+            strike_price=550,
+            premium=6.5,
+            volatility=0.20,
+            time_to_expiry=30 / 365,
+            risk_free_rate=0.03,
+            margin_ratio=0.2,
+        )
+        assert metrics.expected_return > 0  # OTM put should have positive expected return
+        assert metrics.return_std > 0
+        assert metrics.sharpe_ratio is not None
+        assert metrics.win_probability > 0.5  # OTM put should have >50% win prob
+
+    def test_calc_option_sharpe_ratio_annualized(self):
+        """Test annualized option Sharpe ratio.
+
+        SR_annual = SR / sqrt(T)
+        """
+        sr_annual = calc_option_sharpe_ratio_annualized(
+            strategy_type=StrategyType.SHORT_PUT,
+            spot_price=580,
+            strike_price=550,
+            premium=6.5,
+            volatility=0.20,
+            time_to_expiry=30 / 365,
+            risk_free_rate=0.03,
+            margin_ratio=0.2,
+        )
+        assert sr_annual is not None
+        # Annualized should be higher than non-annualized for short time periods
+        sr = calc_option_sharpe_ratio(
+            strategy_type=StrategyType.SHORT_PUT,
+            spot_price=580,
+            strike_price=550,
+            premium=6.5,
+            volatility=0.20,
+            time_to_expiry=30 / 365,
+            risk_free_rate=0.03,
+            margin_ratio=0.2,
+        )
+        assert sr_annual > sr

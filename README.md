@@ -7,10 +7,20 @@
 ```
 option_quant_trade_system/
 ├── src/
-│   └── data/                    # 数据层
-│       ├── models/              # 数据模型
-│       ├── providers/           # 数据提供者
-│       └── formatters/          # 数据格式化
+│   ├── data/                    # 数据层
+│   │   ├── models/              # 数据模型
+│   │   ├── providers/           # 数据提供者
+│   │   └── formatters/          # 数据格式化
+│   └── engine/                  # 计算引擎层
+│       ├── bs/                  # B-S 模型基础计算
+│       ├── strategy/            # 期权策略实现
+│       ├── greeks/              # 希腊值计算
+│       ├── volatility/          # 波动率计算
+│       ├── returns/             # 收益风险指标
+│       ├── sentiment/           # 市场情绪
+│       ├── fundamental/         # 基本面分析
+│       ├── technical/           # 技术面分析
+│       └── portfolio/           # 组合风险指标
 ├── examples/                    # 示例代码
 ├── tests/                       # 测试代码
 └── openspec/                    # 规格文档
@@ -156,6 +166,107 @@ with IBKRProvider() as provider:
 | 美股期权交易 | IBKR/Futu | 实时数据+Greeks |
 | 市场情绪分析 | Yahoo | VIX + Put/Call Ratio |
 | 宏观分析 | Yahoo | 完整宏观指标 |
+
+## 计算引擎层 (Calculation Engine)
+
+计算引擎层提供期权量化指标的计算功能，采用三层架构设计：
+
+### 期权策略计算
+
+```python
+from src.engine import (
+    # 策略类
+    ShortPutStrategy,
+    CoveredCallStrategy,
+    ShortStrangleStrategy,
+    # 便捷接口
+    calc_short_put_metrics,
+    calc_option_sharpe_ratio,
+    StrategyType,
+)
+
+# 方式 1: 使用策略类
+strategy = ShortPutStrategy(
+    spot_price=580,      # 现价
+    strike_price=550,    # 行权价
+    premium=6.5,         # 权利金
+    volatility=0.20,     # 隐含波动率
+    time_to_expiry=30/365,  # 到期时间 (年)
+    risk_free_rate=0.03,
+)
+
+# 计算各项指标
+expected_return = strategy.calc_expected_return()  # 期望收益
+return_std = strategy.calc_return_std()            # 收益标准差
+sharpe = strategy.calc_sharpe_ratio(margin_ratio=0.2)  # 夏普比率
+kelly = strategy.calc_kelly_fraction()             # Kelly仓位
+win_prob = strategy.calc_win_probability()         # 胜率
+
+# 或一次性获取所有指标
+metrics = strategy.calc_metrics()
+print(f"期望收益: ${metrics.expected_return:.2f}")
+print(f"夏普比率: {metrics.sharpe_ratio:.2f}")
+print(f"胜率: {metrics.win_probability:.1%}")
+
+# 方式 2: 使用便捷接口
+metrics = calc_short_put_metrics(
+    spot_price=580,
+    strike_price=550,
+    premium=6.5,
+    volatility=0.20,
+    time_to_expiry=30/365,
+)
+
+# 方式 3: 策略无关接口
+sr = calc_option_sharpe_ratio(
+    strategy_type=StrategyType.SHORT_PUT,
+    spot_price=580,
+    strike_price=550,
+    premium=6.5,
+    volatility=0.20,
+    time_to_expiry=30/365,
+    margin_ratio=0.2,
+)
+```
+
+### B-S 模型基础计算
+
+```python
+from src.engine import (
+    calc_d1, calc_d2, calc_n,
+    calc_bs_call_price, calc_bs_put_price,
+    calc_put_exercise_prob, calc_call_exercise_prob,
+)
+
+# B-S 参数
+S, K, r, sigma, T = 100, 95, 0.03, 0.20, 30/365
+
+# 计算 d1, d2
+d1 = calc_d1(S, K, r, sigma, T)
+d2 = calc_d2(d1, sigma, T)
+
+# 计算理论价格
+call_price = calc_bs_call_price(S, K, r, sigma, T)
+put_price = calc_bs_put_price(S, K, r, sigma, T)
+
+# 计算行权概率
+put_prob = calc_put_exercise_prob(S, K, r, sigma, T)  # N(-d2)
+call_prob = calc_call_exercise_prob(S, K, r, sigma, T)  # N(d2)
+```
+
+### 支持的策略
+
+| 策略 | 类名 | 描述 |
+|-----|------|------|
+| Short Put | `ShortPutStrategy` | 卖出看跌期权 |
+| Covered Call | `CoveredCallStrategy` | 持股卖购 |
+| Short Strangle | `ShortStrangleStrategy` | 卖出宽跨式 |
+
+### 核心公式
+
+- **期望收益**: `E[π] = C - N(-d2) × [K - e^(rT) × S × N(-d1) / N(-d2)]`
+- **夏普比率**: `SR = (E[π] - Rf) / Std[π]`，其中 `Rf = margin × K × (e^(rT) - 1)`
+- **Kelly公式**: `f* = E[π] / Var[π]`
 
 ## 环境配置
 
