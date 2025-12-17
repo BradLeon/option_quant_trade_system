@@ -2,8 +2,8 @@
 
 import pytest
 
-from src.engine.base import TrendSignal, VixZone
-from src.engine.sentiment import (
+from src.engine.models.enums import TrendSignal, VixZone
+from src.engine.account.sentiment import (
     calc_pcr,
     calc_spy_trend,
     calc_trend_strength,

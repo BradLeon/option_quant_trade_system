@@ -7,15 +7,12 @@ Reference: 期权量化指标计算-以卖看跌期权为例.md
 
 import math
 
+from src.data.models.option import Greeks, OptionType
 from src.engine.bs.core import calc_d1, calc_d2, calc_d3, calc_n
-from src.engine.strategy.base import (
-    OptionLeg,
-    OptionStrategy,
-    OptionType,
-    PositionSide,
-    StrategyMetrics,
-    StrategyParams,
-)
+from src.engine.models import BSParams
+from src.engine.models.enums import PositionSide
+from src.engine.models.strategy import OptionLeg, StrategyMetrics, StrategyParams
+from src.engine.strategy.base import OptionStrategy
 
 
 class ShortPutStrategy(OptionStrategy):
@@ -40,6 +37,12 @@ class ShortPutStrategy(OptionStrategy):
         volatility: float,
         time_to_expiry: float,
         risk_free_rate: float = 0.03,
+        hv: float | None = None,
+        dte: int | None = None,
+        delta: float | None = None,
+        gamma: float | None = None,
+        theta: float | None = None,
+        vega: float | None = None,
     ):
         """Initialize Short Put strategy.
 
@@ -50,33 +53,50 @@ class ShortPutStrategy(OptionStrategy):
             volatility: Implied volatility (σ)
             time_to_expiry: Time to expiration in years (T)
             risk_free_rate: Annual risk-free rate (r)
+            hv: Historical volatility for SAS calculation (optional)
+            dte: Days to expiration for PREI/ROC calculation (optional)
+            delta: Option delta (optional)
+            gamma: Option gamma (optional)
+            theta: Option theta - daily time decay (optional)
+            vega: Option vega (optional)
         """
         leg = OptionLeg(
             option_type=OptionType.PUT,
             side=PositionSide.SHORT,
             strike=strike_price,
             premium=premium,
+            greeks=Greeks(delta=delta, gamma=gamma, theta=theta, vega=vega),
         )
         params = StrategyParams(
             spot_price=spot_price,
             volatility=volatility,
             time_to_expiry=time_to_expiry,
             risk_free_rate=risk_free_rate,
+            hv=hv,
+            dte=dte,
         )
         super().__init__([leg], params)
 
-        # Cache B-S parameters
-        self._d1 = calc_d1(
-            spot_price, strike_price, risk_free_rate, volatility, time_to_expiry
+        # Create BSParams for B-S calculations
+        bs_params = BSParams(
+            spot_price=spot_price,
+            strike_price=strike_price,
+            risk_free_rate=risk_free_rate,
+            volatility=volatility,
+            time_to_expiry=time_to_expiry,
+            is_call=False,
         )
-        self._d2 = calc_d2(self._d1, volatility, time_to_expiry) if self._d1 else None
-        self._d3 = calc_d3(self._d2, volatility, time_to_expiry) if self._d2 else None
+
+        # Cache B-S parameters
+        self._d1 = calc_d1(bs_params)
+        self._d2 = calc_d2(bs_params, self._d1) if self._d1 else None
+        self._d3 = calc_d3(bs_params, self._d2) if self._d2 else None
 
     def calc_expected_return(self) -> float:
         """Calculate expected return for short put.
 
         E[π] = C - N(-d2) * [K - e^(rT) * S * N(-d1) / N(-d2)]
-
+        
         Where:
         - C: Premium received
         - N(-d2): Exercise probability

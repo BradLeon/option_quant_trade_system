@@ -1,62 +1,57 @@
-"""Portfolio risk metrics calculations."""
+"""Portfolio risk metrics calculations.
 
-import math
+Portfolio-level module for risk metrics that operate on list[Position].
+"""
 
-import numpy as np
+from src.engine.models.position import Position
+from src.engine.portfolio.greeks_agg import (
+    calc_delta_dollars,
+    calc_portfolio_gamma,
+    calc_portfolio_theta,
+)
 
-from src.engine.base import Position
 
-
-def calc_tgr(theta: float, gamma: float) -> float | None:
-    """Calculate Theta/Gamma Ratio (TGR).
+def calc_portfolio_tgr(positions: list[Position]) -> float | None:
+    """Calculate Portfolio Theta/Gamma Ratio (TGR).
 
     TGR measures the ratio of daily time decay income to gamma risk.
     Higher TGR indicates more favorable risk/reward for theta strategies.
 
+    Physical meaning:
+    - Theta is daily income from time decay (negative value = you earn)
+    - Gamma is the rate of delta change (convexity risk)
+    - High TGR = more theta income per unit of gamma risk
+    - Typical target: TGR > 2-3 for income strategies
+
     Args:
-        theta: Total portfolio theta (daily time decay).
-        gamma: Total portfolio gamma.
+        positions: List of Position objects with theta and gamma.
 
     Returns:
         TGR value. Higher is better for theta strategies.
-        Returns None if gamma is zero.
+        Returns None if gamma is zero or no valid positions.
 
     Example:
-        >>> calc_tgr(-50, 10)  # $50/day theta income, 10 gamma
-        5.0
+        >>> positions = [
+        ...     Position(symbol="AAPL", quantity=1, theta=-30, gamma=5),
+        ...     Position(symbol="MSFT", quantity=1, theta=-20, gamma=5),
+        ... ]
+        >>> calc_portfolio_tgr(positions)
+        5.0  # (-30-20) / (5+5) = 50/10
     """
-    if gamma is None or gamma == 0:
+    if not positions:
         return None
 
-    if theta is None:
+    total_theta = calc_portfolio_theta(positions)
+    total_gamma = calc_portfolio_gamma(positions)
+
+    if total_gamma is None or total_gamma == 0:
+        return None
+
+    if total_theta is None:
         return None
 
     # Use absolute values as theta is typically negative (decay)
-    return abs(theta) / abs(gamma)
-
-
-def calc_roc(profit: float, capital: float) -> float | None:
-    """Calculate Return on Capital (ROC).
-
-    Args:
-        profit: Realized or unrealized profit.
-        capital: Capital employed/at risk.
-
-    Returns:
-        ROC as decimal (e.g., 0.15 for 15% return).
-        Returns None if capital is zero.
-
-    Example:
-        >>> calc_roc(150, 1000)
-        0.15
-    """
-    if capital is None or capital == 0:
-        return None
-
-    if profit is None:
-        return None
-
-    return profit / capital
+    return abs(total_theta) / abs(total_gamma)
 
 
 def calc_portfolio_var(
@@ -68,23 +63,31 @@ def calc_portfolio_var(
 
     Simple parametric VaR based on delta exposure.
 
+    Formula: VaR = |Delta$| × daily_vol × z_score
+
+    Physical meaning:
+    - Estimates maximum loss at given confidence level over one day
+    - Based on delta exposure (first-order approximation)
+    - VaR of $5,000 at 95% means 95% chance daily loss won't exceed $5,000
+
     Args:
-        positions: List of Position objects.
+        positions: List of Position objects with delta and underlying_price.
         confidence: Confidence level (default 95%).
         daily_vol: Assumed daily volatility of underlying (default 1%).
 
     Returns:
         VaR as positive dollar amount.
         Returns None if insufficient data.
+
+    Example:
+        # Portfolio with $100,000 delta exposure, 1% daily vol, 95% confidence
+        # VaR = 100,000 × 0.01 × 1.645 = $1,645
     """
     if not positions:
         return None
 
-    # Calculate total dollar delta
-    total_delta_dollars = 0.0
-    for pos in positions:
-        if pos.delta is not None and pos.market_value is not None:
-            total_delta_dollars += abs(pos.delta * pos.quantity * pos.market_value)
+    # Use calc_delta_dollars from greeks_agg for correct calculation
+    total_delta_dollars = calc_delta_dollars(positions)
 
     if total_delta_dollars == 0:
         return None
@@ -94,111 +97,103 @@ def calc_portfolio_var(
 
     z_score = stats.norm.ppf(confidence)
 
-    # VaR = delta_dollars * volatility * z_score
-    var = total_delta_dollars * daily_vol * z_score
+    # VaR = |delta_dollars| × volatility × z_score
+    var = abs(total_delta_dollars) * daily_vol * z_score
 
-    return abs(var)
-
-
-def calc_risk_reward_ratio(
-    max_profit: float,
-    max_loss: float,
-) -> float | None:
-    """Calculate risk/reward ratio.
-
-    Args:
-        max_profit: Maximum potential profit.
-        max_loss: Maximum potential loss (as positive number).
-
-    Returns:
-        Risk/reward ratio. < 1 means reward exceeds risk.
-        Returns None if max_profit is zero.
-    """
-    if max_profit is None or max_profit == 0:
-        return None
-
-    if max_loss is None:
-        return None
-
-    return abs(max_loss) / max_profit
-
-
-def calc_margin_utilization(
-    margin_used: float,
-    total_margin: float,
-) -> float | None:
-    """Calculate margin utilization percentage.
-
-    Args:
-        margin_used: Current margin used.
-        total_margin: Total available margin.
-
-    Returns:
-        Utilization as decimal (e.g., 0.50 for 50%).
-        Returns None if total_margin is zero.
-    """
-    if total_margin is None or total_margin == 0:
-        return None
-
-    if margin_used is None:
-        return None
-
-    return margin_used / total_margin
+    return var
 
 
 def calc_portfolio_beta(positions: list[Position]) -> float | None:
     """Calculate portfolio weighted-average beta.
 
+    Weights by delta dollars (actual directional exposure) not option market value.
+
+    Formula: Portfolio Beta = Σ(beta × |delta_dollars|) / Σ(|delta_dollars|)
+
+    Physical meaning:
+    - How the portfolio moves relative to the market
+    - Beta of 1.5 means portfolio moves 1.5x the market
+    - Weighted by actual risk exposure (delta dollars)
+
     Args:
-        positions: List of Position objects with beta and market_value.
+        positions: List of Position objects with beta, delta, and underlying_price.
 
     Returns:
         Portfolio beta.
         Returns None if insufficient data.
+
+    Example:
+        # NVDA (beta=1.8) with $50,000 delta exposure
+        # AAPL (beta=1.2) with $30,000 delta exposure
+        # Portfolio beta = (1.8×50000 + 1.2×30000) / (50000+30000) = 1.575
     """
     if not positions:
         return None
 
-    total_value = 0.0
+    total_exposure = 0.0
     weighted_beta = 0.0
 
     for pos in positions:
-        if pos.beta is not None and pos.market_value is not None:
-            value = abs(pos.market_value * pos.quantity)
-            weighted_beta += pos.beta * value
-            total_value += value
+        if pos.beta is None or pos.delta is None or pos.underlying_price is None:
+            continue
 
-    if total_value == 0:
+        # Weight by delta dollars (actual directional exposure)
+        delta_dollars = abs(
+            pos.delta * pos.underlying_price * pos.contract_multiplier * pos.quantity
+        )
+        weighted_beta += pos.beta * delta_dollars
+        total_exposure += delta_dollars
+
+    if total_exposure == 0:
         return None
 
-    return weighted_beta / total_value
+    return weighted_beta / total_exposure
 
 
 def calc_concentration_risk(positions: list[Position]) -> float | None:
     """Calculate position concentration risk using Herfindahl Index.
 
-    HHI ranges from 0 (highly diversified) to 1 (single position).
+    HHI ranges from 1/n (perfectly diversified) to 1 (single position).
+
+    Uses delta dollars as the weight measure, since that represents
+    actual directional risk exposure rather than option premium paid.
+
+    Formula: HHI = Σ(weight²) where weight = |delta_dollars| / total
+
+    Physical meaning:
+    - HHI = 1.0: All exposure in single position (maximum concentration)
+    - HHI = 0.5: Two equal positions
+    - HHI = 0.25: Four equal positions
+    - Lower HHI = better diversification
 
     Args:
-        positions: List of Position objects with market_value.
+        positions: List of Position objects with delta and underlying_price.
 
     Returns:
         Herfindahl-Hirschman Index (0-1).
         Returns None if insufficient data.
+
+    Example:
+        # Two positions with equal delta dollars exposure
+        # HHI = 0.5² + 0.5² = 0.5
     """
     if not positions:
         return None
 
-    values = []
+    exposures = []
     for pos in positions:
-        if pos.market_value is not None:
-            values.append(abs(pos.market_value * pos.quantity))
+        if pos.delta is not None and pos.underlying_price is not None:
+            delta_dollars = abs(
+                pos.delta * pos.underlying_price * pos.contract_multiplier * pos.quantity
+            )
+            if delta_dollars > 0:
+                exposures.append(delta_dollars)
 
-    if not values or sum(values) == 0:
+    if not exposures or sum(exposures) == 0:
         return None
 
-    total = sum(values)
-    weights = [v / total for v in values]
+    total = sum(exposures)
+    weights = [e / total for e in exposures]
 
     # HHI = sum of squared weights
     hhi = sum(w ** 2 for w in weights)

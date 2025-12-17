@@ -2,8 +2,8 @@
 
 import pytest
 
-from src.engine.base import TrendSignal
-from src.engine.technical import (
+from src.engine.models.enums import TrendSignal
+from src.engine.position.technical import (
     calc_rsi,
     calc_support_distance,
     calc_support_level,

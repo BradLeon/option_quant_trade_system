@@ -510,3 +510,158 @@ class TestStrategyBase:
             # Annualized should scale by 1/sqrt(T)
             expected_annual = sr / math.sqrt(30 / 365)
             assert abs(sr_annual - expected_annual) < 0.001
+
+    def test_calc_metrics_extended(self):
+        """Test extended metrics with PREI, SAS, TGR, ROC."""
+        strategy = ShortPutStrategy(
+            spot_price=100,
+            strike_price=95,
+            premium=2.0,
+            volatility=0.25,
+            time_to_expiry=30 / 365,
+            risk_free_rate=0.03,
+            hv=0.20,
+            dte=30,
+            gamma=0.02,
+            vega=0.15,
+            theta=-0.03,
+        )
+        metrics = strategy.calc_metrics(margin_ratio=0.2)
+
+        # Verify new fields exist and are not None
+        assert metrics.prei is not None
+        assert metrics.sas is not None
+        assert metrics.tgr is not None
+        assert metrics.roc is not None
+
+        # PREI should be in 0-100 range
+        assert 0 <= metrics.prei <= 100
+        # SAS should be in 0-100 range
+        assert 0 <= metrics.sas <= 100
+        # TGR should be positive
+        assert metrics.tgr > 0
+
+    def test_calc_metrics_extended_without_optional_params(self):
+        """Test extended metrics are None when optional params not provided."""
+        strategy = ShortPutStrategy(
+            spot_price=100,
+            strike_price=95,
+            premium=2.0,
+            volatility=0.25,
+            time_to_expiry=30 / 365,
+        )
+        # Call without Greeks - should still work
+        metrics = strategy.calc_metrics()
+
+        # Core metrics should exist
+        assert metrics.expected_return is not None
+        assert metrics.sharpe_ratio is not None
+
+        # Extended metrics should be None (not enough data)
+        assert metrics.prei is None
+        assert metrics.sas is None
+        assert metrics.tgr is None
+        assert metrics.roc is None
+
+    def test_calc_metrics_partial_extended(self):
+        """Test partial extended metrics when some data provided."""
+        strategy = ShortPutStrategy(
+            spot_price=100,
+            strike_price=95,
+            premium=2.0,
+            volatility=0.25,
+            time_to_expiry=30 / 365,
+            gamma=0.02,
+            theta=-0.03,
+            dte=30,
+        )
+        metrics = strategy.calc_metrics()
+
+        # TGR should work (has gamma and theta)
+        assert metrics.tgr is not None
+        assert metrics.tgr > 0
+
+        # ROC should work (has dte)
+        assert metrics.roc is not None
+
+        # PREI should be None (missing vega)
+        assert metrics.prei is None
+        # SAS should be None (missing hv)
+        assert metrics.sas is None
+
+    def test_calc_individual_extended_methods(self):
+        """Test individual calc_prei, calc_sas, calc_tgr, calc_roc methods."""
+        strategy = ShortPutStrategy(
+            spot_price=100,
+            strike_price=95,
+            premium=2.0,
+            volatility=0.25,
+            time_to_expiry=30 / 365,
+            hv=0.20,
+            dte=30,
+            gamma=0.02,
+            vega=0.15,
+            theta=-0.03,
+        )
+
+        # Test individual methods
+        prei = strategy.calc_prei()
+        assert prei is not None
+        assert 0 <= prei <= 100
+
+        sas = strategy.calc_sas()
+        assert sas is not None
+        assert 0 <= sas <= 100
+
+        tgr = strategy.calc_tgr()
+        assert tgr is not None
+        assert tgr > 0
+
+        roc = strategy.calc_roc()
+        assert roc is not None
+
+
+class TestPositionLevelTGR:
+    """Tests for position-level calc_tgr function."""
+
+    def test_calc_tgr_basic(self):
+        """Test basic TGR calculation."""
+        from src.data.models.option import Greeks
+        from src.engine.models.position import Position
+        from src.engine.position.risk_return import calc_tgr
+
+        pos = Position(symbol="TEST", quantity=1, greeks=Greeks(theta=-0.05, gamma=0.01))
+        tgr = calc_tgr(pos)
+        assert tgr == 5.0
+
+    def test_calc_tgr_negative_theta(self):
+        """Test TGR with negative theta (typical for short options)."""
+        from src.data.models.option import Greeks
+        from src.engine.models.position import Position
+        from src.engine.position.risk_return import calc_tgr
+
+        pos = Position(symbol="TEST", quantity=1, greeks=Greeks(theta=-50, gamma=10))
+        tgr = calc_tgr(pos)
+        assert tgr == 5.0
+
+    def test_calc_tgr_zero_gamma(self):
+        """Test TGR returns None when gamma is zero."""
+        from src.data.models.option import Greeks
+        from src.engine.models.position import Position
+        from src.engine.position.risk_return import calc_tgr
+
+        pos = Position(symbol="TEST", quantity=1, greeks=Greeks(theta=-0.05, gamma=0))
+        tgr = calc_tgr(pos)
+        assert tgr is None
+
+    def test_calc_tgr_none_inputs(self):
+        """Test TGR returns None for None inputs."""
+        from src.data.models.option import Greeks
+        from src.engine.models.position import Position
+        from src.engine.position.risk_return import calc_tgr
+
+        pos1 = Position(symbol="TEST", quantity=1, greeks=Greeks(gamma=0.01))  # no theta
+        pos2 = Position(symbol="TEST", quantity=1, greeks=Greeks(theta=-0.05))  # no gamma
+
+        assert calc_tgr(pos1) is None
+        assert calc_tgr(pos2) is None

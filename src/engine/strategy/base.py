@@ -1,121 +1,14 @@
-"""Base classes and data structures for option strategies."""
+"""Base classes for option strategies.
+
+Contains the abstract OptionStrategy base class.
+For data models, import from src.engine.models directly.
+"""
 
 import math
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from enum import Enum
 
-
-class OptionType(Enum):
-    """Option type enumeration."""
-
-    CALL = "call"
-    PUT = "put"
-
-
-class PositionSide(Enum):
-    """Position side enumeration."""
-
-    LONG = "long"  # Buy
-    SHORT = "short"  # Sell
-
-
-@dataclass
-class OptionLeg:
-    """Single option leg in a strategy.
-
-    Attributes:
-        option_type: Call or Put
-        side: Long (buy) or Short (sell)
-        strike: Strike price
-        premium: Option premium (per share)
-        quantity: Number of contracts (default 1)
-        volatility: IV for this specific leg (optional, can use strategy-level)
-    """
-
-    option_type: OptionType
-    side: PositionSide
-    strike: float
-    premium: float
-    quantity: int = 1
-    volatility: float | None = None
-
-    @property
-    def is_call(self) -> bool:
-        """Check if this is a call option."""
-        return self.option_type == OptionType.CALL
-
-    @property
-    def is_put(self) -> bool:
-        """Check if this is a put option."""
-        return self.option_type == OptionType.PUT
-
-    @property
-    def is_long(self) -> bool:
-        """Check if this is a long position."""
-        return self.side == PositionSide.LONG
-
-    @property
-    def is_short(self) -> bool:
-        """Check if this is a short position."""
-        return self.side == PositionSide.SHORT
-
-    @property
-    def sign(self) -> int:
-        """Get position sign (+1 for long, -1 for short)."""
-        return 1 if self.is_long else -1
-
-
-@dataclass
-class StrategyParams:
-    """Common parameters for strategy calculations.
-
-    Attributes:
-        spot_price: Current stock price (S)
-        risk_free_rate: Annual risk-free rate (r)
-        volatility: Default implied volatility (σ), used if leg doesn't specify
-        time_to_expiry: Time to expiration in years (T)
-    """
-
-    spot_price: float
-    volatility: float
-    time_to_expiry: float
-    risk_free_rate: float = 0.03
-
-    def validate(self) -> bool:
-        """Validate parameters."""
-        return (
-            self.spot_price > 0
-            and self.volatility > 0
-            and self.time_to_expiry > 0
-        )
-
-
-@dataclass
-class StrategyMetrics:
-    """Calculated metrics for a strategy.
-
-    Attributes:
-        expected_return: Expected profit E[π]
-        return_std: Standard deviation of return Std[π]
-        return_variance: Variance of return Var[π]
-        max_profit: Maximum possible profit
-        max_loss: Maximum possible loss (as positive number)
-        breakeven: Breakeven price(s)
-        win_probability: Probability of profit
-        sharpe_ratio: Risk-adjusted return (optional)
-        kelly_fraction: Optimal position size (optional)
-    """
-
-    expected_return: float
-    return_std: float
-    return_variance: float
-    max_profit: float
-    max_loss: float
-    breakeven: float | list[float]
-    win_probability: float
-    sharpe_ratio: float | None = None
-    kelly_fraction: float | None = None
+from src.data.models.option import Greeks
+from src.engine.models.strategy import OptionLeg, StrategyMetrics, StrategyParams
 
 
 class OptionStrategy(ABC):
@@ -261,11 +154,158 @@ class OptionStrategy(ABC):
                 capital += leg.strike * leg.quantity
         return capital if capital > 0 else self.params.spot_price
 
+    def _get_total_gamma(self) -> float | None:
+        """Get total gamma across all legs (position-adjusted).
+
+        Returns:
+            Sum of leg gammas adjusted for position side, or None if any leg missing gamma.
+        """
+        total = 0.0
+        for leg in self.legs:
+            if leg.gamma is None:
+                return None
+            total += leg.gamma * leg.sign * leg.quantity
+        return total
+
+    def _get_total_vega(self) -> float | None:
+        """Get total vega across all legs (position-adjusted).
+
+        Returns:
+            Sum of leg vegas adjusted for position side, or None if any leg missing vega.
+        """
+        total = 0.0
+        for leg in self.legs:
+            if leg.vega is None:
+                return None
+            total += leg.vega * leg.sign * leg.quantity
+        return total
+
+    def _get_total_theta(self) -> float | None:
+        """Get total theta across all legs (position-adjusted).
+
+        Returns:
+            Sum of leg thetas adjusted for position side, or None if any leg missing theta.
+        """
+        total = 0.0
+        for leg in self.legs:
+            if leg.theta is None:
+                return None
+            total += leg.theta * leg.sign * leg.quantity
+        return total
+
+    def _get_iv(self) -> float | None:
+        """Get implied volatility for strategy.
+
+        Uses first leg's volatility or strategy-level volatility.
+        """
+        if self.leg and self.leg.volatility is not None:
+            return self.leg.volatility
+        return self.params.volatility
+
+    def calc_prei(self) -> float | None:
+        """Calculate Position Risk Exposure Index (PREI).
+
+        PREI measures tail risk exposure based on gamma, vega, and DTE.
+        Requires: leg.gamma, leg.vega, params.dte
+
+        Returns:
+            PREI score (0-100), or None if insufficient data.
+        """
+        from src.engine.models.position import Position
+        from src.engine.position.risk_return import calc_prei
+
+        gamma = self._get_total_gamma()
+        vega = self._get_total_vega()
+        dte = self.params.dte
+
+        if gamma is None or vega is None or dte is None:
+            return None
+
+        # Create temporary Position for calculation
+        temp_position = Position(
+            symbol="strategy",
+            quantity=1,
+            greeks=Greeks(gamma=gamma, vega=vega),
+            underlying_price=self.params.spot_price,
+            dte=dte,
+        )
+        return calc_prei(temp_position)
+
+    def calc_sas(self) -> float | None:
+        """Calculate Strategy Attractiveness Score (SAS).
+
+        SAS evaluates option selling attractiveness based on IV/HV, Sharpe, and win prob.
+        Requires: params.volatility (IV), params.hv, sharpe_ratio, win_probability
+
+        Returns:
+            SAS score (0-100), or None if insufficient data.
+        """
+        from src.engine.position.option_metrics import calc_sas
+
+        iv = self._get_iv()
+        hv = self.params.hv
+        sharpe_ratio = self.calc_sharpe_ratio()
+        win_probability = self.calc_win_probability()
+
+        if iv is None or hv is None or sharpe_ratio is None:
+            return None
+
+        return calc_sas(iv, hv, sharpe_ratio, win_probability)
+
+    def calc_tgr(self) -> float | None:
+        """Calculate Theta/Gamma Ratio (TGR).
+
+        TGR measures theta income per unit of gamma risk.
+        Requires: leg.theta, leg.gamma
+
+        Returns:
+            TGR value, or None if insufficient data.
+        """
+        from src.engine.models.position import Position
+        from src.engine.position.risk_return import calc_tgr
+
+        theta = self._get_total_theta()
+        gamma = self._get_total_gamma()
+
+        if theta is None or gamma is None:
+            return None
+
+        # Create temporary Position for calculation
+        temp_position = Position(
+            symbol="strategy",
+            quantity=1,
+            greeks=Greeks(theta=theta, gamma=gamma),
+        )
+        return calc_tgr(temp_position)
+
+    def calc_roc(self) -> float | None:
+        """Calculate annualized Return on Capital (ROC).
+
+        ROC = (expected_return / max_loss) * (365 / dte)
+        Requires: params.dte, max_loss > 0
+
+        Returns:
+            Annualized ROC, or None if insufficient data.
+        """
+        from src.engine.position.risk_return import calc_roc_from_dte
+
+        dte = self.params.dte
+        max_loss = self.calc_max_loss()
+        expected_return = self.calc_expected_return()
+
+        if dte is None or max_loss <= 0:
+            return None
+
+        return calc_roc_from_dte(expected_return, max_loss, dte)
+
     def calc_metrics(self, margin_ratio: float = 1.0) -> StrategyMetrics:
         """Calculate all metrics for the strategy.
 
+        Extended metrics (prei, sas, tgr, roc) are calculated automatically
+        if the required data is available in legs and params.
+
         Args:
-            margin_ratio: Margin requirement for Sharpe calculation
+            margin_ratio: Margin requirement for Sharpe calculation.
 
         Returns:
             StrategyMetrics with all calculated values.
@@ -280,4 +320,8 @@ class OptionStrategy(ABC):
             win_probability=self.calc_win_probability(),
             sharpe_ratio=self.calc_sharpe_ratio(margin_ratio),
             kelly_fraction=self.calc_kelly_fraction(),
+            prei=self.calc_prei(),
+            sas=self.calc_sas(),
+            tgr=self.calc_tgr(),
+            roc=self.calc_roc(),
         )

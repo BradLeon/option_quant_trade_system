@@ -5,14 +5,12 @@ Sell both a put and a call with different strikes to collect premium.
 
 import math
 
+from src.data.models.option import Greeks, OptionType
 from src.engine.bs.core import calc_d1, calc_d2, calc_n
-from src.engine.strategy.base import (
-    OptionLeg,
-    OptionStrategy,
-    OptionType,
-    PositionSide,
-    StrategyParams,
-)
+from src.engine.models import BSParams
+from src.engine.models.enums import PositionSide
+from src.engine.models.strategy import OptionLeg, StrategyParams
+from src.engine.strategy.base import OptionStrategy
 
 
 class ShortStrangleStrategy(OptionStrategy):
@@ -45,6 +43,16 @@ class ShortStrangleStrategy(OptionStrategy):
         risk_free_rate: float = 0.03,
         put_volatility: float | None = None,
         call_volatility: float | None = None,
+        hv: float | None = None,
+        dte: int | None = None,
+        put_delta: float | None = None,
+        put_gamma: float | None = None,
+        put_theta: float | None = None,
+        put_vega: float | None = None,
+        call_delta: float | None = None,
+        call_gamma: float | None = None,
+        call_theta: float | None = None,
+        call_vega: float | None = None,
     ):
         """Initialize Short Strangle strategy.
 
@@ -59,6 +67,16 @@ class ShortStrangleStrategy(OptionStrategy):
             risk_free_rate: Annual risk-free rate (r)
             put_volatility: IV for put leg (optional)
             call_volatility: IV for call leg (optional)
+            hv: Historical volatility for SAS calculation (optional)
+            dte: Days to expiration for PREI/ROC calculation (optional)
+            put_delta: Put option delta (optional)
+            put_gamma: Put option gamma (optional)
+            put_theta: Put option theta (optional)
+            put_vega: Put option vega (optional)
+            call_delta: Call option delta (optional)
+            call_gamma: Call option gamma (optional)
+            call_theta: Call option theta (optional)
+            call_vega: Call option vega (optional)
         """
         put_leg = OptionLeg(
             option_type=OptionType.PUT,
@@ -66,6 +84,7 @@ class ShortStrangleStrategy(OptionStrategy):
             strike=put_strike,
             premium=put_premium,
             volatility=put_volatility,
+            greeks=Greeks(delta=put_delta, gamma=put_gamma, theta=put_theta, vega=put_vega),
         )
         call_leg = OptionLeg(
             option_type=OptionType.CALL,
@@ -73,12 +92,15 @@ class ShortStrangleStrategy(OptionStrategy):
             strike=call_strike,
             premium=call_premium,
             volatility=call_volatility,
+            greeks=Greeks(delta=call_delta, gamma=call_gamma, theta=call_theta, vega=call_vega),
         )
         params = StrategyParams(
             spot_price=spot_price,
             volatility=volatility,
             time_to_expiry=time_to_expiry,
             risk_free_rate=risk_free_rate,
+            hv=hv,
+            dte=dte,
         )
         super().__init__([put_leg, call_leg], params)
 
@@ -96,17 +118,29 @@ class ShortStrangleStrategy(OptionStrategy):
 
         # Put leg
         put_vol = self.get_leg_volatility(self.put_leg)
-        self._put_d1 = calc_d1(s, self.put_leg.strike, r, put_vol, t)
-        self._put_d2 = (
-            calc_d2(self._put_d1, put_vol, t) if self._put_d1 else None
+        put_params = BSParams(
+            spot_price=s,
+            strike_price=self.put_leg.strike,
+            risk_free_rate=r,
+            volatility=put_vol,
+            time_to_expiry=t,
+            is_call=False,
         )
+        self._put_d1 = calc_d1(put_params)
+        self._put_d2 = calc_d2(put_params, self._put_d1) if self._put_d1 else None
 
         # Call leg
         call_vol = self.get_leg_volatility(self.call_leg)
-        self._call_d1 = calc_d1(s, self.call_leg.strike, r, call_vol, t)
-        self._call_d2 = (
-            calc_d2(self._call_d1, call_vol, t) if self._call_d1 else None
+        call_params = BSParams(
+            spot_price=s,
+            strike_price=self.call_leg.strike,
+            risk_free_rate=r,
+            volatility=call_vol,
+            time_to_expiry=t,
+            is_call=True,
         )
+        self._call_d1 = calc_d1(call_params)
+        self._call_d2 = calc_d2(call_params, self._call_d1) if self._call_d1 else None
 
     @property
     def total_premium(self) -> float:
@@ -334,14 +368,29 @@ class ShortStrangleStrategy(OptionStrategy):
         # P(Lower BE < S_T < Upper BE) = N(d2_upper) - N(d2_lower)
         # where d2 is calculated relative to each breakeven
 
-        d1_lower = calc_d1(s, lower_be, r, vol, t)
-        d1_upper = calc_d1(s, upper_be, r, vol, t)
+        lower_params = BSParams(
+            spot_price=s,
+            strike_price=lower_be,
+            risk_free_rate=r,
+            volatility=vol,
+            time_to_expiry=t,
+        )
+        upper_params = BSParams(
+            spot_price=s,
+            strike_price=upper_be,
+            risk_free_rate=r,
+            volatility=vol,
+            time_to_expiry=t,
+        )
+
+        d1_lower = calc_d1(lower_params)
+        d1_upper = calc_d1(upper_params)
 
         if d1_lower is None or d1_upper is None:
             return 0.0
 
-        d2_lower = calc_d2(d1_lower, vol, t)
-        d2_upper = calc_d2(d1_upper, vol, t)
+        d2_lower = calc_d2(lower_params, d1_lower)
+        d2_upper = calc_d2(upper_params, d1_upper)
 
         if d2_lower is None or d2_upper is None:
             return 0.0

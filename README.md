@@ -8,21 +8,45 @@
 option_quant_trade_system/
 ├── src/
 │   ├── data/                    # 数据层
-│   │   ├── models/              # 数据模型
-│   │   ├── providers/           # 数据提供者
-│   │   └── formatters/          # 数据格式化
+│   │   ├── models/              # 数据模型 (Option, Stock, Greeks, etc.)
+│   │   ├── providers/           # 数据提供者 (Yahoo, Futu, IBKR)
+│   │   ├── formatters/          # 数据格式化 (QuantConnect)
+│   │   └── cache/               # 数据缓存 (Supabase)
 │   └── engine/                  # 计算引擎层
-│       ├── bs/                  # B-S 模型基础计算
+│       ├── models/              # 引擎数据模型
+│       │   ├── bs_params.py     # BSParams - B-S计算参数封装
+│       │   ├── position.py      # Position - 持仓模型(含Greeks)
+│       │   ├── strategy.py      # OptionLeg, StrategyParams, StrategyMetrics
+│       │   └── enums.py         # 枚举类型
+│       ├── bs/                  # B-S 模型核心计算
+│       │   ├── core.py          # calc_d1, calc_d2, calc_n, calc_bs_price
+│       │   ├── greeks.py        # calc_bs_delta/gamma/theta/vega/rho
+│       │   └── probability.py   # calc_exercise_prob, calc_itm_prob
 │       ├── strategy/            # 期权策略实现
-│       ├── greeks/              # 希腊值计算
-│       ├── volatility/          # 波动率计算
-│       ├── returns/             # 收益风险指标
-│       ├── sentiment/           # 市场情绪
-│       ├── fundamental/         # 基本面分析
-│       ├── technical/           # 技术面分析
-│       └── portfolio/           # 组合风险指标
+│       │   ├── base.py          # OptionStrategy 抽象基类
+│       │   ├── short_put.py     # ShortPutStrategy
+│       │   ├── covered_call.py  # CoveredCallStrategy
+│       │   └── strangle.py      # ShortStrangleStrategy
+│       ├── position/            # 持仓级计算
+│       │   ├── greeks.py        # get_greeks, get_delta (从报价获取/计算)
+│       │   ├── option_metrics.py # calc_sas (策略吸引力评分)
+│       │   ├── risk_return.py   # calc_prei, calc_tgr, calc_roc
+│       │   ├── volatility/      # HV/IV/IV Rank 计算
+│       │   ├── technical/       # RSI, 支撑位计算
+│       │   └── fundamental/     # 基本面指标提取
+│       ├── portfolio/           # 组合级计算
+│       │   ├── greeks_agg.py    # 组合Greeks汇总(delta$, BWD, gamma$)
+│       │   ├── composite.py     # 组合PREI, 组合SAS
+│       │   ├── risk_metrics.py  # 组合TGR, VaR
+│       │   └── returns.py       # 收益率, 夏普比率, Kelly
+│       └── account/             # 账户级计算
+│           ├── capital.py       # ROC计算
+│           ├── margin.py        # 保证金计算
+│           ├── position_sizing.py # 仓位管理
+│           └── sentiment/       # 市场情绪(VIX, PCR, 趋势)
 ├── examples/                    # 示例代码
 ├── tests/                       # 测试代码
+│   └── engine/                  # 引擎层测试
 └── openspec/                    # 规格文档
 ```
 
@@ -169,23 +193,52 @@ with IBKRProvider() as provider:
 
 ## 计算引擎层 (Calculation Engine)
 
-计算引擎层提供期权量化指标的计算功能，采用三层架构设计：
+计算引擎层提供期权量化指标的计算功能，采用四层架构设计：
+- **models**: 数据模型 (BSParams, Position, OptionLeg, StrategyMetrics)
+- **bs**: Black-Scholes 核心计算
+- **strategy**: 期权策略封装
+- **position/portfolio/account**: 多级风险指标计算
+
+### 数据模型设计
+
+引擎层使用组合模式，通过模型对象封装参数：
+
+```python
+from src.engine.models import BSParams, Position
+from src.data.models.option import Greeks
+
+# BSParams - 封装 B-S 计算参数
+params = BSParams(
+    spot_price=100.0,
+    strike_price=95.0,
+    risk_free_rate=0.03,
+    volatility=0.20,
+    time_to_expiry=30/365,
+    is_call=False,  # Put option
+)
+
+# Position - 持仓模型，使用 Greeks 组合
+position = Position(
+    symbol="AAPL",
+    quantity=2,
+    greeks=Greeks(delta=0.5, gamma=0.02, theta=-0.05, vega=0.30),
+    beta=1.2,
+    underlying_price=150.0,
+    margin=5000.0,
+    dte=30,
+)
+```
 
 ### 期权策略计算
 
 ```python
-from src.engine import (
-    # 策略类
+from src.engine.strategy import (
     ShortPutStrategy,
     CoveredCallStrategy,
     ShortStrangleStrategy,
-    # 便捷接口
-    calc_short_put_metrics,
-    calc_option_sharpe_ratio,
-    StrategyType,
 )
 
-# 方式 1: 使用策略类
+# 使用策略类
 strategy = ShortPutStrategy(
     spot_price=580,      # 现价
     strike_price=550,    # 行权价
@@ -193,6 +246,12 @@ strategy = ShortPutStrategy(
     volatility=0.20,     # 隐含波动率
     time_to_expiry=30/365,  # 到期时间 (年)
     risk_free_rate=0.03,
+    # 可选：传入 Greeks 用于扩展指标计算
+    hv=0.18,             # 历史波动率 (用于 SAS)
+    dte=30,              # 到期天数 (用于 PREI, ROC)
+    gamma=0.02,          # 用于 TGR, PREI
+    theta=-0.05,         # 用于 TGR
+    vega=0.30,           # 用于 PREI
 )
 
 # 计算各项指标
@@ -202,56 +261,107 @@ sharpe = strategy.calc_sharpe_ratio(margin_ratio=0.2)  # 夏普比率
 kelly = strategy.calc_kelly_fraction()             # Kelly仓位
 win_prob = strategy.calc_win_probability()         # 胜率
 
-# 或一次性获取所有指标
+# 扩展指标 (需要额外参数)
+prei = strategy.calc_prei()   # 风险暴露指数 (0-100)
+sas = strategy.calc_sas()     # 策略吸引力评分 (0-100)
+tgr = strategy.calc_tgr()     # Theta/Gamma 比率
+roc = strategy.calc_roc()     # 年化资本回报率
+
+# 一次性获取所有指标
 metrics = strategy.calc_metrics()
 print(f"期望收益: ${metrics.expected_return:.2f}")
 print(f"夏普比率: {metrics.sharpe_ratio:.2f}")
 print(f"胜率: {metrics.win_probability:.1%}")
-
-# 方式 2: 使用便捷接口
-metrics = calc_short_put_metrics(
-    spot_price=580,
-    strike_price=550,
-    premium=6.5,
-    volatility=0.20,
-    time_to_expiry=30/365,
-)
-
-# 方式 3: 策略无关接口
-sr = calc_option_sharpe_ratio(
-    strategy_type=StrategyType.SHORT_PUT,
-    spot_price=580,
-    strike_price=550,
-    premium=6.5,
-    volatility=0.20,
-    time_to_expiry=30/365,
-    margin_ratio=0.2,
-)
+print(f"PREI: {metrics.prei:.1f}")  # 风险指数
+print(f"SAS: {metrics.sas:.1f}")    # 吸引力评分
 ```
 
 ### B-S 模型基础计算
 
 ```python
-from src.engine import (
+from src.engine.models import BSParams
+from src.engine.bs import (
     calc_d1, calc_d2, calc_n,
-    calc_bs_call_price, calc_bs_put_price,
+    calc_bs_price,
+    calc_bs_delta, calc_bs_gamma, calc_bs_theta, calc_bs_vega,
     calc_put_exercise_prob, calc_call_exercise_prob,
 )
 
-# B-S 参数
-S, K, r, sigma, T = 100, 95, 0.03, 0.20, 30/365
+# 使用 BSParams 封装参数
+params = BSParams(
+    spot_price=100,
+    strike_price=95,
+    risk_free_rate=0.03,
+    volatility=0.20,
+    time_to_expiry=30/365,
+    is_call=True,
+)
 
 # 计算 d1, d2
-d1 = calc_d1(S, K, r, sigma, T)
-d2 = calc_d2(d1, sigma, T)
+d1 = calc_d1(params)
+d2 = calc_d2(params, d1)
 
 # 计算理论价格
-call_price = calc_bs_call_price(S, K, r, sigma, T)
-put_price = calc_bs_put_price(S, K, r, sigma, T)
+call_price = calc_bs_price(params)
+put_price = calc_bs_price(params.with_is_call(False))
+
+# 计算 Greeks
+delta = calc_bs_delta(params)
+gamma = calc_bs_gamma(params)
+theta = calc_bs_theta(params)
+vega = calc_bs_vega(params)
 
 # 计算行权概率
-put_prob = calc_put_exercise_prob(S, K, r, sigma, T)  # N(-d2)
-call_prob = calc_call_exercise_prob(S, K, r, sigma, T)  # N(d2)
+put_params = params.with_is_call(False)
+put_prob = calc_put_exercise_prob(put_params)   # N(-d2)
+call_prob = calc_call_exercise_prob(params)     # N(d2)
+```
+
+### 组合级计算
+
+```python
+from src.engine.models import Position
+from src.data.models.option import Greeks
+from src.engine.portfolio import (
+    calc_portfolio_theta,
+    calc_portfolio_vega,
+    calc_portfolio_gamma,
+    calc_delta_dollars,
+    calc_beta_weighted_delta,
+    calc_portfolio_tgr,
+    calc_portfolio_prei,
+)
+
+# 构建持仓列表
+positions = [
+    Position(
+        symbol="AAPL",
+        quantity=2,
+        greeks=Greeks(delta=0.5, gamma=0.02, theta=-5.0, vega=10.0),
+        underlying_price=150.0,
+        beta=1.2,
+        dte=30,
+    ),
+    Position(
+        symbol="MSFT",
+        quantity=-1,
+        greeks=Greeks(delta=0.4, gamma=0.01, theta=-3.0, vega=8.0),
+        underlying_price=400.0,
+        beta=1.1,
+        dte=30,
+    ),
+]
+
+# 组合 Greeks 汇总
+portfolio_theta = calc_portfolio_theta(positions)
+portfolio_vega = calc_portfolio_vega(positions)
+portfolio_gamma = calc_portfolio_gamma(positions)
+delta_dollars = calc_delta_dollars(positions)
+bwd = calc_beta_weighted_delta(positions, spy_price=450.0)
+
+# 组合风险指标
+tgr = calc_portfolio_tgr(positions)      # Theta/Gamma 比率
+prei = calc_portfolio_prei(positions)    # 组合风险暴露指数
 ```
 
 ### 支持的策略

@@ -1,231 +1,186 @@
-"""Composite portfolio metrics (SAS, PREI, etc.)."""
+"""Composite portfolio metrics (Portfolio-level SAS and PREI).
+
+This module provides portfolio-level aggregation of:
+- Strategy Attractiveness Score (SAS): Margin-weighted average of position SAS scores
+- Position Risk Exposure Index (PREI): Aggregated tail risk exposure
+"""
 
 import math
 
-
-def calc_sas(allocations: list[float]) -> float | None:
-    """Calculate Strategy Allocation Score (SAS).
-
-    SAS measures diversification across different strategies.
-    Uses normalized entropy: higher score = more diversified.
-
-    Args:
-        allocations: List of allocation percentages per strategy (should sum to ~1.0).
-
-    Returns:
-        SAS score (0-100). Higher indicates better diversification.
-        Returns None if allocations are empty or invalid.
-
-    Example:
-        >>> calc_sas([0.5, 0.5])  # Equal allocation to 2 strategies
-        100.0
-        >>> calc_sas([1.0])  # Single strategy
-        0.0
-        >>> calc_sas([0.33, 0.33, 0.34])  # Equal 3-way split
-        100.0
-    """
-    if not allocations:
-        return None
-
-    # Filter out zero/negative allocations
-    valid_allocs = [a for a in allocations if a is not None and a > 0]
-
-    if len(valid_allocs) == 0:
-        return None
-
-    if len(valid_allocs) == 1:
-        return 0.0  # Single strategy = no diversification
-
-    # Normalize allocations
-    total = sum(valid_allocs)
-    if total == 0:
-        return None
-
-    weights = [a / total for a in valid_allocs]
-
-    # Calculate entropy
-    entropy = -sum(w * math.log(w) for w in weights if w > 0)
-
-    # Maximum entropy for n strategies
-    max_entropy = math.log(len(weights))
-
-    if max_entropy == 0:
-        return 0.0
-
-    # Normalize to 0-100 scale
-    normalized_entropy = (entropy / max_entropy) * 100
-
-    return normalized_entropy
+from src.engine.models.position import Position
+from src.engine.portfolio.greeks_agg import calc_gamma_dollars, calc_portfolio_gamma, calc_portfolio_vega
 
 
-def calc_prei(exposures: dict[str, float]) -> float | None:
-    """Calculate Portfolio Risk Exposure Index (PREI).
+def calc_portfolio_sas(
+    positions_with_sas: list[tuple[Position, float]],
+) -> float | None:
+    """Calculate Portfolio-level Strategy Attractiveness Score.
 
-    PREI combines multiple risk exposures into a single metric.
-    Higher PREI indicates higher overall risk exposure.
+    Aggregates individual position SAS scores weighted by margin requirement.
+    This represents the overall attractiveness of the portfolio's option positions,
+    with larger positions (by margin) having more weight.
 
-    Expected exposures dict keys:
-    - "delta": Direction exposure (-1 to 1 normalized)
-    - "gamma": Convexity exposure (-1 to 1 normalized)
-    - "theta": Time decay exposure (-1 to 1 normalized)
-    - "vega": Volatility exposure (-1 to 1 normalized)
-    - "concentration": Position concentration (0 to 1)
+    Formula:
+        Portfolio_SAS = Σ(SAS_i × margin_i) / Σ(margin_i)
 
     Args:
-        exposures: Dictionary of exposure names to normalized values.
+        positions_with_sas: List of (Position, sas_score) tuples.
+            - Position.margin: Margin requirement for weighting
+            - sas_score: Pre-calculated SAS score (0-100) from calc_sas()
 
     Returns:
-        PREI score (0-100). Higher = more risk exposure.
-        Returns None if exposures dict is empty.
+        Portfolio SAS score (0-100). Higher = more attractive portfolio.
+        Returns None if no valid positions with both sas and margin.
 
     Example:
-        >>> exposures = {
-        ...     "delta": 0.5,  # Moderate direction exposure
-        ...     "gamma": -0.2,  # Short gamma
-        ...     "theta": 0.3,  # Positive theta
-        ...     "vega": -0.4,  # Short vega
-        ...     "concentration": 0.3,  # Moderate concentration
-        ... }
-        >>> prei = calc_prei(exposures)
-        >>> 0 <= prei <= 100
-        True
+        >>> from src.engine.position.option_metrics import calc_sas
+        >>> positions = [
+        ...     Position(symbol="AAPL", quantity=1, margin=5000.0),
+        ...     Position(symbol="MSFT", quantity=1, margin=3000.0),
+        ... ]
+        >>> sas_scores = [80.0, 60.0]  # Pre-calculated SAS for each position
+        >>> calc_portfolio_sas(list(zip(positions, sas_scores)))
+        72.5  # (80*5000 + 60*3000) / (5000+3000) = 580000/8000
     """
-    if not exposures:
+    if not positions_with_sas:
         return None
 
-    # Default weights for each exposure type
-    weights = {
-        "delta": 0.25,
-        "gamma": 0.20,
-        "theta": 0.15,
-        "vega": 0.20,
-        "concentration": 0.20,
-    }
+    total_weighted_sas = 0.0
+    total_margin = 0.0
 
-    total_weight = 0.0
-    weighted_exposure = 0.0
+    for pos, sas in positions_with_sas:
+        margin = pos.margin
 
-    for exp_name, exp_value in exposures.items():
-        if exp_value is None:
+        # Skip positions without valid SAS or margin
+        if sas is None or margin is None or margin <= 0:
             continue
 
-        weight = weights.get(exp_name, 0.1)  # Default weight for unknown exposures
+        total_weighted_sas += sas * margin
+        total_margin += margin
 
-        # Take absolute value and clamp to [0, 1]
-        abs_exposure = min(1.0, abs(exp_value))
-
-        weighted_exposure += abs_exposure * weight
-        total_weight += weight
-
-    if total_weight == 0:
+    if total_margin == 0:
         return None
 
-    # Normalize and scale to 0-100
-    prei = (weighted_exposure / total_weight) * 100
-
-    return prei
+    return total_weighted_sas / total_margin
 
 
-def calc_portfolio_health_score(
-    sas: float | None,
-    prei: float | None,
-    sharpe: float | None,
-    max_dd: float | None,
+def calc_portfolio_prei(
+    positions: list[Position],
+    weights: tuple[float, float, float] = (0.40, 0.30, 0.30),
 ) -> float | None:
-    """Calculate overall portfolio health score.
+    """Calculate Portfolio-level Position Risk Exposure Index.
 
-    Combines diversification, risk exposure, risk-adjusted return, and drawdown.
+    Aggregates position-level risk into a portfolio-level tail risk metric.
+    Each risk component (gamma, vega, DTE) is independently normalized to 0-1,
+    then combined with weights.
+
+    Formula:
+        Portfolio_PREI = (w1 × Gamma_Risk + w2 × Vega_Risk + w3 × DTE_Risk) × 100
+
+        Where each component is normalized to 0-1:
+        - Gamma_Risk = |calc_portfolio_gamma()| normalized to 0-1
+        - Vega_Risk = |calc_portfolio_vega()| normalized to 0-1
+        - DTE_Risk = Σ(DTE_Risk_i × |Γ$_i|) / Σ|Γ$_i| normalized to 0-1
+          DTE_Risk_i = sqrt(1 / max(1, DTE_i))
 
     Args:
-        sas: Strategy Allocation Score (0-100, higher = better).
-        prei: Portfolio Risk Exposure Index (0-100, lower = better).
-        sharpe: Sharpe ratio (higher = better, typically 0-3).
-        max_dd: Maximum drawdown as decimal (lower = better, typically 0-0.5).
+        positions: List of Position objects with gamma, vega, underlying_price,
+            quantity, and dte fields.
+        weights: Tuple of (w1, w2, w3) weights for gamma, vega, and DTE risk.
+            Default: (0.40, 0.30, 0.30).
 
     Returns:
-        Health score (0-100). Higher = healthier portfolio.
+        Portfolio PREI score (0-100). Higher = more risk exposure.
+        Returns None if positions are empty or invalid.
+
+    Example:
+        >>> positions = [
+        ...     Position(symbol="AAPL", quantity=2, gamma=0.03, vega=15,
+        ...              underlying_price=150, dte=30),
+        ...     Position(symbol="MSFT", quantity=-1, gamma=-0.02, vega=-10,
+        ...              underlying_price=400, dte=20),
+        ... ]
+        >>> calc_portfolio_prei(positions)
+        35.0  # Moderate due to partial hedging
     """
-    scores = []
-    weights = []
-
-    # SAS component (higher is better)
-    if sas is not None:
-        scores.append(sas)
-        weights.append(0.25)
-
-    # PREI component (lower is better, so invert)
-    if prei is not None:
-        scores.append(100 - prei)
-        weights.append(0.25)
-
-    # Sharpe component (scale to 0-100, cap at 3)
-    if sharpe is not None:
-        sharpe_score = min(100, max(0, sharpe / 3 * 100))
-        scores.append(sharpe_score)
-        weights.append(0.25)
-
-    # Max DD component (lower is better, scale 0-50% to 100-0)
-    if max_dd is not None:
-        dd_score = max(0, 100 - (max_dd * 200))  # 0% DD = 100, 50% DD = 0
-        scores.append(dd_score)
-        weights.append(0.25)
-
-    if not scores:
+    if not positions:
         return None
 
-    total_weight = sum(weights)
-    weighted_score = sum(s * w for s, w in zip(scores, weights))
+    w1, w2, w3 = weights
 
-    return weighted_score / total_weight
+    # Gamma Risk: Use calc_portfolio_gamma for net gamma (allows hedging offset)
+    total_gamma = calc_portfolio_gamma(positions)
+
+    # Vega Risk: Use calc_portfolio_vega for net vega (allows hedging offset)
+    total_vega = calc_portfolio_vega(positions)
+
+    # DTE Risk: Gamma-weighted average of position DTE risks
+    # DTE_Risk = Σ(DTE_Risk_i × |Γ$_i|) / Σ|Γ$_i|
+    weighted_dte_risk = 0.0
+    abs_gamma_dollars_sum = 0.0
+
+    for pos in positions:
+        gamma = pos.gamma
+        price = pos.underlying_price
+        dte = pos.dte
+        quantity = pos.quantity if pos.quantity is not None else 1
+        multiplier = pos.contract_multiplier if pos.contract_multiplier else 100
+
+        # Skip positions with missing gamma/price data
+        if gamma is None or price is None or price <= 0:
+            continue
+
+        # Calculate |Γ$| for this position (for weighting)
+        pos_gamma_dollars = abs(gamma * (price ** 2) * multiplier * quantity / 100)
+        abs_gamma_dollars_sum += pos_gamma_dollars
+
+        # DTE risk for this position: sqrt(1/DTE), range (0, 1] for DTE >= 1
+        if dte is not None and dte > 0:
+            dte_risk_i = math.sqrt(1.0 / max(1, dte))
+            weighted_dte_risk += dte_risk_i * pos_gamma_dollars
+
+    # If no valid positions with gamma data, return None
+    if abs_gamma_dollars_sum == 0:
+        return None
+
+    # Calculate average DTE risk (gamma-weighted), already in 0-1 range
+    avg_dte_risk = weighted_dte_risk / abs_gamma_dollars_sum if weighted_dte_risk > 0 else 0.0
+
+    # If no DTE data available, use a default moderate DTE risk
+    if avg_dte_risk == 0:
+        # Default: assume 30 DTE -> sqrt(1/30) ≈ 0.183
+        avg_dte_risk = math.sqrt(1.0 / 30)
+
+    # Normalize gamma and vega to 0-1 range
+    # Use sigmoid-like normalization: risk = |value| / (|value| + k)
+    # This maps any value to (0, 1), with k controlling the "sensitivity"
+    # k = 1 means: value of 1 gives risk of 0.5
+    gamma_risk = _normalize_to_01(abs(total_gamma), k=1.0)
+    vega_risk = _normalize_to_01(abs(total_vega), k=100.0)
+
+    # Weighted combination, scale to 0-100
+    portfolio_prei = (w1 * gamma_risk + w2 * vega_risk + w3 * avg_dte_risk) * 100
+
+    return portfolio_prei
 
 
-def calc_position_sizing_score(
-    kelly: float | None,
-    margin_util: float | None,
-    concentration: float | None,
-) -> float | None:
-    """Calculate position sizing appropriateness score.
+def _normalize_to_01(value: float, k: float = 1.0) -> float:
+    """Normalize a non-negative value to 0-1 range using sigmoid-like function.
+
+    Formula: normalized = value / (value + k)
+
+    Properties:
+    - value=0 -> 0
+    - value=k -> 0.5
+    - value->inf -> 1
 
     Args:
-        kelly: Kelly fraction (0-1).
-        margin_util: Margin utilization (0-1).
-        concentration: Position concentration HHI (0-1).
+        value: Non-negative value to normalize.
+        k: Scaling constant. When value=k, output is 0.5.
 
     Returns:
-        Score (0-100). Higher = better position sizing.
+        Normalized value in range [0, 1).
     """
-    scores = []
-
-    # Kelly score (optimal around 0.1-0.3, penalize extremes)
-    if kelly is not None:
-        if 0.1 <= kelly <= 0.3:
-            kelly_score = 100
-        elif kelly < 0.1:
-            kelly_score = 50 + (kelly / 0.1) * 50
-        elif kelly <= 0.5:
-            kelly_score = 100 - ((kelly - 0.3) / 0.2) * 30
-        else:
-            kelly_score = max(0, 70 - (kelly - 0.5) * 100)
-        scores.append(kelly_score)
-
-    # Margin utilization score (optimal around 0.3-0.5)
-    if margin_util is not None:
-        if 0.3 <= margin_util <= 0.5:
-            margin_score = 100
-        elif margin_util < 0.3:
-            margin_score = 60 + (margin_util / 0.3) * 40
-        elif margin_util <= 0.7:
-            margin_score = 100 - ((margin_util - 0.5) / 0.2) * 30
-        else:
-            margin_score = max(0, 70 - (margin_util - 0.7) * 200)
-        scores.append(margin_score)
-
-    # Concentration score (lower is better)
-    if concentration is not None:
-        conc_score = max(0, 100 - concentration * 100)
-        scores.append(conc_score)
-
-    if not scores:
-        return None
-
-    return sum(scores) / len(scores)
+    if value <= 0:
+        return 0.0
+    return value / (value + k)

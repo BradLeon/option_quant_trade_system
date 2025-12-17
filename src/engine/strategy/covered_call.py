@@ -5,14 +5,12 @@ Own stock + Sell a call option to collect premium.
 
 import math
 
+from src.data.models.option import Greeks, OptionType
 from src.engine.bs.core import calc_d1, calc_d2, calc_d3, calc_n
-from src.engine.strategy.base import (
-    OptionLeg,
-    OptionStrategy,
-    OptionType,
-    PositionSide,
-    StrategyParams,
-)
+from src.engine.models import BSParams
+from src.engine.models.enums import PositionSide
+from src.engine.models.strategy import OptionLeg, StrategyParams
+from src.engine.strategy.base import OptionStrategy
 
 
 class CoveredCallStrategy(OptionStrategy):
@@ -40,6 +38,12 @@ class CoveredCallStrategy(OptionStrategy):
         time_to_expiry: float,
         risk_free_rate: float = 0.03,
         stock_cost_basis: float | None = None,
+        hv: float | None = None,
+        dte: int | None = None,
+        delta: float | None = None,
+        gamma: float | None = None,
+        theta: float | None = None,
+        vega: float | None = None,
     ):
         """Initialize Covered Call strategy.
 
@@ -50,30 +54,47 @@ class CoveredCallStrategy(OptionStrategy):
             volatility: Implied volatility (σ)
             time_to_expiry: Time to expiration in years (T)
             risk_free_rate: Annual risk-free rate (r)
-            stock_cost_basis: Original cost of stock (defaults to spot_price)
+            stock_cost_basis: Original cost of stock (defaults to spot_price) --正股买入价
+            hv: Historical volatility for SAS calculation (optional)
+            dte: Days to expiration for PREI/ROC calculation (optional)
+            delta: Option delta (optional)
+            gamma: Option gamma (optional)
+            theta: Option theta - daily time decay (optional)
+            vega: Option vega (optional)
         """
         leg = OptionLeg(
             option_type=OptionType.CALL,
             side=PositionSide.SHORT,
             strike=strike_price,
             premium=premium,
+            greeks=Greeks(delta=delta, gamma=gamma, theta=theta, vega=vega),
         )
         params = StrategyParams(
             spot_price=spot_price,
             volatility=volatility,
             time_to_expiry=time_to_expiry,
             risk_free_rate=risk_free_rate,
+            hv=hv,
+            dte=dte,
         )
         super().__init__([leg], params)
 
         self.stock_cost_basis = stock_cost_basis or spot_price
 
-        # Cache B-S parameters
-        self._d1 = calc_d1(
-            spot_price, strike_price, risk_free_rate, volatility, time_to_expiry
+        # Create BSParams for B-S calculations
+        self._bs_params = BSParams(
+            spot_price=spot_price,
+            strike_price=strike_price,
+            risk_free_rate=risk_free_rate,
+            volatility=volatility,
+            time_to_expiry=time_to_expiry,
+            is_call=True,
         )
-        self._d2 = calc_d2(self._d1, volatility, time_to_expiry) if self._d1 else None
-        self._d3 = calc_d3(self._d2, volatility, time_to_expiry) if self._d2 else None
+
+        # Cache B-S parameters
+        self._d1 = calc_d1(self._bs_params)
+        self._d2 = calc_d2(self._bs_params, self._d1) if self._d1 else None
+        self._d3 = calc_d3(self._bs_params, self._d2) if self._d2 else None
 
     def calc_expected_return(self) -> float:
         """Calculate expected return for covered call.
@@ -224,17 +245,23 @@ class CoveredCallStrategy(OptionStrategy):
             Win probability (0-1).
         """
         breakeven = self.calc_breakeven()
-        s = self.params.spot_price
-        r = self.params.risk_free_rate
-        sigma = self.params.volatility
-        t = self.params.time_to_expiry
+
+        # Create BSParams with breakeven as strike
+        be_params = BSParams(
+            spot_price=self.params.spot_price,
+            strike_price=breakeven,
+            risk_free_rate=self.params.risk_free_rate,
+            volatility=self.params.volatility,
+            time_to_expiry=self.params.time_to_expiry,
+            is_call=True,
+        )
 
         # Calculate d2 relative to breakeven
-        d1_be = calc_d1(s, breakeven, r, sigma, t)
+        d1_be = calc_d1(be_params)
         if d1_be is None:
             return 0.0
 
-        d2_be = calc_d2(d1_be, sigma, t)
+        d2_be = calc_d2(be_params, d1_be)
         if d2_be is None:
             return 0.0
 

@@ -1,6 +1,6 @@
 """Portfolio Greeks aggregation."""
 
-from src.engine.base import Position
+from src.engine.models.position import Position
 
 
 def calc_portfolio_delta(positions: list[Position]) -> float:
@@ -89,37 +89,39 @@ def calc_beta_weighted_delta(
 ) -> float:
     """Calculate beta-weighted delta normalized to SPY.
 
-    This converts all position deltas to SPY-equivalent units,
-    allowing comparison across different underlyings.
+    This converts all position deltas to SPY-equivalent shares,
+    allowing comparison of directional exposure across different underlyings.
 
-    Formula: BWD = Sum(position_delta * position_price / spy_price * beta)
+    Formula: BWD = Σ(delta × underlying_price × multiplier × quantity × beta / spy_price)
+
+    Physical meaning:
+    - Converts dollar delta exposure to SPY-equivalent shares
+    - A BWD of 100 means the portfolio behaves like being long 100 shares of SPY
+    - Useful for hedging: to neutralize, short BWD shares of SPY
 
     Args:
-        positions: List of Position objects with delta and beta values.
+        positions: List of Position objects with delta, beta, and underlying_price.
         spy_price: Current SPY price for normalization.
 
     Returns:
         Beta-weighted delta in SPY-equivalent shares.
 
     Example:
-        A portfolio with BWD of 100 behaves like being long 100 shares of SPY.
+        # NVDA Call: delta=0.5, NVDA=$500, beta=1.8, 2 contracts, SPY=$450
+        # BWD = 0.5 × 500 × 100 × 2 × 1.8 / 450 = 200 SPY shares
+        # This NVDA position moves like 200 shares of SPY
     """
     if not positions or spy_price is None or spy_price <= 0:
         return 0.0
 
     total_bwd = 0.0
     for pos in positions:
-        if pos.delta is None or pos.beta is None:
+        if pos.delta is None or pos.beta is None or pos.underlying_price is None:
             continue
 
-        # Get position value (use market_value if available)
-        if pos.market_value is not None:
-            pos_value = pos.market_value
-        else:
-            continue  # Can't calculate without position value
-
-        # Beta-weighted delta = delta * (position_value / spy_price) * beta
-        bwd = pos.delta * pos.quantity * pos_value / spy_price * pos.beta
+        # Beta-weighted delta = delta × underlying_price × multiplier × quantity × beta / spy_price
+        delta_dollars = pos.delta * pos.underlying_price * pos.contract_multiplier * pos.quantity
+        bwd = delta_dollars * pos.beta / spy_price
         total_bwd += bwd
 
     return total_bwd
@@ -128,42 +130,69 @@ def calc_beta_weighted_delta(
 def calc_delta_dollars(positions: list[Position]) -> float:
     """Calculate delta exposure in dollar terms.
 
+    Formula: Delta$ = Σ(delta × underlying_price × multiplier × quantity)
+
+    Physical meaning:
+    - How much the portfolio value changes when the underlying moves $1
+    - Delta$ of $10,000 means a $1 move in underlying changes portfolio by $10,000
+
     Args:
-        positions: List of Position objects with delta and market_value.
+        positions: List of Position objects with delta and underlying_price.
 
     Returns:
         Total dollar delta exposure.
+
+    Example:
+        # AAPL Call: delta=0.5, AAPL=$150, 3 contracts
+        # Delta$ = 0.5 × 150 × 100 × 3 = $22,500
+        # If AAPL moves $1, position value changes by $150 (0.5 × 100 × 3)
     """
     if not positions:
         return 0.0
 
     total = 0.0
     for pos in positions:
-        if pos.delta is not None and pos.market_value is not None:
-            # Delta dollars = delta * quantity * position value
-            total += pos.delta * pos.quantity * abs(pos.market_value)
+        if pos.delta is not None and pos.underlying_price is not None:
+            # Delta dollars = delta × underlying_price × multiplier × quantity
+            total += pos.delta * pos.underlying_price * pos.contract_multiplier * pos.quantity
     return total
 
 
 def calc_gamma_dollars(positions: list[Position]) -> float:
     """Calculate gamma exposure in dollar terms.
 
-    Represents how much delta changes for a 1% move in underlying.
+    Formula: Gamma$ = Σ(gamma × underlying_price² × multiplier × quantity / 100)
+
+    Physical meaning:
+    - How much Delta$ changes when the underlying moves 1%
+    - Gamma$ of $5,000 means a 1% move changes Delta$ by $5,000
+    - High Gamma$ means the portfolio's directional exposure changes rapidly
 
     Args:
-        positions: List of Position objects with gamma and market_value.
+        positions: List of Position objects with gamma and underlying_price.
 
     Returns:
         Total dollar gamma exposure.
+
+    Example:
+        # AAPL Call: gamma=0.02, AAPL=$150, 3 contracts
+        # Gamma$ = 0.02 × 150² × 100 × 3 / 100 = $1,350
+        # A 1% move in AAPL changes Delta$ by $1,350
     """
     if not positions:
         return 0.0
 
     total = 0.0
     for pos in positions:
-        if pos.gamma is not None and pos.market_value is not None:
-            # Gamma dollars = gamma * quantity * position value * price / 100
-            total += pos.gamma * pos.quantity * abs(pos.market_value) / 100
+        if pos.gamma is not None and pos.underlying_price is not None:
+            # Gamma dollars = gamma × underlying_price² × multiplier × quantity / 100
+            total += (
+                pos.gamma
+                * pos.underlying_price ** 2
+                * pos.contract_multiplier
+                * pos.quantity
+                / 100
+            )
     return total
 
 
