@@ -16,6 +16,7 @@ from src.data.models import (
     OptionChain,
     OptionQuote,
     StockQuote,
+    StockVolatility,
 )
 from src.data.models.option import Greeks, OptionContract, OptionType
 from src.data.models.stock import KlineType
@@ -901,6 +902,196 @@ class IBKRProvider(DataProvider):
             None - fundamental data not supported by this provider.
         """
         return None
+
+    def get_stock_volatility(
+        self,
+        symbol: str,
+        include_iv_rank: bool = True,
+    ) -> StockVolatility | None:
+        """Get stock-level volatility metrics from IBKR.
+
+        Uses TWS API tick types:
+        - Tick 24 (generic tick 106): 30-day Implied Volatility
+        - Tick 23 (generic tick 104): 30-day Historical Volatility
+        - Tick 101: Option Open Interest (Call/Put for PCR calculation)
+
+        For IV Rank and IV Percentile, fetches 1-year historical IV data using
+        reqHistoricalData with whatToShow='OPTION_IMPLIED_VOLATILITY'.
+
+        Note: PCR is calculated using Open Interest (not Volume) to ensure
+        consistent metrics across US and HK markets.
+
+        Args:
+            symbol: Stock symbol (e.g., 'AAPL', '0700.HK').
+            include_iv_rank: Whether to fetch historical IV for IV Rank/Percentile.
+                            Set to False for faster response without IV Rank.
+
+        Returns:
+            StockVolatility with IV, HV, PCR, IV Rank, and IV Percentile.
+        """
+        self._ensure_connected()
+
+        normalized = self.normalize_symbol(symbol)
+
+        try:
+            contract = self._create_stock_contract(normalized)
+
+            # Qualify the contract
+            qualified = self._ib.qualifyContracts(contract)
+            if not qualified:
+                logger.warning(f"Could not qualify contract for {symbol}")
+                return None
+
+            # Request market data with generic ticks for volatility and option open interest
+            # 101 = Option Open Interest (for PCR calculation)
+            # 104 = Historical Volatility (Tick ID 23)
+            # 106 = Implied Volatility (Tick ID 24)
+            ticker = self._ib.reqMktData(contract, "101,104,106", snapshot=False, regulatorySnapshot=False)
+
+            # Wait for volatility data to populate
+            iv = None
+            hv = None
+            call_oi = None
+            put_oi = None
+
+            for i in range(10):  # Try up to 5 seconds
+                self._ib.sleep(0.5)
+
+                # Check for IV (tick 24, delivered via tickGeneric)
+                if hasattr(ticker, 'impliedVolatility') and ticker.impliedVolatility == ticker.impliedVolatility:
+                    iv = ticker.impliedVolatility
+
+                # Check for HV (tick 23, delivered via tickGeneric)
+                if hasattr(ticker, 'histVolatility') and ticker.histVolatility == ticker.histVolatility:
+                    hv = ticker.histVolatility
+
+                # Check for option open interest (tick 101)
+                if hasattr(ticker, 'callOpenInterest') and ticker.callOpenInterest == ticker.callOpenInterest:
+                    call_oi = ticker.callOpenInterest
+                if hasattr(ticker, 'putOpenInterest') and ticker.putOpenInterest == ticker.putOpenInterest:
+                    put_oi = ticker.putOpenInterest
+
+                # Exit early if we have all data, or after minimum wait if we have volatility
+                has_volatility = iv is not None and hv is not None
+                has_oi = call_oi is not None and put_oi is not None
+
+                if has_volatility and has_oi:
+                    break
+                if has_volatility and i >= 5:  # Wait at least 2.5s for OI
+                    break
+
+            # Cancel market data subscription
+            self._ib.cancelMktData(contract)
+
+            # Calculate PCR from Open Interest
+            pcr = None
+            if call_oi is not None and put_oi is not None and call_oi > 0:
+                pcr = put_oi / call_oi
+                logger.debug(f"PCR from open interest: {pcr:.2f} (put_oi={put_oi}, call_oi={call_oi})")
+
+            # If no volatility data available, return None
+            if iv is None and hv is None:
+                logger.warning(f"No volatility data available for {symbol}. "
+                              "Options market data subscription may be required.")
+                return None
+
+            # Fetch historical IV for IV Rank and IV Percentile calculation
+            iv_rank = None
+            iv_percentile = None
+
+            if include_iv_rank and iv is not None:
+                historical_ivs = self._get_historical_iv(contract, days=252)
+                if historical_ivs and len(historical_ivs) >= 20:
+                    # Calculate IV Rank: (Current IV - Min IV) / (Max IV - Min IV) * 100
+                    iv_min = min(historical_ivs)
+                    iv_max = max(historical_ivs)
+                    if iv_max > iv_min:
+                        iv_rank = (iv - iv_min) / (iv_max - iv_min) * 100
+                        iv_rank = max(0.0, min(100.0, iv_rank))  # Clamp to 0-100
+
+                    # Calculate IV Percentile: % of days IV was lower than current
+                    count_lower = sum(1 for hist_iv in historical_ivs if hist_iv < iv)
+                    iv_percentile = count_lower / len(historical_ivs) * 100
+
+                    logger.debug(f"IV Rank calculation: current={iv:.4f}, min={iv_min:.4f}, "
+                                f"max={iv_max:.4f}, rank={iv_rank:.1f}")
+                    logger.debug(f"IV Percentile: {count_lower}/{len(historical_ivs)} = {iv_percentile:.1f}%")
+
+            iv_str = f"{iv:.4f}" if iv is not None else "N/A"
+            hv_str = f"{hv:.4f}" if hv is not None else "N/A"
+            pcr_str = f"{pcr:.2f}" if pcr is not None else "N/A"
+            ivr_str = f"{iv_rank:.1f}" if iv_rank is not None else "N/A"
+            ivp_str = f"{iv_percentile:.1f}%" if iv_percentile is not None else "N/A"
+            logger.info(f"Volatility for {normalized}: IV={iv_str}, HV={hv_str}, "
+                       f"PCR={pcr_str}, IV Rank={ivr_str}, IV Pctl={ivp_str}")
+
+            return StockVolatility(
+                symbol=normalized,
+                timestamp=datetime.now(),
+                iv=iv,
+                hv=hv,
+                iv_rank=iv_rank,
+                iv_percentile=iv_percentile / 100 if iv_percentile is not None else None,  # Store as decimal
+                pcr=pcr,
+                source=self.name,
+            )
+
+        except Exception as e:
+            logger.error(f"Error getting stock volatility for {symbol}: {e}")
+            return None
+
+    def _get_historical_iv(
+        self,
+        contract: Any,
+        days: int = 252,
+    ) -> list[float]:
+        """Fetch historical implied volatility data.
+
+        Uses reqHistoricalData with whatToShow='OPTION_IMPLIED_VOLATILITY'.
+
+        Args:
+            contract: Qualified stock contract.
+            days: Number of days of historical data to fetch.
+
+        Returns:
+            List of historical IV values (as decimals, e.g., 0.25 for 25%).
+        """
+        try:
+            # Calculate duration string
+            if days <= 365:
+                duration = "1 Y"
+            else:
+                years = (days + 364) // 365
+                duration = f"{years} Y"
+
+            # Request historical IV data
+            bars = self._ib.reqHistoricalData(
+                contract,
+                endDateTime="",  # Current time
+                durationStr=duration,
+                barSizeSetting="1 day",
+                whatToShow="OPTION_IMPLIED_VOLATILITY",
+                useRTH=True,
+                formatDate=1,
+            )
+
+            if not bars:
+                logger.warning(f"No historical IV data returned for {contract.symbol}")
+                return []
+
+            # Extract IV values from bars (close price contains IV)
+            historical_ivs = []
+            for bar in bars:
+                # IV is stored in the 'close' field of the bar
+                if bar.close == bar.close and bar.close > 0:  # NaN check and positive
+                    historical_ivs.append(bar.close)
+
+            logger.debug(f"Fetched {len(historical_ivs)} historical IV data points for {contract.symbol}")
+            return historical_ivs
+
+        except Exception as e:
+            logger.warning(f"Error fetching historical IV for {contract.symbol}: {e}")
+            return []
 
     def get_macro_data(
         self,

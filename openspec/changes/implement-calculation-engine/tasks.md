@@ -136,3 +136,17 @@
 - [x] 9.1 更新 `src/engine/__init__.py` 导出所有公共接口
 - [x] 9.2 创建 `examples/engine_demo.py` 演示各模块使用
 - [x] 9.3 运行完整测试套件确保所有测试通过
+
+## 10. 波动率数据验证
+
+- [x] 10.1 创建 `src/data/models/stock.py` 添加 `StockVolatility` 数据模型
+- [x] 10.2 实现 `IBKRProvider.get_stock_volatility()` 获取股票级别波动率指标
+  - IV (30 天隐含波动率) - tick 106
+  - HV (30 天历史波动率) - tick 104
+  - PCR (基于 Open Interest) - tick 101
+  - IV Rank / IV Percentile (基于 52 周历史 IV)
+- [x] 10.3 统一 PCR 计算口径为 Open Interest (而非 Volume)，确保港美股一致
+- [x] 10.4 创建 `tests/verification/verify_volatility_data.py` 验证脚本
+- [x] 10.5 验证美股 (TSLA) 波动率数据 - 80% 匹配率
+- [x] 10.6 验证港股 (9988.HK) 波动率数据 - 100% 匹配率
+- [x] 10.7 实现 `src/engine/position/volatility/metrics.py` 波动率评估层

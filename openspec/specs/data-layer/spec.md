@@ -152,6 +152,30 @@ TBD - created by archiving change implement-data-layer. Update Purpose after arc
 - **THEN** 连接在进入时建立
 - **AND** 连接在退出时自动关闭
 
+### Requirement: Stock Volatility Data
+
+系统 SHALL 提供股票级别的波动率指标数据，支持港美股市场。
+
+#### Scenario: 获取股票波动率指标
+- **WHEN** 用户请求股票的波动率数据
+- **THEN** 系统返回 StockVolatility 对象，包含:
+  - IV (30 天隐含波动率)
+  - HV (30 天历史波动率)
+  - PCR (看跌/看涨持仓比率，基于 Open Interest)
+  - IV Rank (当前 IV 在 52 周范围内的百分位)
+  - IV Percentile (历史 IV 低于当前值的天数占比)
+
+#### Scenario: PCR 统一计算口径
+- **WHEN** 计算 PCR 指标
+- **THEN** 统一使用 Open Interest (未平仓合约数) 计算
+- **AND** 确保港股和美股指标口径一致
+
+#### Scenario: IV Rank/Percentile 计算
+- **WHEN** 请求包含 IV Rank 的波动率数据
+- **THEN** 系统获取 52 周历史 IV 数据
+- **AND** 计算 IV Rank = (当前 IV - 最低 IV) / (最高 IV - 最低 IV) × 100
+- **AND** 计算 IV Percentile = 低于当前 IV 的天数 / 总天数 × 100
+
 ### Requirement: Data Persistence with Supabase
 
 系统 SHALL 将获取的数据持久化存储到 Supabase，支持离线查询和历史分析。

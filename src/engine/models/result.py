@@ -30,6 +30,32 @@ class FundamentalScore:
 
 
 @dataclass
+class VolatilityScore:
+    """Volatility analysis score result.
+
+    Evaluates volatility conditions for option trading strategies.
+    Higher scores indicate more favorable conditions for option selling.
+
+    Attributes:
+        score: Overall score (0-100).
+        rating: Overall rating signal for option selling favorability.
+        iv_rank: IV Rank (0-100).
+        iv_hv_ratio: IV/HV ratio.
+        iv_percentile: IV Percentile as decimal (0-1).
+        pcr: Put/Call Ratio (excluded from scoring, for reference only).
+        details: Additional details including interpretations.
+    """
+
+    score: float
+    rating: RatingSignal
+    iv_rank: float | None = None
+    iv_hv_ratio: float | None = None
+    iv_percentile: float | None = None
+    pcr: float | None = None
+    details: dict[str, Any] | None = None
+
+
+@dataclass
 class TrendResult:
     """Trend analysis result.
 
