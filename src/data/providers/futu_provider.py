@@ -621,10 +621,15 @@ class FutuProvider(DataProvider):
     def get_fundamental(self, symbol: str) -> Fundamental | None:
         """Get fundamental data for a stock.
 
-        Note: Futu API has limited fundamental data support.
-        Use Yahoo Finance for comprehensive fundamentals.
+        Note: Futu fundamental data is not implemented due to API timeout issues.
+        Use Yahoo provider for fundamental data (via routing).
+
+        Args:
+            symbol: Stock symbol.
+
+        Returns:
+            None - fundamental data not supported by this provider.
         """
-        logger.warning("Futu has limited fundamental data. Consider using Yahoo Finance.")
         return None
 
     def get_macro_data(

@@ -143,6 +143,7 @@ class RoutingConfig:
                     "option_chain",
                     "option_quote",
                     "option_quotes",
+                    # fundamental: excluded - requires paid subscription, limited fields
                     "macro_data",
                 ],
                 features={"realtime": True, "option_greeks": True},
@@ -158,6 +159,7 @@ class RoutingConfig:
                     "option_chain",
                     "option_quote",
                     "option_quotes",
+                    # fundamental: excluded - get_market_snapshot API timeout issues
                     "macro_data",
                 ],
                 features={"realtime": True, "option_greeks": True},
@@ -181,7 +183,8 @@ class RoutingConfig:
 
         # Default routing rules (order matters - first match wins)
         self.rules = [
-            # Fundamental data → Yahoo only
+            # Fundamental data → Yahoo only (most complete, free)
+            # IBKR requires paid subscription, Futu has API issues
             RoutingRule(
                 data_type="fundamental",
                 providers=["yahoo"],

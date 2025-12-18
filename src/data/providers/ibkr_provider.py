@@ -165,29 +165,55 @@ class IBKRProvider(DataProvider):
         """Create a stock contract for IBKR API.
 
         Args:
-            symbol: Stock symbol (e.g., 'AAPL').
+            symbol: Stock symbol (e.g., 'AAPL', '0700.HK').
 
         Returns:
             Stock contract object.
         """
-        # Remove any market prefix if present
-        if "." in symbol:
-            symbol = symbol.split(".")[-1]
+        symbol = symbol.upper()
+
+        # Handle HK stocks: 0700.HK or HK.00700 format
+        # IBKR uses symbol without leading zeros (e.g., 700 not 0700)
+        if symbol.endswith(".HK"):
+            # Yahoo format: 0700.HK -> symbol=700, exchange=SEHK, currency=HKD
+            code = symbol[:-3].lstrip("0")  # Remove .HK and leading zeros
+            return Stock(code, "SEHK", "HKD")
+        elif symbol.startswith("HK."):
+            # Futu format: HK.00700 -> symbol=700, exchange=SEHK, currency=HKD
+            code = symbol[3:].lstrip("0")  # Remove HK. and leading zeros
+            return Stock(code, "SEHK", "HKD")
+
+        # Handle US stocks: AAPL or US.AAPL format
+        if symbol.startswith("US."):
+            symbol = symbol[3:]  # Remove US.
+
         return Stock(symbol, "SMART", "USD")
 
     def normalize_symbol(self, symbol: str) -> str:
         """Normalize symbol to standard format.
 
+        Keeps HK suffix for Hong Kong stocks to preserve market info.
+
         Args:
             symbol: Stock symbol.
 
         Returns:
-            Symbol in standard format (without market prefix).
+            Symbol in standard format.
         """
         symbol = symbol.upper()
-        # Remove market prefix if present (e.g., US.AAPL -> AAPL)
-        if "." in symbol:
-            return symbol.split(".")[-1]
+
+        # Keep HK stocks in Yahoo format for consistency (0700.HK)
+        if symbol.endswith(".HK"):
+            return symbol
+        if symbol.startswith("HK."):
+            # Convert HK.00700 -> 00700.HK
+            code = symbol[3:]
+            return f"{code}.HK"
+
+        # For US stocks, remove market prefix
+        if symbol.startswith("US."):
+            return symbol[3:]
+
         return symbol
 
     def get_stock_quote(self, symbol: str) -> StockQuote | None:
@@ -865,10 +891,15 @@ class IBKRProvider(DataProvider):
     def get_fundamental(self, symbol: str) -> Fundamental | None:
         """Get fundamental data for a stock.
 
-        Note: IBKR API has limited fundamental data support.
-        Use Yahoo Finance for comprehensive fundamentals.
+        Note: IBKR fundamental data is not implemented.
+        Use Yahoo provider for fundamental data (via routing).
+
+        Args:
+            symbol: Stock symbol.
+
+        Returns:
+            None - fundamental data not supported by this provider.
         """
-        logger.warning("IBKR has limited fundamental data. Consider using Yahoo Finance.")
         return None
 
     def get_macro_data(
