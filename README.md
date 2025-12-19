@@ -8,7 +8,8 @@
 option_quant_trade_system/
 ├── src/
 │   ├── data/                    # 数据层
-│   │   ├── models/              # 数据模型 (Option, Stock, Greeks, etc.)
+│   │   ├── models/              # 数据模型 (Option, Stock, Greeks, Technical)
+│   │   │   └── technical.py     # TechnicalData (K线→技术指标输入)
 │   │   ├── providers/           # 数据提供者 (Yahoo, Futu, IBKR)
 │   │   ├── formatters/          # 数据格式化 (QuantConnect)
 │   │   └── cache/               # 数据缓存 (Supabase)
@@ -32,7 +33,14 @@ option_quant_trade_system/
 │       │   ├── option_metrics.py # calc_sas (策略吸引力评分)
 │       │   ├── risk_return.py   # calc_prei, calc_tgr, calc_roc
 │       │   ├── volatility/      # HV/IV/IV Rank 计算
-│       │   ├── technical/       # RSI, 支撑位计算
+│       │   ├── technical/       # 技术指标 (MA/ADX/BB/RSI/ATR)
+│       │   │   ├── metrics.py   # TechnicalScore, TechnicalSignal
+│       │   │   ├── thresholds.py # TechnicalThresholds 可配置阈值
+│       │   │   ├── moving_average.py # SMA/EMA (20/50/200)
+│       │   │   ├── adx.py       # ADX/+DI/-DI (趋势强度)
+│       │   │   ├── bollinger_bands.py # BB/%B/Bandwidth
+│       │   │   ├── rsi.py       # RSI (相对强弱)
+│       │   │   └── support.py   # 支撑/阻力位
 │       │   └── fundamental/     # 基本面指标提取
 │       ├── portfolio/           # 组合级计算
 │       │   ├── greeks_agg.py    # 组合Greeks汇总(delta$, BWD, gamma$)
@@ -371,6 +379,75 @@ prei = calc_portfolio_prei(positions)    # 组合风险暴露指数
 | Short Put | `ShortPutStrategy` | 卖出看跌期权 |
 | Covered Call | `CoveredCallStrategy` | 持股卖购 |
 | Short Strangle | `ShortStrangleStrategy` | 卖出宽跨式 |
+
+### 技术面指标模块
+
+技术指标模块专为期权卖方策略设计，提供统一接口：
+
+```python
+from src.data.models.technical import TechnicalData
+from src.engine.position.technical import (
+    calc_technical_score,
+    calc_technical_signal,
+    TechnicalThresholds,
+)
+
+# 1. 从K线数据创建 TechnicalData
+bars = provider.get_history_kline("TSLA", KlineType.DAY, start_date, end_date)
+data = TechnicalData.from_klines(bars)
+
+# 2. 计算技术指标 (TechnicalScore)
+score = calc_technical_score(data)
+print(f"SMA20: {score.sma20:.2f}")
+print(f"RSI: {score.rsi:.2f} ({score.rsi_zone})")
+print(f"ADX: {score.adx:.2f}")
+print(f"BB %B: {score.bb_percent_b:.2f}")
+print(f"ATR: {score.atr:.2f}")
+
+# 3. 生成交易信号 (TechnicalSignal)
+signal = calc_technical_signal(data)
+print(f"市场状态: {signal.market_regime} (趋势强度: {signal.trend_strength})")
+print(f"卖Put信号: {signal.sell_put_signal}")
+print(f"卖Call信号: {signal.sell_call_signal}")
+print(f"Put行权价建议: < {signal.recommended_put_strike_zone:.2f}")
+print(f"危险时段: {signal.is_dangerous_period}")
+
+# 4. 自定义阈值 (用于回测优化)
+custom_thresholds = TechnicalThresholds(
+    adx_strong=30.0,      # 更保守的强趋势阈值
+    rsi_stabilizing_low=35.0,  # 调整企稳区间
+    atr_buffer_multiplier=2.0,  # 更大的行权价buffer
+)
+signal = calc_technical_signal(data, thresholds=custom_thresholds)
+```
+
+**TechnicalScore 指标**：
+| 指标 | 字段 | 说明 |
+|------|------|------|
+| 移动平均 | sma20/50/200, ema20 | 趋势判断 |
+| MA排列 | ma_alignment | strong_bullish/bullish/neutral/bearish/strong_bearish |
+| RSI | rsi, rsi_zone | 超买/超卖判断 |
+| ADX | adx, plus_di, minus_di | 趋势强度 |
+| 布林带 | bb_upper/middle/lower, bb_percent_b, bb_bandwidth | 波动率 |
+| ATR | atr | 动态行权价buffer |
+| 支撑阻力 | support, resistance | 关键价位 |
+
+**TechnicalSignal 信号**：
+| 信号 | 说明 |
+|------|------|
+| market_regime | ranging/trending_up/trending_down |
+| allow_short_put/call/strangle | 策略是否适用 |
+| sell_put_signal/sell_call_signal | none/weak/moderate/strong |
+| recommended_put/call_strike_zone | ATR动态buffer计算 |
+| close_put_signal/close_call_signal | 平仓信号 |
+| is_dangerous_period | BB Squeeze / 强趋势 / 接近支撑阻力 |
+
+**信号逻辑**（专家Review优化）：
+- **企稳入场**：RSI 30-45 + %B 0.1-0.3 → 卖Put（避免"接飞刀"）
+- **动能衰竭**：RSI 55-70 + %B 0.7-0.9 → 卖Call
+- **强趋势屏蔽**：ADX > 45 时禁止逆势开仓
+- **BB Squeeze**：bandwidth < 0.08 禁用Strangle
+- **ATR行权价**：strike = support - 1.5×ATR
 
 ### 核心公式
 
