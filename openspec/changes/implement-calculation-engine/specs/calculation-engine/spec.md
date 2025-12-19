@@ -401,3 +401,205 @@
 #### Scenario: Calculate PREI
 - **WHEN** 提供各类风险敞口 (方向、波动率、时间等)
 - **THEN** 返回综合风险暴露指数
+
+---
+
+### Requirement: Moving Average Calculation
+系统 SHALL 计算移动平均线 (MA/EMA)。
+
+#### Scenario: Calculate SMA
+- **WHEN** 提供价格序列和周期 (20/50/200)
+- **THEN** 返回简单移动平均值
+
+#### Scenario: Calculate EMA
+- **WHEN** 提供价格序列和周期 (20/50/200)
+- **THEN** 返回指数移动平均值
+- **AND** EMA = Price × k + EMA_prev × (1-k), k = 2/(period+1)
+
+#### Scenario: Calculate MA Series
+- **WHEN** 提供完整价格序列
+- **THEN** 返回每个时间点的 SMA/EMA 值列表
+
+#### Scenario: Interpret MA Trend
+- **WHEN** 提供短期和长期均线值
+- **THEN** 返回趋势信号:
+  - BULLISH: 短期 > 长期 (金叉)
+  - BEARISH: 短期 < 长期 (死叉)
+  - NEUTRAL: 差异小于阈值
+
+#### Scenario: Insufficient Data
+- **WHEN** 价格数据点少于周期要求
+- **THEN** 返回 None
+
+---
+
+### Requirement: ADX Calculation
+系统 SHALL 计算平均趋向指数 (ADX) 用于衡量趋势强度。
+
+#### Scenario: Calculate True Range
+- **WHEN** 提供当前 High/Low 和前一日 Close
+- **THEN** TR = max(High-Low, |High-PrevClose|, |Low-PrevClose|)
+
+#### Scenario: Calculate ADX
+- **WHEN** 提供 High/Low/Close 价格序列 (至少 2×period 数据点)
+- **THEN** 返回 ADXResult 包含:
+  - adx: 平均趋向指数 (0-100)
+  - plus_di: +DI 正向指标
+  - minus_di: -DI 负向指标
+
+#### Scenario: Interpret ADX
+- **WHEN** ADX > 25 → 强趋势 (适合趋势跟踪)
+- **WHEN** ADX 20-25 → 趋势形成中
+- **WHEN** ADX < 20 → 弱趋势/震荡 (适合卖期权)
+
+#### Scenario: DI Crossover
+- **WHEN** +DI > -DI → BULLISH (上涨趋势)
+- **WHEN** -DI > +DI → BEARISH (下跌趋势)
+
+#### Scenario: Insufficient Data
+- **WHEN** 数据点少于 2×period
+- **THEN** 返回 None
+
+---
+
+### Requirement: Bollinger Bands Calculation
+系统 SHALL 计算布林带用于波动率分析和均值回归。
+
+#### Scenario: Calculate Bollinger Bands
+- **WHEN** 提供价格序列 (默认 20 周期, 2 倍标准差)
+- **THEN** 返回 BollingerBands 包含:
+  - upper: 上轨 = SMA + (num_std × σ)
+  - middle: 中轨 = SMA
+  - lower: 下轨 = SMA - (num_std × σ)
+  - bandwidth: 带宽 = (upper - lower) / middle
+  - percent_b: %B = (price - lower) / (upper - lower)
+
+#### Scenario: Calculate %B
+- **WHEN** 提供当前价格和布林带
+- **THEN** 返回 %B 值:
+  - %B > 1: 价格在上轨之上 (超买)
+  - %B = 0.5: 价格在中轨
+  - %B < 0: 价格在下轨之下 (超卖)
+
+#### Scenario: Detect Squeeze
+- **WHEN** 带宽 < 阈值 (默认 0.1)
+- **THEN** 识别为布林带收窄 (低波动率，可能即将突破)
+
+#### Scenario: Favorable for Option Selling
+- **WHEN** %B 在 0.2-0.8 区间
+- **THEN** 价格在布林带中间区域，适合卖期权
+
+#### Scenario: Insufficient Data for Bollinger Bands
+- **WHEN** 价格数据点少于周期要求
+- **THEN** 返回 None
+
+---
+
+### Requirement: ATR (Average True Range) Calculation
+系统 SHALL 计算平均真实波幅用于动态行权价buffer计算。
+
+#### Scenario: Calculate ATR
+- **WHEN** 提供 High/Low/Close 价格序列 (至少 period+1 数据点)
+- **THEN** 返回 ATR 值
+- **AND** TR = max(High-Low, |High-PrevClose|, |Low-PrevClose|)
+- **AND** ATR = SMA(TR, period)
+
+#### Scenario: ATR-based Strike Buffer
+- **WHEN** 提供支撑位和 ATR
+- **THEN** Put行权价建议区 = 支撑位 - k×ATR (k默认1.5)
+- **AND** Call行权价建议区 = 阻力位 + k×ATR
+
+---
+
+### Requirement: Technical Thresholds Configuration
+系统 SHALL 提供可配置的技术指标阈值用于回测优化。
+
+#### Scenario: Configure ADX Thresholds
+- **WHEN** 创建 TechnicalThresholds 实例
+- **THEN** 可配置以下阈值:
+  - adx_very_weak: 15 (极弱趋势，适合Strangle)
+  - adx_weak: 20 (弱趋势/震荡)
+  - adx_emerging: 25 (趋势形成中)
+  - adx_strong: 35 (强趋势，期权卖方高风险)
+  - adx_extreme: 45 (极端趋势，禁止逆势开仓)
+
+#### Scenario: Configure RSI Thresholds
+- **WHEN** 创建 TechnicalThresholds 实例
+- **THEN** 可配置以下阈值:
+  - rsi_stabilizing_low/high: 30-45 (企稳区，适合卖Put)
+  - rsi_exhaustion_low/high: 55-70 (动能衰竭区，适合卖Call)
+  - rsi_extreme_low/high: 20/80 (极端区，危险信号)
+  - rsi_close_low/high: 25/75 (平仓信号阈值)
+
+#### Scenario: Configure BB Thresholds
+- **WHEN** 创建 TechnicalThresholds 实例
+- **THEN** 可配置以下阈值:
+  - bb_squeeze: 0.08 (Squeeze阈值，变盘在即)
+  - bb_stabilizing_low/high: 0.1-0.3 (企稳区)
+  - bb_exhaustion_low/high: 0.7-0.9 (动能衰竭区)
+
+---
+
+### Requirement: Close Signal Generation
+系统 SHALL 生成持仓平仓信号。
+
+#### Scenario: Trend Reversal Close Signal
+- **WHEN** 持有Short Put且市场转为下跌趋势 (ADX>25)
+- **THEN** close_put_signal = "strong"
+- **AND** 提供平仓建议说明
+
+#### Scenario: Trend Continuation Close Signal
+- **WHEN** 持有Short Call且市场转为上涨趋势 (ADX>25)
+- **THEN** close_call_signal = "strong"
+
+#### Scenario: RSI Extreme Close Signal
+- **WHEN** RSI < 25 (极度超卖)
+- **THEN** close_put_signal = "moderate" (避险)
+- **WHEN** RSI > 75 (极度超买)
+- **THEN** close_call_signal = "moderate"
+
+---
+
+### Requirement: Danger Period Detection
+系统 SHALL 检测期权卖方危险时段。
+
+#### Scenario: BB Squeeze Danger
+- **WHEN** BB bandwidth < 0.08
+- **THEN** 标记为危险时段
+- **AND** 禁用 Strangle 策略
+- **AND** 添加警告 "BB Squeeze: 变盘在即且权利金低"
+
+#### Scenario: Strong Trend Danger
+- **WHEN** ADX > 45 且趋势明确
+- **THEN** 禁止逆势开仓
+- **AND** 添加警告 "强趋势中，谨防RSI钝化"
+
+#### Scenario: Near Support/Resistance Danger
+- **WHEN** 价格距支撑/阻力 < 2%
+- **THEN** 添加危险警告
+
+#### Scenario: Multiple Warnings
+- **WHEN** 危险警告数量 >= 2
+- **THEN** is_dangerous_period = True
+
+---
+
+### Requirement: Entry Signal Stabilization Logic
+系统 SHALL 使用"企稳确认"而非"逆向极端"逻辑生成入场信号。
+
+#### Scenario: Put Stabilization Entry
+- **WHEN** RSI 从超卖回升至 30-45 区间
+- **AND** %B 脱离下轨进入 0.1-0.3 区间
+- **THEN** sell_put_signal = "strong" (适合卖Put)
+- **RATIONALE** 避免"接飞刀"，等待企稳后再开仓
+
+#### Scenario: Call Exhaustion Entry
+- **WHEN** RSI 在 55-70 动能衰竭区
+- **AND** %B 在 0.7-0.9 高位但未极端
+- **THEN** sell_call_signal = "strong" (适合卖Call)
+- **RATIONALE** 上涨动能减弱，适合卖Call收租
+
+#### Scenario: Strong Trend Filter
+- **WHEN** RSI < 30 (超卖) 但 ADX > 45 且 -DI > +DI
+- **THEN** sell_put_signal = "none" (禁止逆势)
+- **RATIONALE** 强空头趋势中RSI可能钝化，继续下跌

@@ -150,3 +150,44 @@
 - [x] 10.5 验证美股 (TSLA) 波动率数据 - 80% 匹配率
 - [x] 10.6 验证港股 (9988.HK) 波动率数据 - 100% 匹配率
 - [x] 10.7 实现 `src/engine/position/volatility/metrics.py` 波动率评估层
+
+## 11. 技术面指标模块
+
+- [x] 11.1 更新 calculation-engine spec 添加 MA/ADX/BBand 要求
+- [x] 11.2 实现 `moving_average.py` (SMA/EMA, 20/50/200 周期)
+- [x] 11.3 实现 `adx.py` (ADX/+DI/-DI, 14 周期)
+- [x] 11.4 实现 `bollinger_bands.py` (20 周期, 2 标准差)
+- [x] 11.5 更新 `technical/__init__.py` 模块导出
+- [x] 11.6 编写单元测试 `test_technical_indicators.py`
+- [x] 11.7 创建验证脚本 `verify_technical_data.py`
+- [x] 11.8 验证美股 (TSLA) 技术指标 - 77% 匹配率 (10/13)
+  - MATCH: SMA(20/50/200), EMA(20/50), BB(上/中/下), RSI(14), +DI
+  - DIFF: EMA200 (5.85%), ADX (21.65点), -DI (5.43点)
+  - ADX 差异原因: 我们使用标准 Wilder 方法，与参考实现一致
+- [ ] 11.9 验证港股 (9988.HK) 技术指标 (待用户提供 ground truth)
+
+## 12. 技术面信号专家Review优化
+
+- [x] 12.1 新建 `src/engine/position/technical/thresholds.py` 阈值配置模块
+  - `TechnicalThresholds` dataclass 包含所有可配置阈值
+  - ADX阈值: 15/20/25/35/45 五级划分
+  - RSI阈值: 企稳区 30-45, 动能衰竭区 55-70, 极端区 <20/>80
+  - BB阈值: Squeeze<0.08, 企稳区 0.1-0.3, 衰竭区 0.7-0.9
+  - ATR strike buffer: k=1.5
+- [x] 12.2 更新 `result.py` 数据模型
+  - `TechnicalScore` 新增 `atr` 字段
+  - `TechnicalSignal` 新增 `close_put_signal`, `close_call_signal`, `close_note`
+  - `TechnicalSignal` 新增 `is_dangerous_period`, `danger_warnings`
+- [x] 12.3 修改 `calc_technical_score()` 新增 ATR 计算
+- [x] 12.4 重写 `calc_technical_signal()` 核心逻辑
+  - BB Squeeze 检测: bandwidth<0.08 禁用 Strangle
+  - 入场信号改用"企稳确认"逻辑 (非逆向极端)
+  - RSI 30-45 + %B 0.1-0.3 → 企稳卖Put
+  - RSI 55-70 + %B 0.7-0.9 → 动能衰竭卖Call
+  - 强趋势屏蔽: ADX>45 时禁止逆势开仓
+  - ATR动态行权价buffer: strike = support - 1.5*ATR
+  - 平仓信号: 趋势反转 + ADX>25 触发平仓建议
+  - 危险时段检测: ≥2个警告标记为危险时段
+- [x] 12.5 更新 `__init__.py` 导出 TechnicalThresholds
+- [x] 12.6 更新 verify_technical_data.py 显示新字段
+- [x] 12.7 运行测试验证 - 49/49 通过

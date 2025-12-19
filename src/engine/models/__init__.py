@@ -11,6 +11,8 @@ Models:
     StrategyParams: Common parameters for strategy calculations
     StrategyMetrics: Calculated metrics for a strategy
     FundamentalScore: Fundamental analysis score result
+    VolatilityScore: Volatility analysis score result
+    TechnicalScore: Technical analysis score result
     TrendResult: Trend analysis result
     SupportResistance: Support and resistance levels
 
@@ -31,7 +33,14 @@ from src.engine.models.enums import (
     VixZone,
 )
 from src.engine.models.position import Position
-from src.engine.models.result import FundamentalScore, SupportResistance, TrendResult
+from src.engine.models.result import (
+    FundamentalScore,
+    SupportResistance,
+    TechnicalScore,
+    TechnicalSignal,
+    TrendResult,
+    VolatilityScore,
+)
 from src.engine.models.strategy import OptionLeg, StrategyMetrics, StrategyParams
 
 __all__ = [
@@ -49,6 +58,9 @@ __all__ = [
     "Position",
     # Results
     "FundamentalScore",
+    "VolatilityScore",
+    "TechnicalScore",
+    "TechnicalSignal",
     "TrendResult",
     "SupportResistance",
     # Strategy
