@@ -164,7 +164,7 @@
   - MATCH: SMA(20/50/200), EMA(20/50), BB(上/中/下), RSI(14), +DI
   - DIFF: EMA200 (5.85%), ADX (21.65点), -DI (5.43点)
   - ADX 差异原因: 我们使用标准 Wilder 方法，与参考实现一致
-- [ ] 11.9 验证港股 (9988.HK) 技术指标 (待用户提供 ground truth)
+- [x] 11.9 验证港股 (9988.HK) 技术指标 - SKIPPED (待用户提供 ground truth)
 
 ## 12. 技术面信号专家Review优化
 
