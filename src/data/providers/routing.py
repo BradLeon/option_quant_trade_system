@@ -143,6 +143,7 @@ class RoutingConfig:
                     "option_chain",
                     "option_quote",
                     "option_quotes",
+                    # fundamental: excluded - requires paid subscription, limited fields
                     "macro_data",
                 ],
                 features={"realtime": True, "option_greeks": True},
@@ -158,6 +159,7 @@ class RoutingConfig:
                     "option_chain",
                     "option_quote",
                     "option_quotes",
+                    # fundamental: excluded - get_market_snapshot API timeout issues
                     "macro_data",
                 ],
                 features={"realtime": True, "option_greeks": True},
@@ -181,7 +183,8 @@ class RoutingConfig:
 
         # Default routing rules (order matters - first match wins)
         self.rules = [
-            # Fundamental data → Yahoo only
+            # Fundamental data → Yahoo only (most complete, free)
+            # IBKR requires paid subscription, Futu has API issues
             RoutingRule(
                 data_type="fundamental",
                 providers=["yahoo"],
@@ -191,15 +194,30 @@ class RoutingConfig:
                 data_type="macro_data",
                 providers=["yahoo"],
             ),
+            # US K-line/technical data → IBKR > Yahoo (Futu doesn't support US stocks)
+            # Verified: IBKR has best technical indicator accuracy for US stocks
+            RoutingRule(
+                market="us",
+                data_type="history_kline",
+                providers=["ibkr", "yahoo"],
+            ),
+            # HK K-line/technical data → IBKR > Futu > Yahoo
+            # Verified: IBKR best, Futu second, Yahoo fallback
+            RoutingRule(
+                market="hk",
+                data_type="history_kline",
+                providers=["ibkr", "futu", "yahoo"],
+            ),
             # HK options → Futu only (Yahoo doesn't support HK options)
             RoutingRule(
                 market="hk",
                 data_type=["option_chain", "option_quote", "option_quotes"],
                 providers=["futu"],
             ),
-            # HK stocks → Futu preferred
+            # HK stocks (quote) → Futu preferred
             RoutingRule(
                 market="hk",
+                data_type=["stock_quote", "stock_quotes"],
                 providers=["futu", "yahoo"],
             ),
             # US options → IBKR preferred (best Greeks), Futu fallback, Yahoo last resort
@@ -208,9 +226,10 @@ class RoutingConfig:
                 data_type=["option_chain", "option_quote", "option_quotes"],
                 providers=["ibkr", "futu", "yahoo"],
             ),
-            # US stocks → IBKR preferred (real-time)
+            # US stocks (quote) → IBKR preferred (real-time)
             RoutingRule(
                 market="us",
+                data_type=["stock_quote", "stock_quotes"],
                 providers=["ibkr", "futu", "yahoo"],
             ),
             # Default fallback → Yahoo (always available)

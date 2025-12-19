@@ -6,6 +6,67 @@ from enum import Enum
 from typing import Any
 
 
+@dataclass
+class StockVolatility:
+    """Stock-level volatility metrics.
+
+    Contains aggregate volatility data for a stock, including:
+    - IV: Implied Volatility (30-day, from option prices)
+    - HV: Historical Volatility (30-day, from price history)
+    - IV Rank: Where current IV falls in 52-week range (0-100)
+    - IV Percentile: % of days IV was lower than current (0-100)
+    - PCR: Put/Call Ratio (total put volume / call volume)
+
+    All volatility values are in decimal form (e.g., 0.25 = 25%).
+    """
+
+    symbol: str
+    timestamp: datetime
+    iv: float | None = None  # 30-day Implied Volatility
+    hv: float | None = None  # 30-day Historical Volatility
+    iv_rank: float | None = None  # IV Rank (0-100)
+    iv_percentile: float | None = None  # IV Percentile (0-100)
+    pcr: float | None = None  # Put/Call Ratio
+    source: str = "unknown"
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "symbol": self.symbol,
+            "timestamp": self.timestamp.isoformat(),
+            "iv": self.iv,
+            "hv": self.hv,
+            "iv_rank": self.iv_rank,
+            "iv_percentile": self.iv_percentile,
+            "pcr": self.pcr,
+            "source": self.source,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "StockVolatility":
+        """Create instance from dictionary."""
+        timestamp = data.get("timestamp")
+        if isinstance(timestamp, str):
+            timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        return cls(
+            symbol=data["symbol"],
+            timestamp=timestamp,
+            iv=data.get("iv"),
+            hv=data.get("hv"),
+            iv_rank=data.get("iv_rank"),
+            iv_percentile=data.get("iv_percentile"),
+            pcr=data.get("pcr"),
+            source=data.get("source", "unknown"),
+        )
+
+    @property
+    def iv_hv_ratio(self) -> float | None:
+        """Calculate IV/HV ratio."""
+        if self.iv is None or self.hv is None or self.hv == 0:
+            return None
+        return self.iv / self.hv
+
+
 class KlineType(Enum):
     """K-line time period types."""
 

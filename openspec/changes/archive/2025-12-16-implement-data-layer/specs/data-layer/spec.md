@@ -125,8 +125,6 @@
 - **WHEN** 发送请求到 Yahoo Finance
 - **THEN** 系统控制请求频率避免被封禁
 
-## MODIFIED Requirements
-
 ### Requirement: Futu OpenAPI Connection Management
 
 系统 SHALL 提供富途 OpenAPI 的连接管理能力，包括与 OpenD 网关的连接建立、心跳维护和自动重连。
@@ -151,7 +149,7 @@
 - **THEN** 连接在进入时建立
 - **AND** 连接在退出时自动关闭
 
-### Requirement: Data Persistence
+### Requirement: Data Persistence with Supabase
 
 系统 SHALL 将获取的数据持久化存储到 Supabase，支持离线查询和历史分析。
 
@@ -168,92 +166,3 @@
 - **WHEN** 用户查询某股票的历史行情
 - **THEN** 系统从 Supabase 返回指定时间范围的数据
 - **AND** 按时间升序排列
-
-## Data Provider Capabilities Summary
-
-### Provider Feature Matrix
-
-| 功能 | Yahoo Finance | Futu OpenAPI | IBKR TWS |
-|-----|---------------|--------------|----------|
-| **股票行情** | ✅ 美股/港股 | ✅ 美股/港股 | ✅ 美股 |
-| **历史K线** | ✅ | ✅ | ✅ |
-| **期权链** | ✅ 美股 | ✅ 美股/港股 | ✅ 美股 |
-| **期权Greeks** | ❌ | ✅ | ✅ |
-| **期权Bid/Ask** | ⚠️ 非交易时段为0 | ✅ | ✅ |
-| **基本面数据** | ✅ | ❌ | ❌ |
-| **宏观数据** | ✅ (VIX/TNX等) | ⚠️ 仅K线 | ⚠️ 仅K线 |
-| **Put/Call Ratio** | ✅ (计算) | ❌ | ❌ |
-| **分析师评级** | ✅ | ❌ | ❌ |
-| **实时数据** | ❌ 延迟 | ✅ | ✅ |
-| **需要网关** | ❌ | ✅ OpenD | ✅ TWS/Gateway |
-
-### Yahoo Finance Provider
-
-**最佳用途：** 基本面数据、宏观经济指标、历史数据回测
-
-**支持的数据：**
-- 股票行情：美股、港股（如 AAPL, 0700.HK）
-- 历史K线：日/周/月/分钟级别
-- 基本面：市值、PE、EPS、营收增长率、分析师评级、目标价等
-- 宏观指标：VIX、国债收益率、主要指数
-- Put/Call Ratio：通过期权链成交量计算
-
-**限制：**
-- 数据有延迟（非实时）
-- 期权不提供Greeks（Delta, Gamma, Theta, Vega 始终为 None）
-- 港股期权不支持
-
-**期权数据注意事项：**
-- **Bid/Ask**: 在非交易时段（美东时间 9:30-16:00 之外）通常为 0
-- **Open Interest**: 临近到期的期权可能显示为 0（持仓已平仓）
-- **Implied Volatility**: 当 Bid/Ask 为 0 时无法计算，显示为接近 0 的值
-- **lastPrice**: 最近成交价通常可用，但可能不是当日价格
-- **建议**: 在美股交易时段内测试以获得完整数据
-
-### Futu OpenAPI Provider
-
-**最佳用途：** 港股实时行情、期权链完整数据
-
-**支持的数据：**
-- 股票行情：美股、港股实时行情
-- 历史K线：支持多种周期
-- 期权链：完整的期权链数据
-- 期权Greeks：Delta, Gamma, Theta, Vega, Rho
-- 期权IV和Bid/Ask
-
-**限制：**
-- 需要运行 OpenD 网关
-- 不提供基本面数据
-- 期权链请求限制：时间跨度不超过30天
-- 美股需要额外订阅
-
-**API接口说明：**
-- `get_stock_quote`: 使用订阅模式获取实时行情
-- `get_option_quotes_batch`: 使用 `get_market_snapshot` 获取期权完整数据（含Greeks）
-
-### IBKR TWS Provider
-
-**最佳用途：** 美股实时交易、期权Greeks
-
-**支持的数据：**
-- 股票行情：美股实时行情（需订阅）
-- 历史K线：支持多种周期
-- 期权链：完整期权链结构
-- 期权Greeks：通过 modelGreeks 获取
-
-**限制：**
-- 需要运行 TWS 或 IB Gateway
-- 需要市场数据订阅
-- 不提供基本面数据
-- 港股支持有限
-
-### 推荐使用场景
-
-| 场景 | 推荐Provider | 原因 |
-|-----|-------------|------|
-| 策略回测 | Yahoo | 免费历史数据 |
-| 基本面分析 | Yahoo | 唯一提供完整基本面 |
-| 港股期权交易 | Futu | 支持港股期权Greeks |
-| 美股期权交易 | IBKR/Futu | 实时数据+Greeks |
-| 市场情绪分析 | Yahoo | VIX + Put/Call Ratio |
-| 宏观分析 | Yahoo | 完整宏观指标 |

@@ -13,6 +13,7 @@ from src.data.models import (
     OptionChain,
     OptionQuote,
     StockQuote,
+    StockVolatility,
 )
 from src.data.models.enums import DataType, Market
 from src.data.models.option import OptionContract
@@ -499,6 +500,36 @@ class UnifiedDataProvider:
             return self._execute_with_fallback(providers, "get_fundamental", symbol)
 
         return self._cache.get_or_fetch_fundamental(symbol, fetcher, force_refresh)
+
+    # =========================================================================
+    # Stock Volatility Methods
+    # =========================================================================
+
+    def get_stock_volatility(self, symbol: str) -> StockVolatility | None:
+        """Get stock-level volatility metrics.
+
+        Routing: IBKR only (直接提供IV/HV via Tick 23/24).
+        Other providers don't directly provide stock-level volatility.
+
+        Args:
+            symbol: Stock symbol.
+
+        Returns:
+            StockVolatility with IV/HV populated, or None if unavailable.
+        """
+        # IBKR is the only provider that directly provides stock-level volatility
+        ibkr = self._get_provider("ibkr")
+        if ibkr and hasattr(ibkr, 'get_stock_volatility'):
+            try:
+                result = ibkr.get_stock_volatility(symbol)
+                if result is not None:
+                    return result
+            except Exception as e:
+                logger.warning(f"IBKR get_stock_volatility failed: {e}")
+
+        # No fallback - other providers don't support this directly
+        logger.debug(f"Stock volatility not available for {symbol} (IBKR required)")
+        return None
 
     # =========================================================================
     # Macro Data Methods
