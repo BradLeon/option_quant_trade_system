@@ -32,6 +32,9 @@ logger = logging.getLogger(__name__)
 try:
     from ib_async import IB, Contract, Option, Stock, util
     IBKR_AVAILABLE = True
+    # Configure ib_async to use Python's logging
+    # Suppress default ib_async logging to avoid duplicate/encoded messages
+    logging.getLogger("ib_async").setLevel(logging.CRITICAL)
 except ImportError:
     IBKR_AVAILABLE = False
     logger.warning("ib_async not installed. IBKR provider will be unavailable.")
@@ -91,7 +94,12 @@ class IBKRProvider(DataProvider):
 
         self._host = host or os.getenv("IBKR_HOST", "127.0.0.1")
         self._port = port or int(os.getenv("IBKR_PORT", "7497"))
-        self._client_id = client_id or int(os.getenv("IBKR_CLIENT_ID", "1"))
+        # Generate unique clientId based on process ID to avoid conflicts
+        # TWS GUI uses 0, other apps commonly use 1-10
+        # Use PID modulo to get a number in range 100-999
+        # Note: Ignore IBKR_CLIENT_ID env var to ensure unique IDs per process
+        default_client_id = 100 + (os.getpid() % 900)
+        self._client_id = client_id if client_id is not None else default_client_id
         self._timeout = timeout
         self._ib: Any = None
         self._connected = False
@@ -412,13 +420,12 @@ class IBKRProvider(DataProvider):
                 chain = chains[0]
 
             # Convert expiry_min_days/max_days to dates
+            # ONLY apply min/max days defaults if expiry_start/expiry_end are not provided
             today = date.today()
-            if expiry_min_days is not None:
-                min_date = today + timedelta(days=expiry_min_days)
-                expiry_start = max(expiry_start, min_date) if expiry_start else min_date
-            if expiry_max_days is not None:
-                max_date = today + timedelta(days=expiry_max_days)
-                expiry_end = min(expiry_end, max_date) if expiry_end else max_date
+            if expiry_start is None and expiry_min_days is not None:
+                expiry_start = today + timedelta(days=expiry_min_days)
+            if expiry_end is None and expiry_max_days is not None:
+                expiry_end = today + timedelta(days=expiry_max_days)
 
             # Filter expirations by date range
             expirations = []

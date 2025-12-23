@@ -39,3 +39,24 @@ class PositionSide(Enum):
 
     LONG = "long"  # Buy
     SHORT = "short"  # Sell
+
+
+class TermStructure(Enum):
+    """VIX term structure state.
+
+    Describes the relationship between short-term and longer-term VIX.
+    - CONTANGO: VIX3M > VIX (normal market, complacency)
+    - FLAT: VIX3M ≈ VIX (transition state)
+    - BACKWARDATION: VIX3M < VIX (fear/panic, elevated short-term volatility)
+    """
+
+    CONTANGO = "contango"
+    FLAT = "flat"
+    BACKWARDATION = "backwardation"
+
+
+class MarketType(Enum):
+    """Market type for sentiment analysis."""
+
+    US = "us"
+    HK = "hk"

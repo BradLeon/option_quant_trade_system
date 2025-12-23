@@ -449,6 +449,64 @@ signal = calc_technical_signal(data, thresholds=custom_thresholds)
 - **BB Squeeze**：bandwidth < 0.08 禁用Strangle
 - **ATR行权价**：strike = support - 1.5×ATR
 
+### 市场情绪模块
+
+市场情绪模块提供宏观层面的市场状态分析，用于账户级风险管理决策：
+
+```python
+from src.data.providers import UnifiedDataProvider
+from src.engine.account.sentiment.data_bridge import (
+    get_us_sentiment,
+    get_hk_sentiment,
+)
+from src.engine.account.sentiment import get_sentiment_summary
+
+provider = UnifiedDataProvider()
+
+# US 市场情绪分析
+us_sentiment = get_us_sentiment(provider)
+print(f"VIX: {us_sentiment.vix_value:.1f} ({us_sentiment.vix_zone.value})")
+print(f"VIX信号: {us_sentiment.vix_signal.value}")  # bullish/bearish/neutral
+print(f"期限结构: {us_sentiment.term_structure.structure.value if us_sentiment.term_structure else 'N/A'}")
+print(f"SPY趋势: {us_sentiment.primary_trend.signal.value if us_sentiment.primary_trend else 'N/A'}")
+print(f"综合评分: {us_sentiment.composite_score:.1f} ({us_sentiment.composite_signal.value})")
+print(f"适合卖权: {us_sentiment.favorable_for_selling}")
+
+# HK 市场情绪分析
+hk_sentiment = get_hk_sentiment(provider)
+print(get_sentiment_summary(hk_sentiment))
+```
+
+**MarketSentiment 字段**：
+| 字段 | 说明 |
+|------|------|
+| vix_value | VIX/VHSI 当前值 |
+| vix_zone | LOW/NORMAL/ELEVATED/HIGH/EXTREME |
+| vix_signal | 逆向信号（高恐慌=bullish，低恐慌=bearish） |
+| term_structure | VIX期限结构（contango/backwardation/flat） |
+| primary_trend | 主指数趋势（SPY/HSI） |
+| secondary_trend | 次指数趋势（QQQ/HSTECH） |
+| pcr | Put/Call Ratio 分析 |
+| composite_score | 综合评分（-100到+100） |
+| composite_signal | 综合信号（>20=bullish, <-20=bearish） |
+| favorable_for_selling | 是否适合卖权策略 |
+
+**数据源配置**：
+| 市场 | 数据项 | 数据源 |
+|------|--------|--------|
+| US | VIX/VIX3M | Yahoo (^VIX, ^VIX3M) |
+| US | SPY/QQQ价格 | Yahoo/Futu/IBKR |
+| US | PCR | Yahoo (计算) |
+| HK | VHSI | Futu (800125.HK) 或 IBKR (2800.HK IV) |
+| HK | HSI价格 | Futu (800000.HK) 或 Yahoo (^HSI) |
+| HK | HSTECH价格 | Futu (3032.HK) |
+| HK | PCR | IBKR (2800.HK Open Interest) |
+
+**注意事项**：
+- HK市场的`vhsi_3m_proxy`目前不可用（IBKR远期期权合约未上市），term_structure返回None
+- 综合评分采用加权计算：VIX(25%) + 期限结构(15%) + 主趋势(25%) + 次趋势(15%) + PCR(20%)
+- 缺失数据时权重自动重新分配
+
 ### 核心公式
 
 - **期望收益**: `E[π] = C - N(-d2) × [K - e^(rT) × S × N(-d1) / N(-d2)]`
