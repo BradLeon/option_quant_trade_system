@@ -10,9 +10,15 @@ from typing import Any
 from dotenv import load_dotenv
 
 from src.data.models import (
+    AccountCash,
+    AccountPosition,
+    AccountSummary,
+    AccountType,
+    AssetType,
     Fundamental,
     KlineBar,
     MacroData,
+    Market,
     OptionChain,
     OptionQuote,
     StockQuote,
@@ -20,6 +26,7 @@ from src.data.models import (
 from src.data.models.option import Greeks, OptionContract, OptionType
 from src.data.models.stock import KlineType
 from src.data.providers.base import (
+    AccountProvider,
     ConnectionError,
     DataNotFoundError,
     DataProvider,
@@ -33,10 +40,13 @@ try:
     from futu import (
         KLType,
         OpenQuoteContext,
+        OpenSecTradeContext,
         OptionType as FutuOptionType,
         RET_ERROR,
         RET_OK,
         SubType,
+        TrdEnv,
+        TrdMarket,
     )
     FUTU_AVAILABLE = True
 except ImportError:
@@ -69,32 +79,38 @@ if FUTU_AVAILABLE:
     }
 
 
-class FutuProvider(DataProvider):
+class FutuProvider(DataProvider, AccountProvider):
     """Futu OpenAPI data provider.
 
     Requires OpenD gateway to be running locally.
+    Supports both market data and account/position queries.
 
     Usage:
         with FutuProvider() as provider:
             quote = provider.get_stock_quote("US.AAPL")
+            positions = provider.get_positions()
     """
 
     def __init__(
         self,
         host: str | None = None,
         port: int | None = None,
+        account_type: AccountType = AccountType.PAPER,
     ) -> None:
         """Initialize Futu provider.
 
         Args:
             host: OpenD gateway host. Defaults to env var or 127.0.0.1.
             port: OpenD gateway port. Defaults to env var or 11111.
+            account_type: Account type for trading context (PAPER or REAL).
         """
         load_dotenv()
 
         self._host = host or os.getenv("FUTU_HOST", "127.0.0.1")
         self._port = port or int(os.getenv("FUTU_PORT", "11111"))
+        self._account_type = account_type
         self._quote_ctx: Any = None
+        self._trd_ctx: Any = None  # Trade context for account queries
         self._connected = False
         self._lock = Lock()
 
@@ -660,3 +676,439 @@ class FutuProvider(DataProvider):
             )
             for k in klines
         ]
+
+    # Account Provider Methods
+
+    def _get_trade_context(self, account_type: AccountType) -> Any:
+        """Get or create trade context for account operations.
+
+        Args:
+            account_type: Real or paper account.
+
+        Returns:
+            OpenSecTradeContext instance.
+        """
+        if not FUTU_AVAILABLE:
+            raise ConnectionError("futu-api is not installed")
+
+        # Map account type to TrdEnv
+        trd_env = TrdEnv.SIMULATE if account_type == AccountType.PAPER else TrdEnv.REAL
+
+        # Create trade context if not exists or env changed
+        if self._trd_ctx is None:
+            self._trd_ctx = OpenSecTradeContext(
+                host=self._host,
+                port=self._port,
+            )
+            logger.info(f"Created Futu trade context (env={trd_env})")
+
+        return self._trd_ctx
+
+    def _close_trade_context(self) -> None:
+        """Close trade context if open."""
+        if self._trd_ctx:
+            try:
+                self._trd_ctx.close()
+            except Exception as e:
+                logger.warning(f"Error closing trade context: {e}")
+            finally:
+                self._trd_ctx = None
+
+    def _safe_float(self, val: Any, default: float = 0.0) -> float:
+        """Safely convert value to float, handling 'N/A' and other invalid values.
+
+        Args:
+            val: Value to convert.
+            default: Default value if conversion fails.
+
+        Returns:
+            Float value or default.
+        """
+        if val is None or val == "N/A" or val == "":
+            return default
+        try:
+            f = float(val)
+            return f if f == f else default  # NaN check
+        except (ValueError, TypeError):
+            return default
+
+    def get_account_summary(
+        self,
+        account_type: AccountType = AccountType.PAPER,
+    ) -> AccountSummary | None:
+        """Get account summary information.
+
+        Args:
+            account_type: Real or paper account.
+
+        Returns:
+            AccountSummary instance or None if not available.
+        """
+        try:
+            trd_ctx = self._get_trade_context(account_type)
+            trd_env = TrdEnv.SIMULATE if account_type == AccountType.PAPER else TrdEnv.REAL
+
+            # Get account info
+            ret, data = trd_ctx.accinfo_query(trd_env=trd_env)
+
+            if ret != RET_OK:
+                logger.error(f"Get account info failed: {data}")
+                return None
+
+            if data.empty:
+                logger.warning("No account info returned from Futu")
+                return None
+
+            row = data.iloc[0]
+
+            # Extract values using safe_float to handle 'N/A' strings
+            total_assets = self._safe_float(row.get("total_assets", 0))
+            cash = self._safe_float(row.get("cash", 0))
+            market_value = self._safe_float(row.get("market_val", 0))
+            unrealized_pnl = self._safe_float(row.get("unrealized_pl", 0))
+            margin_used = self._safe_float(row.get("maintenance_margin")) if row.get("maintenance_margin") not in (None, "N/A") else None
+            margin_available = self._safe_float(row.get("avl_withdrawal_cash")) if row.get("avl_withdrawal_cash") not in (None, "N/A") else None
+            buying_power = self._safe_float(row.get("max_power_short")) if row.get("max_power_short") not in (None, "N/A") else None
+
+            # Get account ID
+            account_id = str(row.get("acc_id", "unknown"))
+
+            logger.info(f"Futu account summary: TotalAssets={total_assets}, Cash={cash}, "
+                       f"MarketValue={market_value}, UnrealizedPnL={unrealized_pnl}")
+
+            return AccountSummary(
+                broker="futu",
+                account_type=account_type,
+                account_id=account_id,
+                total_assets=total_assets,
+                cash=cash,
+                market_value=market_value,
+                unrealized_pnl=unrealized_pnl,
+                margin_used=margin_used,
+                margin_available=margin_available,
+                buying_power=buying_power,
+                cash_by_currency=None,  # Futu returns aggregated values
+                timestamp=datetime.now(),
+            )
+
+        except Exception as e:
+            logger.error(f"Error getting account summary: {e}")
+            return None
+
+    def _parse_futu_option_symbol(self, code: str, stock_name: str) -> dict | None:
+        """Parse Futu option symbol to extract option details.
+
+        Futu option format: HK.ALB260129C160000
+        - ALB = underlying (阿里巴巴)
+        - 260129 = expiry date (YYMMDD)
+        - C = Call, P = Put
+        - 160000 = strike * 1000
+
+        Args:
+            code: Option symbol code (e.g., HK.ALB260129C160000).
+            stock_name: Stock name that may contain option info (e.g., "阿里 260129 160.00 购").
+
+        Returns:
+            Dict with option details or None if not an option.
+        """
+        import re
+
+        # Remove market prefix
+        symbol = code
+        if "." in code:
+            symbol = code.split(".", 1)[1]
+
+        # Pattern: <underlying><YYMMDD><C/P><strike*1000>
+        # Options have numeric date + C/P + numeric strike at the end
+        option_pattern = r'^([A-Z]+)(\d{6})([CP])(\d+)$'
+        match = re.match(option_pattern, symbol)
+
+        if match:
+            underlying = match.group(1)
+            expiry_str = match.group(2)  # YYMMDD
+            option_type_char = match.group(3)
+            strike_raw = match.group(4)
+
+            # Parse expiry date
+            try:
+                expiry_date = datetime.strptime(f"20{expiry_str}", "%Y%m%d").strftime("%Y-%m-%d")
+            except ValueError:
+                expiry_date = expiry_str
+
+            # Parse strike price (divide by 1000)
+            try:
+                strike = float(strike_raw) / 1000
+            except ValueError:
+                strike = 0.0
+
+            return {
+                "underlying": underlying,
+                "expiry": expiry_date,
+                "option_type": "call" if option_type_char == "C" else "put",
+                "strike": strike,
+            }
+
+        # Also check stock_name for option indicators (购=call, 沽=put)
+        if stock_name and ("购" in stock_name or "沽" in stock_name or "认购" in stock_name or "认沽" in stock_name):
+            # Try to parse from stock_name: "阿里 260129 160.00 购"
+            name_pattern = r'.*?(\d{6})\s+(\d+\.?\d*)\s*(购|沽|认购|认沽)'
+            name_match = re.search(name_pattern, stock_name)
+            if name_match:
+                expiry_str = name_match.group(1)
+                strike_str = name_match.group(2)
+                type_str = name_match.group(3)
+
+                try:
+                    expiry_date = datetime.strptime(f"20{expiry_str}", "%Y%m%d").strftime("%Y-%m-%d")
+                except ValueError:
+                    expiry_date = expiry_str
+
+                try:
+                    strike = float(strike_str)
+                except ValueError:
+                    strike = 0.0
+
+                return {
+                    "underlying": symbol[:3] if len(symbol) > 3 else symbol,
+                    "expiry": expiry_date,
+                    "option_type": "call" if "购" in type_str else "put",
+                    "strike": strike,
+                }
+
+        return None
+
+    def get_positions(
+        self,
+        account_type: AccountType = AccountType.PAPER,
+        fetch_greeks: bool = True,
+    ) -> list[AccountPosition]:
+        """Get all positions in the account.
+
+        Args:
+            account_type: Real or paper account.
+            fetch_greeks: Whether to fetch Greeks for option positions.
+                Set to False when using a centralized Greeks fetcher (e.g., UnifiedProvider).
+
+        Returns:
+            List of AccountPosition instances.
+        """
+        try:
+            trd_ctx = self._get_trade_context(account_type)
+            trd_env = TrdEnv.SIMULATE if account_type == AccountType.PAPER else TrdEnv.REAL
+
+            # Get positions
+            ret, data = trd_ctx.position_list_query(trd_env=trd_env)
+
+            if ret != RET_OK:
+                logger.error(f"Get positions failed: {data}")
+                return []
+
+            if data.empty:
+                logger.info("No positions found in Futu account")
+                return []
+
+            results = []
+            for _, row in data.iterrows():
+                code = row.get("code", "")
+                stock_name = row.get("stock_name", "")
+
+                # Determine market and currency from code prefix or position_market
+                position_market = row.get("position_market", "")
+                currency = row.get("currency", "USD")
+
+                market = Market.US
+                if code.startswith("HK.") or position_market == "HK":
+                    market = Market.HK
+                    if not currency:
+                        currency = "HKD"
+                elif code.startswith("SH.") or code.startswith("SZ."):
+                    market = Market.CN
+                    if not currency:
+                        currency = "CNY"
+
+                # Check if this is an option by parsing the symbol
+                option_info = self._parse_futu_option_symbol(code, stock_name)
+                asset_type = AssetType.OPTION if option_info else AssetType.STOCK
+
+                # Use average_cost instead of cost_price for correct avg cost
+                # cost_price can be negative due to realized P&L adjustments
+                avg_cost = self._safe_float(row.get("average_cost", 0))
+
+                # Create position
+                position = AccountPosition(
+                    symbol=code,
+                    asset_type=asset_type,
+                    market=market,
+                    quantity=self._safe_float(row.get("qty", 0)),
+                    avg_cost=avg_cost,
+                    market_value=self._safe_float(row.get("market_val", 0)),
+                    unrealized_pnl=self._safe_float(row.get("unrealized_pl", 0)),
+                    currency=currency,
+                    broker="futu",
+                    last_updated=datetime.now(),
+                )
+
+                # Add option-specific fields if applicable
+                if option_info:
+                    position.strike = option_info["strike"]
+                    position.expiry = option_info["expiry"]
+                    position.option_type = option_info["option_type"]
+                else:
+                    # Stock Greeks: delta = +1 (long) or -1 (short), others = 0
+                    position.delta = 1.0 if position.quantity > 0 else -1.0 if position.quantity < 0 else 0.0
+                    position.gamma = 0.0
+                    position.theta = 0.0
+                    position.vega = 0.0
+                    position.iv = None
+
+                results.append(position)
+
+            # Fetch Greeks for option positions (if enabled)
+            if fetch_greeks:
+                option_positions = [p for p in results if p.asset_type == AssetType.OPTION]
+                if option_positions:
+                    self._fetch_option_greeks(option_positions)
+
+            logger.info(f"Found {len(results)} positions in Futu account")
+            return results
+
+        except Exception as e:
+            logger.error(f"Error getting positions: {e}")
+            return []
+
+    def _fetch_option_greeks(self, positions: list[AccountPosition]) -> None:
+        """Fetch Greeks for option positions using get_stock_quote.
+
+        Uses get_stock_quote instead of get_market_snapshot as it's more reliable
+        and returns option Greeks directly.
+
+        Args:
+            positions: List of option positions to update with Greeks.
+        """
+        if not positions:
+            return
+
+        symbols = [p.symbol for p in positions]
+        logger.debug(f"Fetching Greeks for option symbols: {symbols}")
+
+        # Try up to 3 times with increasing delay
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                self._check_rate_limit("quote")
+                # Use get_stock_quote instead of get_market_snapshot
+                ret, data = self._quote_ctx.get_stock_quote(symbols)
+
+                if ret != RET_OK:
+                    if "Timeout" in str(data) and attempt < max_retries - 1:
+                        logger.warning(f"Timeout fetching option Greeks (attempt {attempt+1}/{max_retries}), retrying...")
+                        import time
+                        time.sleep(1)  # Wait before retry
+                        continue
+                    logger.warning(f"Failed to fetch option Greeks: {data}")
+                    return
+
+                if data.empty:
+                    logger.warning(f"No quote data returned for options: {symbols}")
+                    return
+
+                # Log available columns for debugging
+                logger.debug(f"Quote columns: {list(data.columns)}")
+
+                # Build lookup by symbol
+                greeks_lookup = {}
+                for _, row in data.iterrows():
+                    code = row["code"]
+                    # get_stock_quote returns Greeks directly (not with option_ prefix)
+                    delta = self._safe_float(row.get("delta"))
+                    gamma = self._safe_float(row.get("gamma"))
+                    theta = self._safe_float(row.get("theta"))
+                    vega = self._safe_float(row.get("vega"))
+                    iv = self._safe_float(row.get("implied_volatility"))
+                    logger.debug(f"Option {code}: delta={delta}, gamma={gamma}, theta={theta}, vega={vega}, iv={iv}")
+                    greeks_lookup[code] = {
+                        "delta": delta,
+                        "gamma": gamma,
+                        "theta": theta,
+                        "vega": vega,
+                        "iv": iv,
+                    }
+
+                # Update positions with Greeks
+                for pos in positions:
+                    if pos.symbol in greeks_lookup:
+                        g = greeks_lookup[pos.symbol]
+                        # Don't filter out 0 values - they might be valid
+                        pos.delta = g["delta"] if g["delta"] is not None else None
+                        pos.gamma = g["gamma"] if g["gamma"] is not None else None
+                        pos.theta = g["theta"] if g["theta"] is not None else None
+                        pos.vega = g["vega"] if g["vega"] is not None else None
+                        # IV is stored as percentage, convert to decimal
+                        pos.iv = g["iv"] / 100.0 if g["iv"] else None
+                        logger.debug(f"Updated {pos.symbol}: delta={pos.delta}, iv={pos.iv}")
+                    else:
+                        logger.warning(f"No Greeks found for {pos.symbol}")
+
+                logger.info(f"Fetched Greeks for {len(positions)} option positions")
+                return  # Success, exit retry loop
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Error fetching option Greeks (attempt {attempt+1}/{max_retries}): {e}")
+                    import time
+                    time.sleep(1)
+                else:
+                    logger.warning(f"Error fetching option Greeks after {max_retries} attempts: {e}")
+
+    def get_cash_balances(
+        self,
+        account_type: AccountType = AccountType.PAPER,
+    ) -> list[AccountCash]:
+        """Get cash balances by currency.
+
+        Note: Futu API returns aggregated cash, not by currency.
+        This method returns a single cash entry with the account's cash balance.
+
+        Args:
+            account_type: Real or paper account.
+
+        Returns:
+            List of AccountCash instances.
+        """
+        try:
+            trd_ctx = self._get_trade_context(account_type)
+            trd_env = TrdEnv.SIMULATE if account_type == AccountType.PAPER else TrdEnv.REAL
+
+            # Get account info
+            ret, data = trd_ctx.accinfo_query(trd_env=trd_env)
+
+            if ret != RET_OK:
+                logger.error(f"Get account info failed: {data}")
+                return []
+
+            if data.empty:
+                return []
+
+            row = data.iloc[0]
+            cash = float(row.get("cash", 0))
+            available = float(row.get("avl_withdrawal_cash", 0))
+
+            # Futu returns aggregated values, assume HKD for HK accounts
+            # This is a simplification - actual currency depends on account type
+            currency = "HKD"
+
+            results = [
+                AccountCash(
+                    currency=currency,
+                    balance=cash,
+                    available=available,
+                    broker="futu",
+                )
+            ]
+
+            logger.info(f"Found cash balance: {cash} {currency}")
+            return results
+
+        except Exception as e:
+            logger.error(f"Error getting cash balances: {e}")
+            return []

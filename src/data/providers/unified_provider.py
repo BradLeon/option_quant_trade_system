@@ -7,6 +7,8 @@ from typing import Any, Callable, TypeVar
 
 from src.data.cache import DataCache
 from src.data.models import (
+    AccountPosition,
+    AssetType,
     Fundamental,
     KlineBar,
     MacroData,
@@ -479,6 +481,104 @@ class UnifiedDataProvider:
             if char.isdigit():
                 return option_symbol[:i] if i > 0 else option_symbol[:4]
         return option_symbol[:4]
+
+    def fetch_option_greeks_for_positions(
+        self,
+        positions: list[AccountPosition],
+    ) -> None:
+        """Fetch option Greeks for positions using intelligent routing.
+
+        Updates positions in-place with Greeks data (delta, gamma, theta, vega, iv).
+        Uses routing rules to select the best provider for each market:
+        - HK options → IBKR > Futu
+        - US options → IBKR > Futu > Yahoo
+
+        Args:
+            positions: List of positions to update with Greeks.
+                       Only option positions will be processed.
+        """
+        # Filter to option positions only
+        option_positions = [
+            p for p in positions if p.asset_type == AssetType.OPTION
+        ]
+
+        if not option_positions:
+            logger.debug("No option positions to fetch Greeks for")
+            return
+
+        logger.info(f"Fetching Greeks for {len(option_positions)} option positions")
+
+        # Group positions by market for efficient routing
+        by_market: dict[Market, list[AccountPosition]] = {}
+        for pos in option_positions:
+            market = self._detect_market(pos.symbol)
+            if market not in by_market:
+                by_market[market] = []
+            by_market[market].append(pos)
+
+        # Fetch Greeks for each market group
+        for market, market_positions in by_market.items():
+            self._fetch_greeks_for_market(market, market_positions)
+
+    def _fetch_greeks_for_market(
+        self,
+        market: Market,
+        positions: list[AccountPosition],
+    ) -> None:
+        """Fetch Greeks for positions in a specific market.
+
+        Args:
+            market: Market for routing.
+            positions: List of positions in this market.
+        """
+        if not positions:
+            return
+
+        # Get providers for option quotes in this market
+        providers = self._route(DataType.OPTION_QUOTE, positions[0].symbol)
+
+        if not providers:
+            logger.warning(f"No providers available for {market.value} option Greeks")
+            return
+
+        logger.debug(
+            f"Fetching Greeks for {len(positions)} {market.value} options, "
+            f"providers: {[p.name for p in providers]}"
+        )
+
+        # Try each provider until one succeeds
+        for provider in providers:
+            try:
+                success_count = 0
+                for pos in positions:
+                    quote = provider.get_option_quote(pos.symbol)
+                    if quote:
+                        # Update position with Greeks from quote
+                        pos.delta = quote.delta
+                        pos.gamma = quote.gamma
+                        pos.theta = quote.theta
+                        pos.vega = quote.vega
+                        pos.iv = quote.iv
+                        success_count += 1
+                        logger.debug(
+                            f"Updated Greeks for {pos.symbol}: "
+                            f"delta={pos.delta}, iv={pos.iv}"
+                        )
+
+                if success_count > 0:
+                    logger.info(
+                        f"Fetched Greeks for {success_count}/{len(positions)} "
+                        f"{market.value} options via {provider.name}"
+                    )
+                    return  # Success, no need for fallback
+
+            except Exception as e:
+                logger.warning(
+                    f"Provider {provider.name} failed for {market.value} Greeks: {e}, "
+                    f"trying fallback..."
+                )
+
+        logger.warning(f"All providers failed for {market.value} option Greeks")
 
     # =========================================================================
     # Fundamental Data Methods

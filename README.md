@@ -9,8 +9,12 @@ option_quant_trade_system/
 ├── src/
 │   ├── data/                    # 数据层
 │   │   ├── models/              # 数据模型 (Option, Stock, Greeks, Technical)
+│   │   │   ├── account.py       # AccountPosition, AccountSummary, ConsolidatedPortfolio
 │   │   │   └── technical.py     # TechnicalData (K线→技术指标输入)
 │   │   ├── providers/           # 数据提供者 (Yahoo, Futu, IBKR)
+│   │   │   ├── account_aggregator.py  # 多券商账户聚合
+│   │   │   └── unified_provider.py    # 统一数据路由 (含Greeks路由)
+│   │   ├── currency/            # 汇率转换 (Yahoo Finance FX)
 │   │   ├── formatters/          # 数据格式化 (QuantConnect)
 │   │   └── cache/               # 数据缓存 (Supabase)
 │   └── engine/                  # 计算引擎层
@@ -97,6 +101,9 @@ python examples/data_layer_demo.py --ibkr
 | **Put/Call Ratio** | ✅ (计算) | ❌ | ❌ |
 | **分析师评级** | ✅ | ❌ | ❌ |
 | **实时数据** | ❌ 延迟 | ✅ | ✅ |
+| **账户持仓** | ❌ | ✅ | ✅ |
+| **现金余额** | ❌ | ✅ | ✅ |
+| **期权Greeks路由** | N/A | fallback | 首选 |
 | **需要网关** | ❌ | ✅ OpenD | ✅ TWS/Gateway |
 
 ### Yahoo Finance Provider
@@ -506,6 +513,119 @@ print(get_sentiment_summary(hk_sentiment))
 - HK市场的`vhsi_3m_proxy`目前不可用（IBKR远期期权合约未上市），term_structure返回None
 - 综合评分采用加权计算：VIX(25%) + 期限结构(15%) + 主趋势(25%) + 次趋势(15%) + PCR(20%)
 - 缺失数据时权重自动重新分配
+
+## 账户持仓模块 (Account & Position)
+
+多券商账户聚合模块，支持从 IBKR 和 Futu 获取持仓，统一汇率转换，并使用智能路由获取期权 Greeks。
+
+### 数据模型
+
+```python
+from src.data.models import (
+    AccountType,      # REAL / PAPER
+    AssetType,        # STOCK / OPTION / CASH
+    AccountPosition,  # 单个持仓 (含 Greeks)
+    AccountCash,      # 现金余额
+    AccountSummary,   # 单券商账户概要
+    ConsolidatedPortfolio,  # 合并后的投资组合
+)
+```
+
+**AccountPosition 字段**：
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| symbol | str | 标的代码 (AAPL, 0700.HK) |
+| asset_type | AssetType | 资产类型 |
+| market | Market | 市场 (US/HK) |
+| quantity | float | 持仓数量 |
+| avg_cost | float | 平均成本 |
+| market_value | float | 市值 |
+| unrealized_pnl | float | 未实现盈亏 |
+| currency | str | 货币 (USD/HKD) |
+| strike | float | 期权行权价 |
+| expiry | str | 期权到期日 |
+| option_type | str | call/put |
+| delta/gamma/theta/vega | float | 期权 Greeks |
+| iv | float | 隐含波动率 |
+| broker | str | 券商 (ibkr/futu) |
+
+### 使用示例
+
+```python
+from src.data.providers import (
+    IBKRProvider, FutuProvider, UnifiedDataProvider
+)
+from src.data.providers.account_aggregator import AccountAggregator
+from src.data.models import AccountType
+
+# 连接多个券商
+with IBKRProvider(account_type=AccountType.REAL) as ibkr, \
+     FutuProvider() as futu:
+
+    # 创建 UnifiedProvider 用于期权 Greeks 路由
+    # 路由规则: HK期权 → IBKR > Futu, US期权 → IBKR > Futu > Yahoo
+    unified = UnifiedDataProvider(
+        ibkr_provider=ibkr,
+        futu_provider=futu,
+    )
+
+    # 创建账户聚合器
+    aggregator = AccountAggregator(
+        ibkr_provider=ibkr,
+        futu_provider=futu,
+        unified_provider=unified,  # 启用智能Greeks路由
+    )
+
+    # 获取合并后的投资组合
+    portfolio = aggregator.get_consolidated_portfolio(
+        account_type=AccountType.REAL,
+        base_currency="USD",
+    )
+
+    print(f"总资产: ${portfolio.total_value_usd:,.2f}")
+    print(f"未实现盈亏: ${portfolio.total_unrealized_pnl_usd:,.2f}")
+
+    # 查看持仓
+    for pos in portfolio.positions:
+        print(f"[{pos.broker}] {pos.symbol}: {pos.quantity} @ {pos.market_value:,.2f} {pos.currency}")
+        if pos.asset_type == AssetType.OPTION:
+            print(f"  Delta: {pos.delta}, IV: {pos.iv}")
+
+    # 按券商查看
+    for broker, summary in portfolio.by_broker.items():
+        print(f"{broker}: 总资产={summary.total_assets:,.2f}")
+```
+
+### 期权 Greeks 路由
+
+系统使用智能路由获取期权 Greeks，解决不同券商的数据能力差异：
+
+**路由规则**：
+| 市场 | 数据类型 | Provider优先级 | 原因 |
+|------|---------|---------------|------|
+| HK | option_quote | IBKR > Futu | IBKR提供完整IV/Greeks，Futu需额外订阅 |
+| US | option_quote | IBKR > Futu > Yahoo | IBKR数据最全，Yahoo无Greeks |
+
+**实现原理**：
+1. `AccountAggregator` 调用各券商 `get_positions(fetch_greeks=False)` 获取持仓
+2. 收集完毕后调用 `UnifiedProvider.fetch_option_greeks_for_positions()` 统一获取 Greeks
+3. 根据持仓的 market 属性，选择合适的 provider
+4. 失败时自动 fallback 到下一个 provider
+
+### 汇率转换
+
+```python
+from src.data.currency import CurrencyConverter
+
+converter = CurrencyConverter()
+
+# 自动从 Yahoo Finance 获取实时汇率
+hkd_to_usd = converter.convert(10000, "HKD", "USD")
+print(f"10,000 HKD = ${hkd_to_usd:,.2f} USD")
+
+# 获取所有汇率
+rates = converter.get_all_rates()  # {"HKD": 0.128, "CNY": 0.138, ...}
+```
 
 ### 核心公式
 
