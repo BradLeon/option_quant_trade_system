@@ -239,7 +239,51 @@ position_level:
 
 **理由**: 飞书卡片美观易读，在移动端体验好；结构化字段便于快速浏览。
 
-### 6. 命令行接口设计
+### 6. 分层架构原则（2024-12-23 重构）
+
+**背景**: 初始实现中，业务层（`src/business/`）各模块定义了自己的 `DataProvider` Protocol，并在内部实现了一些已在 engine 层存在的计算逻辑（如 VIX 百分位计算、趋势判断等）。这违反了分层架构原则。
+
+**重构决策**:
+
+业务层遵循以下分层职责：
+- **data_layer** (`src/data/`): 通过 `UnifiedDataProvider` 统一提供原始数据
+- **engine_layer** (`src/engine/`): 提供所有指标计算和分析函数
+- **business_layer** (`src/business/`): 专注业务逻辑编排，不实现计算
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Business Layer                            │
+│  - 调用 data_layer 获取原始数据                              │
+│  - 调用 engine_layer 计算指标                                │
+│  - 业务判断（阈值比较、状态决策）                            │
+└─────────────────────────────────────────────────────────────┘
+                        ↓                    ↓
+┌────────────────────────────┐  ┌────────────────────────────┐
+│      Data Layer            │  │      Engine Layer          │
+│  - UnifiedDataProvider     │  │  - VIX/Trend/PCR 分析      │
+│  - Yahoo/IBKR/Futu         │  │  - 技术指标计算            │
+│  - 原始数据获取            │  │  - 期限结构计算            │
+└────────────────────────────┘  └────────────────────────────┘
+```
+
+**重构内容**:
+
+1. **删除自定义 Protocol**: 从 `MarketFilter`, `UnderlyingFilter`, `ContractFilter`, `Pipeline` 中删除自定义 `DataProvider` Protocol
+
+2. **统一使用 UnifiedDataProvider**: 所有数据获取通过 `src.data.providers.unified_provider.UnifiedDataProvider`
+
+3. **调用 engine 层计算**:
+   - VIX 分析: `engine.account.sentiment.vix.get_vix_zone()`, `calc_vix_percentile()`
+   - 趋势计算: `engine.account.sentiment.trend.calc_spy_trend()`
+   - PCR 分析: `engine.account.sentiment.pcr.get_pcr_zone()`
+   - 期限结构: `engine.account.sentiment.term_structure.calc_term_structure()` (新增)
+   - 技术指标: `engine.position.technical.calc_technical_score()`
+
+4. **新增 Engine 模块**: `src/engine/account/sentiment/term_structure.py` - VIX 期限结构（VIX/VIX3M）计算
+
+**理由**: 遵循分层架构，避免代码重复，便于测试和维护。
+
+### 7. 命令行接口设计
 
 提供 CLI 工具，便于手动触发和调试：
 

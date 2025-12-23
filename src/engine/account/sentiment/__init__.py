@@ -2,6 +2,7 @@
 
 Account-level module for macro market sentiment indicators:
 - VIX analysis
+- VIX term structure (VIX vs VIX3M)
 - Market trend signals
 - Put/Call Ratio
 """
@@ -12,6 +13,14 @@ from src.engine.account.sentiment.pcr import (
     get_pcr_zone,
     interpret_pcr,
     is_pcr_favorable_for_puts,
+)
+from src.engine.account.sentiment.term_structure import (
+    TermStructureResult,
+    calc_term_structure,
+    get_term_structure_regime,
+    get_term_structure_state,
+    interpret_term_structure,
+    is_term_structure_favorable,
 )
 from src.engine.account.sentiment.trend import (
     calc_ema,
@@ -36,6 +45,13 @@ __all__ = [
     "is_vix_favorable_for_selling",
     "calc_vix_percentile",
     "get_vix_regime",
+    # Term Structure
+    "TermStructureResult",
+    "calc_term_structure",
+    "get_term_structure_state",
+    "is_term_structure_favorable",
+    "get_term_structure_regime",
+    "interpret_term_structure",
     # Trend
     "calc_sma",
     "calc_ema",

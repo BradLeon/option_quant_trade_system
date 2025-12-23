@@ -8,17 +8,20 @@ Underlying Filter - 标的过滤器
 - IV/HV 比率在合理范围
 - 技术面（RSI、布林带、均线排列）
 - 基本面（可选）
+
+架构说明：
+- 数据获取：调用 data_layer (UnifiedDataProvider)
+- 指标计算：调用 engine_layer (technical, volatility 模块)
+- 业务逻辑：本模块专注业务判断和编排
 """
 
 import logging
 from datetime import date, timedelta
-from typing import Protocol
 
 from src.business.config.screening_config import (
     FundamentalConfig,
     ScreeningConfig,
     TechnicalConfig,
-    UnderlyingFilterConfig,
 )
 from src.business.screening.models import (
     FundamentalScore,
@@ -26,48 +29,19 @@ from src.business.screening.models import (
     TechnicalScore,
     UnderlyingScore,
 )
+from src.data.models.stock import KlineType
+from src.data.models.technical import TechnicalData
+from src.data.providers.unified_provider import UnifiedDataProvider
 from src.engine.position.technical.metrics import (
     calc_technical_score,
     calc_technical_signal,
 )
 from src.engine.position.volatility.metrics import (
-    evaluate_volatility,
     get_iv_hv_ratio,
     get_iv_rank,
-    interpret_iv_rank,
 )
 
 logger = logging.getLogger(__name__)
-
-
-class DataProvider(Protocol):
-    """数据提供者接口"""
-
-    def get_stock_quote(self, symbol: str) -> object | None:
-        """获取股票报价"""
-        ...
-
-    def get_history_kline(
-        self,
-        symbol: str,
-        ktype: object,
-        start_date: date,
-        end_date: date,
-    ) -> list:
-        """获取历史K线"""
-        ...
-
-    def get_stock_volatility(
-        self,
-        symbol: str,
-        include_iv_rank: bool = True,
-    ) -> object | None:
-        """获取股票波动率数据"""
-        ...
-
-    def get_fundamental(self, symbol: str) -> object | None:
-        """获取基本面数据"""
-        ...
 
 
 class UnderlyingFilter:
@@ -79,8 +53,13 @@ class UnderlyingFilter:
     3. 技术面信号有利（RSI 企稳、均线排列等）
     4. 基本面检查（可选，如 PE 百分位、分析师评级等）
 
+    架构职责：
+    - data_layer: UnifiedDataProvider 提供原始数据
+    - engine_layer: technical/volatility 模块提供指标计算
+    - business_layer: 本模块进行业务判断和编排
+
     使用方式：
-        filter = UnderlyingFilter(config, data_provider)
+        filter = UnderlyingFilter(config, provider)
         scores = filter.evaluate(symbols, MarketType.US)
         for score in scores:
             if score.passed:
@@ -90,16 +69,16 @@ class UnderlyingFilter:
     def __init__(
         self,
         config: ScreeningConfig,
-        data_provider: DataProvider,
+        provider: UnifiedDataProvider | None = None,
     ) -> None:
         """初始化标的过滤器
 
         Args:
             config: 筛选配置
-            data_provider: 数据提供者（Yahoo/IBKR）
+            provider: 统一数据提供者，默认创建新实例
         """
         self.config = config
-        self.provider = data_provider
+        self.provider = provider or UnifiedDataProvider()
 
     def evaluate(
         self,
@@ -159,10 +138,10 @@ class UnderlyingFilter:
         filter_config = self.config.underlying_filter
         disqualify_reasons: list[str] = []
 
-        # 获取当前价格
+        # 从 data_layer 获取当前价格
         current_price = self._get_current_price(symbol)
 
-        # 1. 获取波动率数据
+        # 1. 从 data_layer 获取波动率数据
         vol_data = self._get_volatility_data(symbol)
         iv_rank = None
         iv_hv_ratio = None
@@ -170,18 +149,19 @@ class UnderlyingFilter:
         current_iv = None
 
         if vol_data:
+            # 调用 engine_layer 计算指标
             iv_rank = get_iv_rank(vol_data)
             iv_hv_ratio = get_iv_hv_ratio(vol_data)
             hv_20 = vol_data.hv
             current_iv = vol_data.iv
 
-            # 检查 IV Rank
+            # 业务层判断：检查 IV Rank
             if iv_rank is not None and iv_rank < filter_config.min_iv_rank:
                 disqualify_reasons.append(
                     f"IV Rank={iv_rank:.1f}% 偏低（<{filter_config.min_iv_rank}%）"
                 )
 
-            # 检查 IV/HV 比率
+            # 业务层判断：检查 IV/HV 比率
             if iv_hv_ratio is not None:
                 if iv_hv_ratio < filter_config.min_iv_hv_ratio:
                     disqualify_reasons.append(
@@ -226,7 +206,10 @@ class UnderlyingFilter:
         )
 
     def _get_current_price(self, symbol: str) -> float | None:
-        """获取当前价格"""
+        """获取当前价格
+
+        数据来源：UnifiedDataProvider.get_stock_quote()
+        """
         try:
             quote = self.provider.get_stock_quote(symbol)
             if quote and hasattr(quote, "close") and quote.close:
@@ -237,9 +220,12 @@ class UnderlyingFilter:
             return None
 
     def _get_volatility_data(self, symbol: str) -> object | None:
-        """获取波动率数据"""
+        """获取波动率数据
+
+        数据来源：UnifiedDataProvider.get_stock_volatility() (IBKR)
+        """
         try:
-            return self.provider.get_stock_volatility(symbol, include_iv_rank=True)
+            return self.provider.get_stock_volatility(symbol)
         except Exception as e:
             logger.warning(f"获取 {symbol} 波动率数据失败: {e}")
             return None
@@ -247,16 +233,18 @@ class UnderlyingFilter:
     def _evaluate_technical(
         self,
         symbol: str,
-        config: TechnicalConfig,
+        config: TechnicalConfig,  # noqa: ARG002
     ) -> TechnicalScore | None:
-        """评估技术面"""
-        from src.data.models.stock import KlineType
-        from src.data.models.technical import TechnicalData
+        """评估技术面
 
+        数据来源：UnifiedDataProvider.get_history_kline()
+        指标计算：engine.position.technical.metrics 模块
+        """
         try:
             end_date = date.today()
             start_date = end_date - timedelta(days=300)  # 足够计算技术指标
 
+            # 从 data_layer 获取 K 线数据
             klines = self.provider.get_history_kline(
                 symbol,
                 KlineType.DAY,
@@ -268,7 +256,7 @@ class UnderlyingFilter:
                 logger.warning(f"{symbol} 历史数据不足")
                 return None
 
-            # 构建 TechnicalData
+            # 构建 TechnicalData（engine_layer 的输入格式）
             tech_data = TechnicalData(
                 symbol=symbol,
                 opens=[k.open for k in klines],
@@ -278,11 +266,11 @@ class UnderlyingFilter:
                 volumes=[k.volume for k in klines] if hasattr(klines[0], "volume") else None,
             )
 
-            # 计算技术评分和信号
+            # 调用 engine_layer 计算技术评分和信号
             score = calc_technical_score(tech_data)
-            signal = calc_technical_signal(tech_data)
+            _ = calc_technical_signal(tech_data)  # 信号用于日志/调试
 
-            # 映射 RSI zone
+            # 业务层：映射 RSI zone
             rsi_zone = "neutral"
             if score.rsi is not None:
                 if score.rsi <= 30:
@@ -296,7 +284,7 @@ class UnderlyingFilter:
                 else:
                     rsi_zone = "overbought"
 
-            # 计算距离支撑位的百分比
+            # 业务层：计算距离支撑位的百分比
             support_distance = None
             if score.support and score.current_price:
                 support_distance = (score.current_price - score.support) / score.support * 100
@@ -319,7 +307,7 @@ class UnderlyingFilter:
         technical: TechnicalScore | None,
         config: TechnicalConfig,
     ) -> list[str]:
-        """检查技术面是否符合条件"""
+        """检查技术面是否符合条件（业务层判断）"""
         reasons: list[str] = []
 
         if technical is None:
@@ -362,10 +350,14 @@ class UnderlyingFilter:
     def _evaluate_fundamental(
         self,
         symbol: str,
-        config: FundamentalConfig,
+        config: FundamentalConfig,  # noqa: ARG002
     ) -> FundamentalScore | None:
-        """评估基本面"""
+        """评估基本面
+
+        数据来源：UnifiedDataProvider.get_fundamental() (Yahoo)
+        """
         try:
+            # 从 data_layer 获取基本面数据
             fundamental = self.provider.get_fundamental(symbol)
 
             if fundamental is None:
@@ -375,9 +367,8 @@ class UnderlyingFilter:
             pe_ratio = getattr(fundamental, "pe_ratio", None)
             revenue_growth = getattr(fundamental, "revenue_growth", None)
             recommendation = getattr(fundamental, "recommendation", None)
-            recommendation_mean = getattr(fundamental, "recommendation_mean", None)
 
-            # 计算 PE 百分位（需要历史数据或行业对比，这里简化处理）
+            # 业务层：计算 PE 百分位（简化处理）
             pe_percentile = None
             if pe_ratio is not None:
                 # 简化假设：PE 在 10-30 之间为正常
@@ -388,7 +379,7 @@ class UnderlyingFilter:
                 else:
                     pe_percentile = (pe_ratio - 10) / 20
 
-            # 映射推荐评级
+            # 业务层：映射推荐评级
             rec_map = {
                 "strong_buy": "strong_buy",
                 "buy": "buy",
@@ -398,7 +389,7 @@ class UnderlyingFilter:
             }
             rec = rec_map.get(recommendation, None)
 
-            # 计算综合评分
+            # 业务层：计算综合评分
             score = 50.0  # 默认中性
             if pe_percentile is not None:
                 # PE 越低越好
@@ -437,7 +428,7 @@ class UnderlyingFilter:
         fundamental: FundamentalScore | None,
         config: FundamentalConfig,
     ) -> list[str]:
-        """检查基本面是否符合条件"""
+        """检查基本面是否符合条件（业务层判断）"""
         reasons: list[str] = []
 
         if fundamental is None:

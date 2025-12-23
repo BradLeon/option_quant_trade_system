@@ -8,12 +8,16 @@ Contract Filter - 合约过滤器
 - Delta 在目标范围内 (-0.35 ~ -0.15)
 - 流动性 (Bid/Ask spread, Open Interest, Volume)
 - 策略指标 (SAS >= 50, PREI <= 75, TGR >= 0.05, Sharpe >= 1.0)
+
+架构说明：
+- 数据获取：调用 data_layer (UnifiedDataProvider)
+- 指标计算：调用 engine_layer (strategy, position 模块)
+- 业务逻辑：本模块专注业务判断和编排
 """
 
 import logging
 import math
-from datetime import date, timedelta
-from typing import Protocol
+from datetime import date
 
 from src.business.config.screening_config import (
     ContractFilterConfig,
@@ -25,36 +29,12 @@ from src.business.screening.models import (
     ContractOpportunity,
     UnderlyingScore,
 )
+from src.data.providers.unified_provider import UnifiedDataProvider
 from src.engine.position.option_metrics import calc_sas
 from src.engine.position.risk_return import calc_prei, calc_tgr
 from src.engine.strategy.short_put import ShortPutStrategy
 
 logger = logging.getLogger(__name__)
-
-
-class DataProvider(Protocol):
-    """数据提供者接口"""
-
-    def get_option_chain(
-        self,
-        underlying: str,
-        expiry_start: date | None = None,
-        expiry_end: date | None = None,
-        expiry_min_days: int | None = None,
-        expiry_max_days: int | None = None,
-        strike_range_pct: float | None = None,
-    ) -> object | None:
-        """获取期权链"""
-        ...
-
-    def get_option_quotes_batch(
-        self,
-        contracts: list,
-        min_volume: int | None = None,
-        request_delay: float = 0.5,
-    ) -> list:
-        """批量获取期权报价"""
-        ...
 
 
 class ContractFilter:
@@ -66,8 +46,13 @@ class ContractFilter:
     3. 流动性满足要求
     4. 策略指标达标（SAS, PREI, TGR, Sharpe）
 
+    架构职责：
+    - data_layer: UnifiedDataProvider 提供原始数据
+    - engine_layer: strategy/position 模块提供指标计算
+    - business_layer: 本模块进行业务判断和编排
+
     使用方式：
-        filter = ContractFilter(config, data_provider)
+        filter = ContractFilter(config, provider)
         opportunities = filter.evaluate(
             underlying_scores,
             strategy_type="short_put",
@@ -77,16 +62,16 @@ class ContractFilter:
     def __init__(
         self,
         config: ScreeningConfig,
-        data_provider: DataProvider,
+        provider: UnifiedDataProvider | None = None,
     ) -> None:
         """初始化合约过滤器
 
         Args:
             config: 筛选配置
-            data_provider: 数据提供者（IBKR）
+            provider: 统一数据提供者，默认创建新实例
         """
         self.config = config
-        self.provider = data_provider
+        self.provider = provider or UnifiedDataProvider()
 
     def evaluate(
         self,
@@ -142,13 +127,14 @@ class ContractFilter:
         symbol = score.symbol
         opportunities: list[ContractOpportunity] = []
 
-        # 1. 获取期权链
+        # 1. 从 data_layer 获取期权链
         dte_min, dte_max = filter_config.dte_range
+        today = date.today()
+
         chain = self.provider.get_option_chain(
             symbol,
-            expiry_min_days=dte_min,
-            expiry_max_days=dte_max,
-            strike_range_pct=0.20,  # ±20% 的行权价范围
+            expiry_start=today,
+            expiry_end=None,  # 由 dte_max 过滤
         )
 
         if chain is None:
@@ -165,7 +151,7 @@ class ContractFilter:
             logger.warning(f"{symbol} 无符合条件的合约")
             return []
 
-        # 3. 获取合约报价（包含 Greeks）
+        # 3. 从 data_layer 获取合约报价（包含 Greeks）
         min_volume = filter_config.liquidity.min_volume
         quotes = self.provider.get_option_quotes_batch(
             contracts,
@@ -183,6 +169,8 @@ class ContractFilter:
                 score,
                 strategy_type,
                 filter_config,
+                dte_min,
+                dte_max,
             )
             if opp:
                 opportunities.append(opp)
@@ -195,6 +183,8 @@ class ContractFilter:
         underlying_score: UnderlyingScore,
         strategy_type: str,
         filter_config: ContractFilterConfig,
+        dte_min: int,
+        dte_max: int,
     ) -> ContractOpportunity | None:
         """评估单个合约"""
         contract = quote.contract
@@ -202,12 +192,11 @@ class ContractFilter:
         strike = contract.strike_price
         expiry = contract.expiry_date
 
-        # 计算 DTE
+        # 业务层：计算 DTE
         today = date.today()
         dte = (expiry - today).days
 
-        # 检查 DTE 范围
-        dte_min, dte_max = filter_config.dte_range
+        # 业务层：检查 DTE 范围
         if not (dte_min <= dte <= dte_max):
             return None
 
@@ -219,7 +208,7 @@ class ContractFilter:
         vega = greeks.vega if greeks else None
         iv = quote.iv
 
-        # 检查 Delta 范围（对于 short put，delta 应为负值）
+        # 业务层：检查 Delta 范围（对于 short put，delta 应为负值）
         if delta is not None:
             delta_min, delta_max = filter_config.delta_range
             if not (delta_min <= delta <= delta_max):
@@ -232,7 +221,7 @@ class ContractFilter:
         open_interest = quote.open_interest
         volume = quote.volume
 
-        # 检查流动性
+        # 业务层：检查流动性
         liquidity_config = filter_config.liquidity
         if not self._check_liquidity(
             bid, ask, mid_price, open_interest, volume, liquidity_config
@@ -244,10 +233,10 @@ class ContractFilter:
         if underlying_price is None:
             return None
 
-        # 计算 Moneyness
+        # 业务层：计算 Moneyness
         moneyness = (underlying_price - strike) / strike
 
-        # 计算策略指标
+        # 调用 engine_layer 计算策略指标
         metrics = self._calc_strategy_metrics(
             spot_price=underlying_price,
             strike_price=strike,
@@ -262,7 +251,7 @@ class ContractFilter:
             vega=vega,
         )
 
-        # 检查策略指标
+        # 业务层：检查策略指标
         metrics_config = filter_config.metrics
         if not self._check_metrics(metrics, metrics_config):
             return None
@@ -304,7 +293,7 @@ class ContractFilter:
         volume: int | None,
         config: LiquidityConfig,
     ) -> bool:
-        """检查流动性"""
+        """检查流动性（业务层判断）"""
         # Bid/Ask spread 检查
         if bid and ask and mid_price and mid_price > 0:
             spread = (ask - bid) / mid_price
@@ -335,14 +324,17 @@ class ContractFilter:
         theta: float | None,
         vega: float | None,
     ) -> dict:
-        """计算策略指标"""
+        """计算策略指标
+
+        调用 engine_layer 的策略计算模块
+        """
         metrics: dict = {}
 
         if volatility <= 0 or time_to_expiry <= 0:
             return metrics
 
         try:
-            # 使用 ShortPutStrategy 计算
+            # 调用 engine_layer: ShortPutStrategy
             strategy = ShortPutStrategy(
                 spot_price=spot_price,
                 strike_price=strike_price,
@@ -374,7 +366,7 @@ class ContractFilter:
             # Win Probability
             metrics["win_probability"] = strategy.calc_win_probability()
 
-            # SAS
+            # 调用 engine_layer: calc_sas
             if hv > 0:
                 sas = calc_sas(
                     iv=volatility,
@@ -384,7 +376,7 @@ class ContractFilter:
                 )
                 metrics["sas"] = sas
 
-            # PREI (需要构建 Position 对象)
+            # 调用 engine_layer: calc_prei
             if gamma is not None and vega is not None and dte is not None:
                 from src.engine.models.position import Position
 
@@ -399,7 +391,7 @@ class ContractFilter:
                 prei = calc_prei(position)
                 metrics["prei"] = prei
 
-            # TGR
+            # 调用 engine_layer: calc_tgr
             if theta is not None and gamma is not None and gamma != 0:
                 from src.engine.models.position import Position
 
@@ -412,18 +404,13 @@ class ContractFilter:
                 tgr = calc_tgr(position)
                 metrics["tgr"] = tgr
 
-            # Kelly Fraction
+            # 业务层：Kelly Fraction
             win_prob = metrics.get("win_probability", 0)
             if win_prob > 0 and win_prob < 1 and expected_return != 0:
                 max_profit = strategy.calc_max_profit()
                 max_loss = strategy.calc_max_loss()
                 if max_loss > 0 and max_profit > 0:
-                    # Kelly = p/a - q/b
-                    # p = win prob, q = 1-p
-                    # a = loss ratio, b = win ratio
-                    # 简化：Kelly = (p * win_ratio - q) / win_ratio
                     win_ratio = max_profit / max_loss
-                    loss_prob = 1 - win_prob
                     kelly = (win_prob * (1 + win_ratio) - 1) / win_ratio
                     metrics["kelly_fraction"] = max(0, min(kelly, 0.5))  # 限制最大 50%
 
@@ -437,7 +424,7 @@ class ContractFilter:
         metrics: dict,
         config: MetricsConfig,
     ) -> bool:
-        """检查策略指标是否达标"""
+        """检查策略指标是否达标（业务层判断）"""
         # Sharpe Ratio 检查
         sharpe = metrics.get("sharpe_ratio")
         if sharpe is not None and sharpe < config.min_sharpe_ratio:

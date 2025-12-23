@@ -39,3 +39,16 @@ class PositionSide(Enum):
 
     LONG = "long"  # Buy
     SHORT = "short"  # Sell
+
+
+class TermStructureState(Enum):
+    """VIX term structure state.
+
+    Term structure = VIX / VIX3M ratio
+    - Contango (ratio < 1): Normal, short-term vol lower than long-term
+    - Backwardation (ratio > 1): Stressed, short-term vol higher than long-term
+    """
+
+    CONTANGO = "contango"  # VIX < VIX3M, normal market
+    FLAT = "flat"  # VIX ≈ VIX3M, transitional
+    BACKWARDATION = "backwardation"  # VIX > VIX3M, stressed market

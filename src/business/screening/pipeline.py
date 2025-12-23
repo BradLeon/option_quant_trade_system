@@ -6,8 +6,13 @@ Screening Pipeline - 筛选管道
 2. 标的过滤 -> 筛选合格标的
 3. 合约过滤 -> 筛选合格合约
 
+架构说明：
+- 数据获取：通过 UnifiedDataProvider 统一获取
+- 指标计算：各 Filter 调用 engine_layer
+- 业务逻辑：Pipeline 负责流程编排
+
 使用方式：
-    pipeline = ScreeningPipeline(config, data_provider)
+    pipeline = ScreeningPipeline(config, provider)
     result = pipeline.run(
         symbols=["AAPL", "MSFT", "GOOGL"],
         market_type=MarketType.US,
@@ -17,7 +22,6 @@ Screening Pipeline - 筛选管道
 
 import logging
 from datetime import datetime
-from typing import Protocol
 
 from src.business.config.screening_config import ScreeningConfig
 from src.business.screening.filters.contract_filter import ContractFilter
@@ -29,52 +33,9 @@ from src.business.screening.models import (
     ScreeningResult,
     UnderlyingScore,
 )
+from src.data.providers.unified_provider import UnifiedDataProvider
 
 logger = logging.getLogger(__name__)
-
-
-class DataProvider(Protocol):
-    """数据提供者接口（统一所有过滤器需要的方法）"""
-
-    # Market Filter 需要
-    def get_macro_data(self, indicator: str, start_date, end_date) -> list:
-        ...
-
-    def get_stock_volatility(self, symbol: str, include_iv_rank: bool = True) -> object | None:
-        ...
-
-    def get_put_call_ratio(self, symbol: str) -> float | None:
-        ...
-
-    # Underlying Filter 需要
-    def get_stock_quote(self, symbol: str) -> object | None:
-        ...
-
-    def get_history_kline(self, symbol: str, ktype, start_date, end_date) -> list:
-        ...
-
-    def get_fundamental(self, symbol: str) -> object | None:
-        ...
-
-    # Contract Filter 需要
-    def get_option_chain(
-        self,
-        underlying: str,
-        expiry_start=None,
-        expiry_end=None,
-        expiry_min_days: int | None = None,
-        expiry_max_days: int | None = None,
-        strike_range_pct: float | None = None,
-    ) -> object | None:
-        ...
-
-    def get_option_quotes_batch(
-        self,
-        contracts: list,
-        min_volume: int | None = None,
-        request_delay: float = 0.5,
-    ) -> list:
-        ...
 
 
 class ScreeningPipeline:
@@ -87,27 +48,30 @@ class ScreeningPipeline:
     2. 标的评估 - 检查 IV Rank、技术面、基本面等
     3. 合约评估 - 检查 DTE、Delta、流动性、策略指标等
 
-    每层过滤器都可以独立配置和使用。
+    架构职责：
+    - data_layer: UnifiedDataProvider 统一提供数据
+    - engine_layer: 各 Filter 内部调用计算模块
+    - business_layer: Pipeline 编排筛选流程
     """
 
     def __init__(
         self,
         config: ScreeningConfig,
-        data_provider: DataProvider,
+        provider: UnifiedDataProvider | None = None,
     ) -> None:
         """初始化筛选管道
 
         Args:
             config: 筛选配置
-            data_provider: 数据提供者（需支持所有过滤器的接口）
+            provider: 统一数据提供者，默认创建新实例
         """
         self.config = config
-        self.provider = data_provider
+        self.provider = provider or UnifiedDataProvider()
 
-        # 初始化各层过滤器
-        self.market_filter = MarketFilter(config, data_provider)
-        self.underlying_filter = UnderlyingFilter(config, data_provider)
-        self.contract_filter = ContractFilter(config, data_provider)
+        # 初始化各层过滤器，共享同一个 provider
+        self.market_filter = MarketFilter(config, self.provider)
+        self.underlying_filter = UnderlyingFilter(config, self.provider)
+        self.contract_filter = ContractFilter(config, self.provider)
 
     def run(
         self,
@@ -236,23 +200,20 @@ class ScreeningPipeline:
 # 便捷函数
 def create_pipeline(
     strategy: str = "short_put",
-    data_provider: DataProvider | None = None,
+    provider: UnifiedDataProvider | None = None,
 ) -> ScreeningPipeline:
     """创建筛选管道
 
     Args:
         strategy: 策略类型 ("short_put" 或 "covered_call")
-        data_provider: 数据提供者，如果为 None 则使用默认配置
+        provider: 统一数据提供者，如果为 None 则创建默认实例
 
     Returns:
         ScreeningPipeline 实例
     """
     config = ScreeningConfig.load(strategy)
 
-    if data_provider is None:
-        # 默认使用组合数据提供者
-        from src.data.manager import create_data_manager
+    if provider is None:
+        provider = UnifiedDataProvider()
 
-        data_provider = create_data_manager()
-
-    return ScreeningPipeline(config, data_provider)
+    return ScreeningPipeline(config, provider)
