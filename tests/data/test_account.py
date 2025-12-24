@@ -4,15 +4,45 @@ Run with: python tests/data/test_account.py
 """
 
 from src.data.currency import CurrencyConverter
-from src.data.models import AccountType, AssetType, ConsolidatedPortfolio
+from src.data.models import AccountType, AssetType
 from src.data.providers.account_aggregator import AccountAggregator
-from src.data.providers.unified_provider import UnifiedDataProvider
 import logging
-#logging.basicConfig(level=logging.DEBUG)
+
+# Enable debug logging for troubleshooting
+logging.basicConfig(level=logging.DEBUG)
 
 
 # =============================================================================
-# Ground Truth Data from Screenshots (2024-12-23)
+# Ground Truth Data from Screenshots (2024-12-23/24)
+# =============================================================================
+
+# Futu 模拟账户 Ground Truth (2024-12-24)
+FUTU_PAPER_GROUND_TRUTH = {
+    "stocks": {
+        "09988": {"qty": 400, "avg_cost": 118.70, "market_value": 58680.00, "pnl": 11200.00},
+        "03042": {"qty": 10000, "avg_cost": 12.64, "market_value": 106600.00, "pnl": -19800.00},
+        "02318": {"qty": 1000, "avg_cost": 41.494, "market_value": 66000.00, "pnl": 24505.56},
+        "03968": {"qty": 1000, "avg_cost": 41.55, "market_value": 51250.00, "pnl": 9700.00},
+        "01810": {"qty": 10000, "avg_cost": 35.00, "market_value": 393200.00, "pnl": 43200.00},
+        "00700": {"qty": 1000, "avg_cost": 379.30, "market_value": 603500.00, "pnl": 224200.00},
+    },
+}
+
+# IBKR 模拟账户 Ground Truth (2024-12-24)
+IBKR_PAPER_GROUND_TRUTH = {
+    "stocks": {
+        "700": {"qty": 300, "avg_cost": 602.61, "market_value": 180391.00},
+        "9988": {"qty": 500, "avg_cost": 147.58, "market_value": 73183.00},
+    },
+    "options": {
+        "9988_CALL_155_20260129": {"qty": -2, "strike": 155, "expiry": "2026-01-29", "option_type": "call"},
+        "700_CALL_640_20260129": {"qty": -3, "strike": 640, "expiry": "2026-01-29", "option_type": "call"},
+    },
+    "cash": {"HKD": -250089.00, "USD": 1015220.00},
+}
+
+# =============================================================================
+# Futu 真实账户 Ground Truth (2024-12-23)
 # =============================================================================
 
 FUTU_GROUND_TRUTH = {
@@ -239,16 +269,10 @@ def test_consolidated_portfolio():
     print("=" * 80)
 
     with IBKRProvider(account_type=AccountType.REAL) as ibkr, FutuProvider() as futu:
-        # Create UnifiedProvider for centralized Greeks fetching
-        # This uses routing rules: HK options → IBKR > Futu, US options → IBKR > Futu > Yahoo
-        unified_provider = UnifiedDataProvider(
-            ibkr_provider=ibkr,
-            futu_provider=futu,
-        )
-        currency_converter = CurrencyConverter(provider=unified_provider)
-
-        # Pass unified_provider to use routing for Greeks fetching
-        aggregator = AccountAggregator(ibkr, futu, unified_provider=unified_provider)
+        # AccountAggregator now fetches Greeks directly:
+        # - IBKR options: Greeks fetched via IBKR's get_positions()
+        # - Futu options: Greeks fetched via IBKR's fetch_greeks_for_hk_option()
+        aggregator = AccountAggregator(ibkr, futu)
         portfolio = aggregator.get_consolidated_portfolio(
             account_type=AccountType.REAL,
             base_currency="USD",
@@ -322,12 +346,7 @@ def test_exposure_by_market():
     print("=" * 80)
 
     with IBKRProvider(account_type=AccountType.REAL) as ibkr, FutuProvider() as futu:
-        # Use UnifiedProvider for Greeks routing
-        unified_provider = UnifiedDataProvider(
-            ibkr_provider=ibkr,
-            futu_provider=futu,
-        )
-        aggregator = AccountAggregator(ibkr, futu, unified_provider=unified_provider)
+        aggregator = AccountAggregator(ibkr, futu)
         exposure = aggregator.get_total_exposure_by_market(AccountType.REAL, "USD")
 
         print("\n--- 市场敞口 (USD) ---")
@@ -338,11 +357,269 @@ def test_exposure_by_market():
         print(f"\n  Total: ${total:,.2f}")
 
 
+def test_ibkr_paper_account():
+    """Test IBKR paper trading account."""
+    from src.data.providers import IBKRProvider
+
+    print("\n" + "=" * 80)
+    print("IBKR 模拟账户测试 (Paper Trading)")
+    print("=" * 80)
+
+    with IBKRProvider(account_type=AccountType.PAPER) as ibkr:
+        # Account Summary
+        print("\n--- Account Summary ---")
+        summary = ibkr.get_account_summary()
+        if summary:
+            print(f"Account ID: {summary.account_id}")
+            print(f"Account Type: {summary.account_type.value}")
+            print(f"Port: {ibkr._port}")
+            print(f"Total Assets: {summary.total_assets:,.2f}")
+            print(f"Cash: {summary.cash:,.2f}")
+            print(f"Market Value: {summary.market_value:,.2f}")
+            print(f"Unrealized P&L: {summary.unrealized_pnl:,.2f}")
+            if summary.buying_power:
+                print(f"Buying Power: {summary.buying_power:,.2f}")
+        else:
+            print("  ✗ Failed to get account summary")
+
+        # Positions
+        print("\n--- Positions ---")
+        positions = ibkr.get_positions()
+        stocks = [p for p in positions if p.asset_type != AssetType.OPTION]
+        options = [p for p in positions if p.asset_type == AssetType.OPTION]
+
+        print(f"\n[股票 ({len(stocks)})]")
+        for pos in stocks:
+            delta_str = f"{pos.delta:.2f}" if pos.delta is not None else "N/A"
+            print(f"  {pos.symbol}: qty={pos.quantity}, avg_cost={pos.avg_cost:.2f}, "
+                  f"market_value={pos.market_value:,.2f}, pnl={pos.unrealized_pnl:,.2f}, {pos.currency}, delta={delta_str}")
+
+        print(f"\n[期权 ({len(options)})]")
+        for pos in options:
+            delta_str = f"{pos.delta:.4f}" if pos.delta is not None else "N/A"
+            iv_str = f"{pos.iv*100:.2f}%" if pos.iv is not None else "N/A"
+            print(f"  {pos.symbol}: qty={pos.quantity}, strike={pos.strike}, "
+                  f"expiry={pos.expiry}, type={pos.option_type}, delta={delta_str}, iv={iv_str}")
+
+        # Cash
+        print("\n--- Cash Balances ---")
+        cash = ibkr.get_cash_balances()
+        for c in cash:
+            print(f"  {c.currency}: balance={c.balance:,.2f}")
+
+        # Ground Truth comparison
+        print("\n--- Ground Truth 股票对比 ---")
+        for symbol, expected in IBKR_PAPER_GROUND_TRUTH["stocks"].items():
+            actual = next((p for p in stocks if symbol.upper() in p.symbol.upper()), None)
+            if actual:
+                compare(actual.quantity, expected["qty"], f"{symbol} qty")
+                compare(actual.avg_cost, expected["avg_cost"], f"{symbol} avg_cost")
+                compare(actual.market_value, expected["market_value"], f"{symbol} market_value")
+            else:
+                print(f"  ? {symbol}: NOT FOUND")
+
+        print("\n--- Ground Truth 期权对比 ---")
+        for symbol, expected in IBKR_PAPER_GROUND_TRUTH["options"].items():
+            print(f"  Expected: qty={expected['qty']}, strike={expected['strike']}, type={expected['option_type']}")
+            actual = next((p for p in options if str(expected['strike']) in str(p.strike)), None)
+            if actual:
+                print(f"  Actual: {actual.symbol}, qty={actual.quantity}, strike={actual.strike}, type={actual.option_type}")
+                compare(actual.quantity, expected["qty"], f"{symbol} qty")
+
+        print("\n--- Ground Truth Cash 对比 ---")
+        for currency, expected in IBKR_PAPER_GROUND_TRUTH["cash"].items():
+            actual = next((c.balance for c in cash if c.currency == currency), 0)
+            compare(actual, expected, f"{currency}")
+
+        # Portfolio Greeks Summary
+        if options:
+            print("\n--- 期权 Greeks 汇总 ---")
+            total_delta = sum(
+                p.quantity * int(p.contract_multiplier or 1) * (p.delta or 0)
+                for p in options
+            )
+            total_gamma = sum(
+                p.quantity * int(p.contract_multiplier or 1) * (p.gamma or 0)
+                for p in options
+            )
+            total_theta = sum(
+                p.quantity * int(p.contract_multiplier or 1) * (p.theta or 0)
+                for p in options
+            )
+            total_vega = sum(
+                p.quantity * int(p.contract_multiplier or 1) * (p.vega or 0)
+                for p in options
+            )
+            print(f"  Total Delta: {total_delta:,.2f}")
+            print(f"  Total Gamma: {total_gamma:,.4f}")
+            print(f"  Total Theta: {total_theta:,.2f}")
+            print(f"  Total Vega: {total_vega:,.2f}")
+
+
+def test_consolidated_portfolio_paper():
+    """Test consolidated portfolio from both brokers (paper accounts)."""
+    from src.data.providers import IBKRProvider, FutuProvider
+
+    print("\n" + "=" * 80)
+    print("合并持仓测试 - 模拟账户 (Futu + IBKR Paper)")
+    print("=" * 80)
+
+    with IBKRProvider(account_type=AccountType.PAPER) as ibkr, \
+         FutuProvider(account_type=AccountType.PAPER) as futu:
+        # AccountAggregator now fetches Greeks directly:
+        # - IBKR options: Greeks fetched via IBKR's get_positions()
+        # - Futu options: Greeks fetched via IBKR's fetch_greeks_for_hk_option()
+        aggregator = AccountAggregator(ibkr, futu)
+        portfolio = aggregator.get_consolidated_portfolio(
+            account_type=AccountType.PAPER,
+            base_currency="USD",
+        )
+
+        print(f"\n--- 汇总数据 ---")
+        print(f"Total Value (USD): ${portfolio.total_value_usd:,.2f}")
+        print(f"Total Unrealized P&L (USD): ${portfolio.total_unrealized_pnl_usd:,.2f}")
+
+        print(f"\n--- 持仓汇总 ({len(portfolio.positions)} positions) ---")
+        for pos in portfolio.positions:
+            print(f"  [{pos.broker}] {pos.symbol}: qty={pos.quantity}, "
+                  f"market_value={pos.market_value:,.2f} {pos.currency}")
+
+        print(f"\n--- 现金汇总 ---")
+        for c in portfolio.cash_balances:
+            print(f"  [{c.broker}] {c.currency}: {c.balance:,.2f}")
+
+        print(f"\n--- 各券商汇总 ---")
+        for broker, summary in portfolio.by_broker.items():
+            print(f"  {broker}: total={summary.total_assets:,.2f}, pnl={summary.unrealized_pnl:,.2f}")
+
+        # Verify calculation
+        print("\n--- 计算逻辑验证 ---")
+        manual_total = sum(aggregator._converter.convert(p.market_value, p.currency, "USD") for p in portfolio.positions)
+        manual_total += sum(aggregator._converter.convert(c.balance, c.currency, "USD") for c in portfolio.cash_balances)
+        print(f"  Reported: ${portfolio.total_value_usd:,.2f}")
+        print(f"  Calculated: ${manual_total:,.2f}")
+        print(f"  ✓ Match!" if abs(portfolio.total_value_usd - manual_total) < 1 else "  ✗ Mismatch!")
+
+        # Portfolio Greeks
+        print("\n--- 组合 Greeks ---")
+        stocks = [p for p in portfolio.positions if p.asset_type != AssetType.OPTION]
+        options = [p for p in portfolio.positions if p.asset_type == AssetType.OPTION]
+
+        print(f"\n[股票 ({len(stocks)})]")
+        for p in stocks:
+            delta = p.delta or 0
+            pos_delta = p.quantity * delta
+            print(f"  [{p.broker}] {p.symbol}: qty={p.quantity}, delta={delta}, pos_delta={pos_delta:,.2f}")
+
+        print(f"\n[期权 ({len(options)})]")
+        for p in options:
+            delta = p.delta
+            multiplier = int(p.contract_multiplier or 1)
+            pos_delta = p.quantity * multiplier * (delta or 0)
+            iv_str = f"{p.iv*100:.2f}%" if p.iv else "N/A"
+            print(f"  [{p.broker}] {p.symbol}: qty={p.quantity}, multiplier={multiplier}, "
+                  f"delta={delta}, gamma={p.gamma}, theta={p.theta}, vega={p.vega}, iv={iv_str}, pos_delta={pos_delta:,.2f}")
+
+        # Stock delta: qty * delta (delta=1 for long, -1 for short)
+        stock_delta = sum(p.quantity * (p.delta or 0) for p in stocks)
+        # Option delta: qty * multiplier * delta
+        option_delta = sum(
+            p.quantity * int(p.contract_multiplier or 1) * (p.delta or 0)
+            for p in options
+        )
+        total_delta = stock_delta + option_delta
+
+        print(f"\n  Stock Delta Total: {stock_delta:,.2f}")
+        print(f"  Option Delta Total: {option_delta:,.2f}")
+        print(f"  Portfolio Delta: {total_delta:,.2f}")
+
+
+def test_exposure_by_market_paper():
+    """Test exposure by market (paper accounts)."""
+    from src.data.providers import IBKRProvider, FutuProvider
+
+    print("\n" + "=" * 80)
+    print("按市场计算敞口 - 模拟账户")
+    print("=" * 80)
+
+    with IBKRProvider(account_type=AccountType.PAPER) as ibkr, \
+         FutuProvider(account_type=AccountType.PAPER) as futu:
+        aggregator = AccountAggregator(ibkr, futu)
+        exposure = aggregator.get_total_exposure_by_market(AccountType.PAPER, "USD")
+
+        print("\n--- 市场敞口 (USD) ---")
+        total = 0
+        for market, value in exposure.items():
+            print(f"  {market}: ${value:,.2f}")
+            total += value
+        print(f"\n  Total: ${total:,.2f}")
+
+
+def test_futu_paper_account():
+    """Test Futu paper trading account."""
+    from src.data.providers import FutuProvider
+
+    print("\n" + "=" * 80)
+    print("FUTU 模拟账户测试 (Paper Trading)")
+    print("=" * 80)
+
+    with FutuProvider(account_type=AccountType.PAPER) as futu:
+        # Account Summary
+        print("\n--- Account Summary ---")
+        summary = futu.get_account_summary(AccountType.PAPER)
+        if summary:
+            print(f"Account ID: {summary.account_id}")
+            print(f"Account Type: {summary.account_type.value}")
+            print(f"Total Assets: {summary.total_assets:,.2f}")
+            print(f"Cash: {summary.cash:,.2f}")
+            print(f"Market Value: {summary.market_value:,.2f}")
+            print(f"Unrealized P&L: {summary.unrealized_pnl:,.2f}")
+        else:
+            print("  ✗ Failed to get account summary")
+
+        # Positions
+        print("\n--- Positions ---")
+        positions = futu.get_positions(AccountType.PAPER)
+        stocks = [p for p in positions if p.asset_type != AssetType.OPTION]
+        options = [p for p in positions if p.asset_type == AssetType.OPTION]
+
+        print(f"\n[股票 ({len(stocks)})]")
+        for pos in stocks:
+            delta_str = f"{pos.delta:.2f}" if pos.delta is not None else "N/A"
+            print(f"  {pos.symbol}: qty={pos.quantity}, avg_cost={pos.avg_cost:.2f}, "
+                  f"market_value={pos.market_value:,.2f}, pnl={pos.unrealized_pnl:,.2f}, {pos.currency}, delta={delta_str}")
+
+        print(f"\n[期权 ({len(options)})]")
+        for pos in options:
+            delta_str = f"{pos.delta:.4f}" if pos.delta is not None else "N/A"
+            iv_str = f"{pos.iv*100:.2f}%" if pos.iv is not None else "N/A"
+            print(f"  {pos.symbol}: qty={pos.quantity}, strike={pos.strike}, "
+                  f"expiry={pos.expiry}, type={pos.option_type}, delta={delta_str}, iv={iv_str}")
+
+        # Ground Truth comparison
+        print("\n--- Ground Truth 股票对比 ---")
+        for symbol, expected in FUTU_PAPER_GROUND_TRUTH["stocks"].items():
+            actual = next((p for p in stocks if symbol.lstrip("0") in p.symbol.replace("HK.", "").replace(".HK", "").lstrip("0")), None)
+            if actual:
+                compare(actual.quantity, expected["qty"], f"{symbol} qty")
+                compare(actual.avg_cost, expected["avg_cost"], f"{symbol} avg_cost")
+                compare(actual.market_value, expected["market_value"], f"{symbol} market_value")
+                compare(actual.unrealized_pnl, expected["pnl"], f"{symbol} pnl")
+            else:
+                print(f"  ? {symbol}: NOT FOUND")
+
+        # Cash
+        print("\n--- Cash Balances ---")
+        cash = futu.get_cash_balances(AccountType.PAPER)
+        for c in cash:
+            print(f"  {c.currency}: balance={c.balance:,.2f}")
+
+
 if __name__ == "__main__":
     print("=" * 80)
     print("Account Integration Test Suite")
     print("=" * 80)
-
+    '''
     try:
         test_futu_real_account()
     except Exception as e:
@@ -357,7 +634,7 @@ if __name__ == "__main__":
         test_currency_conversion()
     except Exception as e:
         print(f"\n✗ Currency test failed: {e}")
-
+    '''
     try:
         test_consolidated_portfolio()
     except Exception as e:

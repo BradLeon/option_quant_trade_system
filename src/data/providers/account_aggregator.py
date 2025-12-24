@@ -23,7 +23,6 @@ from src.data.models import (
 if TYPE_CHECKING:
     from src.data.providers.futu_provider import FutuProvider
     from src.data.providers.ibkr_provider import IBKRProvider
-    from src.data.providers.unified_provider import UnifiedDataProvider
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +33,15 @@ class AccountAggregator:
     Combines positions and cash from IBKR and Futu brokers
     into a unified view with currency conversion.
 
+    For option positions, Greeks are fetched as follows:
+    - IBKR options: Greeks are fetched directly via IBKR's get_positions()
+    - Futu options: Greeks are fetched via IBKR (Futu requires extra subscription)
+
     Example:
-        >>> from src.data.providers import IBKRProvider, FutuProvider, UnifiedDataProvider
+        >>> from src.data.providers import IBKRProvider, FutuProvider
         >>> from src.data.providers.account_aggregator import AccountAggregator
         >>> with IBKRProvider() as ibkr, FutuProvider() as futu:
-        ...     unified = UnifiedDataProvider(ibkr_provider=ibkr, futu_provider=futu)
-        ...     aggregator = AccountAggregator(ibkr, futu, unified_provider=unified)
+        ...     aggregator = AccountAggregator(ibkr, futu)
         ...     portfolio = aggregator.get_consolidated_portfolio()
         ...     print(f"Total value: ${portfolio.total_value_usd:,.2f}")
     """
@@ -49,7 +51,6 @@ class AccountAggregator:
         ibkr_provider: IBKRProvider | None = None,
         futu_provider: FutuProvider | None = None,
         currency_converter: CurrencyConverter | None = None,
-        unified_provider: UnifiedDataProvider | None = None,
     ):
         """Initialize account aggregator.
 
@@ -57,12 +58,10 @@ class AccountAggregator:
             ibkr_provider: IBKR provider instance.
             futu_provider: Futu provider instance.
             currency_converter: Currency converter instance.
-            unified_provider: Unified provider for fetching option Greeks with routing.
         """
         self._ibkr = ibkr_provider
         self._futu = futu_provider
         self._converter = currency_converter or CurrencyConverter()
-        self._unified = unified_provider
 
     def get_consolidated_portfolio(
         self,
@@ -89,18 +88,13 @@ class AccountAggregator:
         positions: list[AccountPosition] = []
         cash_balances: list[AccountCash] = []
         by_broker: dict[str, AccountSummary] = {}
+        futu_option_positions: list[AccountPosition] = []
 
-        # Determine if we should use centralized Greeks fetching via UnifiedProvider
-        # If UnifiedProvider is available, disable provider-level Greeks fetching
-        # to use routing rules for better provider selection
-        use_unified_greeks = self._unified is not None
-        fetch_greeks_in_provider = not use_unified_greeks
-
-        # Collect from IBKR
+        # Collect from IBKR - always fetch Greeks directly (IBKR's get_positions works well)
         if self._ibkr and self._ibkr.is_available:
             try:
                 ibkr_positions = self._ibkr.get_positions(
-                    account_type, fetch_greeks=fetch_greeks_in_provider
+                    account_type, fetch_greeks=True
                 )
                 ibkr_cash = self._ibkr.get_cash_balances(account_type)
                 ibkr_summary = self._ibkr.get_account_summary(account_type)
@@ -115,14 +109,19 @@ class AccountAggregator:
             except Exception as e:
                 logger.error(f"Error collecting from IBKR: {e}")
 
-        # Collect from Futu
+        # Collect from Futu - don't fetch Greeks (Futu requires extra subscription)
         if self._futu and self._futu.is_available:
             try:
                 futu_positions = self._futu.get_positions(
-                    account_type, fetch_greeks=fetch_greeks_in_provider
+                    account_type, fetch_greeks=False
                 )
                 futu_cash = self._futu.get_cash_balances(account_type)
                 futu_summary = self._futu.get_account_summary(account_type)
+
+                # Collect Futu option positions for Greeks fetching via IBKR
+                for pos in futu_positions:
+                    if pos.asset_type == AssetType.OPTION:
+                        futu_option_positions.append(pos)
 
                 positions.extend(futu_positions)
                 cash_balances.extend(futu_cash)
@@ -134,13 +133,10 @@ class AccountAggregator:
             except Exception as e:
                 logger.error(f"Error collecting from Futu: {e}")
 
-        # Fetch Greeks using UnifiedProvider with routing rules
-        # This uses intelligent routing: HK options → IBKR > Futu, US options → IBKR > Futu > Yahoo
-        if use_unified_greeks and positions:
-            try:
-                self._unified.fetch_option_greeks_for_positions(positions)
-            except Exception as e:
-                logger.warning(f"Error fetching Greeks via UnifiedProvider: {e}")
+        # Fetch Greeks for Futu option positions via IBKR
+        # Futu doesn't provide Greeks without extra subscription, so we use IBKR
+        if futu_option_positions and self._ibkr and self._ibkr.is_available:
+            self._fetch_greeks_for_futu_options(futu_option_positions)
 
         # Calculate totals in base currency
         total_value = self._calc_total_value(positions, cash_balances, base_currency)
@@ -223,6 +219,62 @@ class AccountAggregator:
             total_pnl += pnl
 
         return total_pnl
+
+    def _fetch_greeks_for_futu_options(
+        self,
+        futu_options: list[AccountPosition],
+    ) -> None:
+        """Fetch Greeks for Futu option positions via IBKR.
+
+        Futu doesn't provide Greeks data without extra subscription,
+        so we use IBKR's fetch_greeks_for_hk_option() method to get Greeks.
+
+        Args:
+            futu_options: List of Futu option positions to fetch Greeks for.
+        """
+        if not self._ibkr or not self._ibkr.is_available:
+            logger.warning("Cannot fetch Greeks for Futu options: IBKR not available")
+            return
+
+        logger.info(f"Fetching Greeks for {len(futu_options)} Futu option positions via IBKR")
+
+        for pos in futu_options:
+            try:
+                # Use the underlying field which contains IBKR-compatible stock code
+                # (e.g., "9988" for ALB, "700" for TCH)
+                underlying = pos.underlying
+                strike = pos.strike
+                expiry = pos.expiry  # Should be in YYYYMMDD format
+                option_type = pos.option_type  # "call" or "put"
+
+                if not all([underlying, strike, expiry, option_type]):
+                    logger.debug(f"Missing option details for {pos.symbol}: "
+                                f"underlying={underlying}, strike={strike}, expiry={expiry}, type={option_type}")
+                    continue
+
+                logger.info(f"Fetching Greeks for {pos.symbol} via IBKR: "
+                           f"underlying={underlying}, strike={strike}, expiry={expiry}, type={option_type}")
+
+                # Fetch Greeks via IBKR
+                greeks = self._ibkr.fetch_greeks_for_hk_option(
+                    underlying=underlying,
+                    strike=strike,
+                    expiry=expiry,
+                    option_type=option_type,
+                )
+
+                if greeks:
+                    pos.delta = greeks.get("delta")
+                    pos.gamma = greeks.get("gamma")
+                    pos.theta = greeks.get("theta")
+                    pos.vega = greeks.get("vega")
+                    pos.iv = greeks.get("iv")
+                    logger.info(f"Updated Greeks for {pos.symbol}: delta={pos.delta}, iv={pos.iv}")
+                else:
+                    logger.warning(f"No Greeks returned for {pos.symbol}")
+
+            except Exception as e:
+                logger.warning(f"Error fetching Greeks for Futu option {pos.symbol}: {e}")
 
     def get_positions_by_symbol(
         self,

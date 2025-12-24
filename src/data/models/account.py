@@ -61,6 +61,7 @@ class AccountPosition:
     unrealized_pnl: float
     currency: str
     # Option-specific fields
+    underlying: str | None = None  # Underlying stock code (e.g., "9988" for IBKR)
     strike: float | None = None
     expiry: str | None = None
     option_type: str | None = None

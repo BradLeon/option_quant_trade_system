@@ -110,16 +110,21 @@ class IBKRProvider(DataProvider, AccountProvider):
         self._host = host or os.getenv("IBKR_HOST", "127.0.0.1")
         self._account_type = account_type
 
-        # Auto-select port based on account_type if not explicitly specified
+        # Auto-select port based on account_type
+        # Priority: explicit port > account_type-based > env var > default (live)
         if port is not None:
             self._port = port
+        elif account_type is not None:
+            # When account_type is explicitly specified, use the corresponding port
+            # This takes priority over env var to ensure correct account connection
+            self._port = self.PAPER_PORT if account_type == AccountType.PAPER else self.LIVE_PORT
         else:
             env_port = os.getenv("IBKR_PORT")
             if env_port:
                 self._port = int(env_port)
             else:
-                # Auto-select: 7497 for paper, 7496 for live
-                self._port = self.PAPER_PORT if account_type == AccountType.PAPER else self.LIVE_PORT
+                # Default to live port if nothing specified
+                self._port = self.LIVE_PORT
 
         # Generate unique clientId based on process ID to avoid conflicts
         # TWS GUI uses 0, other apps commonly use 1-10
@@ -1510,6 +1515,98 @@ class IBKRProvider(DataProvider, AccountProvider):
 
         except Exception as e:
             logger.debug(f"Could not fetch Greeks for {position.symbol}: {e}")
+
+    def fetch_greeks_for_hk_option(
+        self,
+        underlying: str,
+        strike: float,
+        expiry: str,
+        option_type: str,
+    ) -> dict[str, float | None] | None:
+        """Fetch Greeks for a Hong Kong option position via IBKR.
+
+        This method is used to get Greeks for options held at other brokers
+        (e.g., Futu) that don't provide Greeks data directly.
+
+        Args:
+            underlying: Underlying stock code (e.g., "9988" for Alibaba).
+            strike: Strike price.
+            expiry: Expiry date string in YYYYMMDD format (e.g., "20260129").
+            option_type: "call" or "put".
+
+        Returns:
+            Dictionary with Greeks (delta, gamma, theta, vega, iv) or None if failed.
+        """
+        self._ensure_connected()
+
+        try:
+            # Normalize underlying - remove leading zeros and HK suffix
+            underlying_code = underlying.upper()
+            if underlying_code.endswith(".HK"):
+                underlying_code = underlying_code[:-3]
+            underlying_code = underlying_code.lstrip("0")
+
+            # Convert option_type to IBKR right format
+            right = "C" if option_type.lower() == "call" else "P"
+
+            logger.info(f"Fetching Greeks for HK option: symbol={underlying_code}, "
+                       f"expiry={expiry}, strike={strike}, right={right}")
+
+            # Build Contract for HK option
+            # HK options: SEHK exchange, HKD currency, multiplier 500
+            contract = Contract()
+            contract.conId = 0
+            contract.symbol = underlying_code
+            contract.secType = "OPT"
+            contract.exchange = "SEHK"
+            contract.currency = "HKD"
+            contract.lastTradeDateOrContractMonth = expiry
+            contract.strike = strike
+            contract.right = right
+
+            # Qualify the contract
+            self._ib.qualifyContracts(contract)
+            if not contract.conId:
+                logger.warning(f"Could not qualify HK option contract: "
+                             f"{underlying_code} {expiry} {right} @ {strike}")
+                return None
+
+            logger.info(f"Qualified contract: conId={contract.conId}")
+
+            # Request market data with Greeks
+            ticker = self._ib.reqMktData(contract, "100,101,104,106", snapshot=False, regulatorySnapshot=False)
+
+            # Wait for Greeks to populate (up to 5 seconds)
+            for _ in range(5):
+                self._ib.sleep(1)
+                if ticker.modelGreeks is not None:
+                    break
+                if ticker.bidGreeks is not None or ticker.askGreeks is not None:
+                    break
+
+            # Extract Greeks from model, bid, or ask Greeks
+            mg = ticker.modelGreeks or ticker.bidGreeks or ticker.askGreeks
+            self._ib.cancelMktData(contract)
+
+            if mg:
+                # Check for NaN values (NaN != NaN is True)
+                result = {
+                    "delta": mg.delta if mg.delta == mg.delta else None,
+                    "gamma": mg.gamma if mg.gamma == mg.gamma else None,
+                    "theta": mg.theta if mg.theta == mg.theta else None,
+                    "vega": mg.vega if mg.vega == mg.vega else None,
+                    "iv": mg.impliedVol if mg.impliedVol == mg.impliedVol else None,
+                }
+                logger.info(f"Got Greeks for {underlying_code} {expiry} {right}@{strike}: "
+                           f"delta={result['delta']}, iv={result['iv']}")
+                return result
+            else:
+                logger.warning(f"No Greeks available for HK option: {underlying_code} {expiry} {right} @ {strike}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error fetching Greeks for HK option {underlying}: {e}")
+            return None
 
     def get_cash_balances(
         self,

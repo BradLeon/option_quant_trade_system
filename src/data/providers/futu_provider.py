@@ -795,11 +795,45 @@ class FutuProvider(DataProvider, AccountProvider):
             logger.error(f"Error getting account summary: {e}")
             return None
 
+    # Mapping from Futu option codes to IBKR stock codes (HK stocks)
+    # These are HKEX standardized option abbreviations
+    # Add new mappings here when encountering unknown option codes
+    FUTU_TO_IBKR_CODE = {
+        "ALB": "9988",   # 阿里巴巴
+        "TCH": "700",    # 腾讯
+        "MIU": "1810",   # 小米
+        "BDU": "9888",   # 百度
+        "JDH": "9618",   # 京东
+        "NTE": "9999",   # 网易
+        "BLB": "9626",   # 哔哩哔哩
+        "HCH": "2318",   # 中国平安
+        "HSI": "HSI",    # 恒生指数
+    }
+
+    def _get_underlying_code(self, futu_code: str) -> str:
+        """Get IBKR stock code for a Futu option code.
+
+        Args:
+            futu_code: Short Futu code (e.g., "ALB").
+
+        Returns:
+            IBKR-compatible stock code (e.g., "9988").
+        """
+        if futu_code in self.FUTU_TO_IBKR_CODE:
+            return self.FUTU_TO_IBKR_CODE[futu_code]
+
+        # Unknown code - log warning and return as-is
+        logger.warning(
+            f"Unknown Futu option code '{futu_code}'. "
+            f"Please add mapping to FUTU_TO_IBKR_CODE in FutuProvider."
+        )
+        return futu_code
+
     def _parse_futu_option_symbol(self, code: str, stock_name: str) -> dict | None:
         """Parse Futu option symbol to extract option details.
 
         Futu option format: HK.ALB260129C160000
-        - ALB = underlying (阿里巴巴)
+        - ALB = underlying (阿里巴巴) -> mapped to IBKR code 9988
         - 260129 = expiry date (YYMMDD)
         - C = Call, P = Put
         - 160000 = strike * 1000
@@ -824,16 +858,19 @@ class FutuProvider(DataProvider, AccountProvider):
         match = re.match(option_pattern, symbol)
 
         if match:
-            underlying = match.group(1)
+            futu_code = match.group(1)
             expiry_str = match.group(2)  # YYMMDD
             option_type_char = match.group(3)
             strike_raw = match.group(4)
 
-            # Parse expiry date
+            # Get IBKR stock code from mapping
+            ibkr_code = self._get_underlying_code(futu_code)
+
+            # Parse expiry date - return in YYYYMMDD format for IBKR compatibility
             try:
-                expiry_date = datetime.strptime(f"20{expiry_str}", "%Y%m%d").strftime("%Y-%m-%d")
+                expiry_date = datetime.strptime(f"20{expiry_str}", "%Y%m%d").strftime("%Y%m%d")
             except ValueError:
-                expiry_date = expiry_str
+                expiry_date = f"20{expiry_str}"
 
             # Parse strike price (divide by 1000)
             try:
@@ -842,7 +879,7 @@ class FutuProvider(DataProvider, AccountProvider):
                 strike = 0.0
 
             return {
-                "underlying": underlying,
+                "underlying": ibkr_code,  # IBKR-compatible stock code
                 "expiry": expiry_date,
                 "option_type": "call" if option_type_char == "C" else "put",
                 "strike": strike,
@@ -858,18 +895,23 @@ class FutuProvider(DataProvider, AccountProvider):
                 strike_str = name_match.group(2)
                 type_str = name_match.group(3)
 
+                # Parse expiry date - return in YYYYMMDD format for IBKR
                 try:
-                    expiry_date = datetime.strptime(f"20{expiry_str}", "%Y%m%d").strftime("%Y-%m-%d")
+                    expiry_date = datetime.strptime(f"20{expiry_str}", "%Y%m%d").strftime("%Y%m%d")
                 except ValueError:
-                    expiry_date = expiry_str
+                    expiry_date = f"20{expiry_str}"
 
                 try:
                     strike = float(strike_str)
                 except ValueError:
                     strike = 0.0
 
+                # Extract Futu code and get IBKR code from mapping
+                futu_code = symbol[:3] if len(symbol) > 3 else symbol
+                ibkr_code = self._get_underlying_code(futu_code)
+
                 return {
-                    "underlying": symbol[:3] if len(symbol) > 3 else symbol,
+                    "underlying": ibkr_code,
                     "expiry": expiry_date,
                     "option_type": "call" if "购" in type_str else "put",
                     "strike": strike,
@@ -907,6 +949,9 @@ class FutuProvider(DataProvider, AccountProvider):
                 logger.info("No positions found in Futu account")
                 return []
 
+            # Log available columns for debugging
+            logger.debug(f"Position columns: {list(data.columns)}")
+
             results = []
             for _, row in data.iterrows():
                 code = row.get("code", "")
@@ -930,9 +975,16 @@ class FutuProvider(DataProvider, AccountProvider):
                 option_info = self._parse_futu_option_symbol(code, stock_name)
                 asset_type = AssetType.OPTION if option_info else AssetType.STOCK
 
-                # Use average_cost instead of cost_price for correct avg cost
-                # cost_price can be negative due to realized P&L adjustments
-                avg_cost = self._safe_float(row.get("average_cost", 0))
+                # Get cost price - try multiple field names for compatibility
+                # Futu API uses cost_price, but some versions may use average_cost
+                avg_cost = self._safe_float(row.get("cost_price", 0))
+                if avg_cost == 0:
+                    avg_cost = self._safe_float(row.get("average_cost", 0))
+
+                # Get unrealized P&L - Futu uses pl_val
+                unrealized_pnl = self._safe_float(row.get("pl_val", 0))
+                if unrealized_pnl == 0:
+                    unrealized_pnl = self._safe_float(row.get("unrealized_pl", 0))
 
                 # Create position
                 position = AccountPosition(
@@ -942,7 +994,7 @@ class FutuProvider(DataProvider, AccountProvider):
                     quantity=self._safe_float(row.get("qty", 0)),
                     avg_cost=avg_cost,
                     market_value=self._safe_float(row.get("market_val", 0)),
-                    unrealized_pnl=self._safe_float(row.get("unrealized_pl", 0)),
+                    unrealized_pnl=unrealized_pnl,
                     currency=currency,
                     broker="futu",
                     last_updated=datetime.now(),
@@ -950,6 +1002,7 @@ class FutuProvider(DataProvider, AccountProvider):
 
                 # Add option-specific fields if applicable
                 if option_info:
+                    position.underlying = option_info["underlying"]  # IBKR-compatible code
                     position.strike = option_info["strike"]
                     position.expiry = option_info["expiry"]
                     position.option_type = option_info["option_type"]
