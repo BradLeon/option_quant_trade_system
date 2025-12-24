@@ -74,6 +74,8 @@ class AccountPosition:
     iv: float | None = None
     # Underlying price (for delta_dollars calculation)
     underlying_price: float | None = None
+    # Margin requirement for this position
+    margin: float | None = None
     # Metadata
     broker: str = ""
     last_updated: datetime | None = None

@@ -103,6 +103,7 @@ def account_position_to_engine_position(ap: AccountPosition) -> Position:
         market_value=ap.market_value,
         underlying_price=ap.underlying_price,
         contract_multiplier=multiplier,
+        margin=ap.margin,
         dte=dte,
         currency=ap.currency,
     )

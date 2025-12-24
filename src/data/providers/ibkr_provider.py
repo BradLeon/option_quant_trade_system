@@ -1422,6 +1422,7 @@ class IBKRProvider(DataProvider, AccountProvider):
 
                 # Add option-specific fields
                 if sec_type == "OPT":
+                    position.underlying = contract.symbol  # Underlying stock symbol
                     position.strike = contract.strike
                     position.expiry = contract.lastTradeDateOrContractMonth
                     position.option_type = "call" if contract.right == "C" else "put"
@@ -1521,10 +1522,167 @@ class IBKRProvider(DataProvider, AccountProvider):
                 logger.warning(f"No Greeks available for {position.symbol}. "
                              f"Ticker: bid={ticker.bid}, ask={ticker.ask}, last={ticker.last}")
 
+                # Fallback: Calculate Greeks using Black-Scholes if we have enough data
+                logger.info(f"Attempting to calculate Greeks using Black-Scholes for {position.symbol}")
+                self._calculate_greeks_fallback(position, ticker)
+
             self._ib.cancelMktData(contract)
 
         except Exception as e:
             logger.debug(f"Could not fetch Greeks for {position.symbol}: {e}")
+
+    def _calculate_greeks_fallback(self, position: AccountPosition, ticker: Any) -> None:
+        """Calculate Greeks using Black-Scholes when API Greeks are unavailable.
+
+        This is a wrapper around _calculate_greeks_from_params that works with AccountPosition.
+
+        Args:
+            position: AccountPosition to update with calculated Greeks.
+            ticker: IBKR ticker object (may have price data).
+        """
+        try:
+            # Extract parameters from position
+            underlying = position.underlying or position.symbol.split()[0]
+
+            # Call core calculation function
+            result = self._calculate_greeks_from_params(
+                underlying=underlying,
+                strike=position.strike,
+                expiry=position.expiry,
+                option_type=position.option_type,
+                ticker=ticker
+            )
+
+            # Update position with calculated Greeks
+            if result:
+                position.delta = result.get("delta")
+                position.gamma = result.get("gamma")
+                position.theta = result.get("theta")
+                position.vega = result.get("vega")
+                position.iv = result.get("iv")
+                position.underlying_price = result.get("underlying_price")
+
+                logger.info(f"Calculated Greeks for {position.symbol} using Black-Scholes: "
+                           f"delta={position.delta:.4f}, gamma={position.gamma:.4f}, "
+                           f"theta={position.theta:.4f}, vega={position.vega:.4f}, "
+                           f"iv={position.iv:.4f}, underlying_price={position.underlying_price:.2f}")
+            else:
+                logger.warning(f"Could not calculate Greeks for {position.symbol}")
+
+        except Exception as e:
+            logger.warning(f"Failed to calculate Greeks fallback for {position.symbol}: {e}")
+
+    def _calculate_greeks_from_params(
+        self,
+        underlying: str,
+        strike: float,
+        expiry: str,
+        option_type: str,
+        ticker: Any = None,
+    ) -> dict[str, float | None] | None:
+        """Calculate Greeks using Black-Scholes from raw parameters.
+
+        Args:
+            underlying: Underlying stock code (e.g., "9988").
+            strike: Strike price.
+            expiry: Expiry date in YYYYMMDD format.
+            option_type: "call" or "put".
+            ticker: Optional IBKR ticker object.
+
+        Returns:
+            Dictionary with calculated Greeks, or None if calculation fails.
+        """
+        try:
+            from datetime import datetime
+            from src.engine.bs import calc_bs_greeks
+            from src.engine.models import BSParams
+
+            # Step 1: Normalize underlying symbol to .HK format
+            underlying_symbol = underlying
+            if underlying_symbol.isdigit():
+                underlying_symbol = f"{int(underlying_symbol):04d}.HK"
+            elif not underlying_symbol.endswith(".HK"):
+                underlying_symbol = f"{underlying_symbol}.HK"
+
+            # Step 2: Get underlying price
+            underlying_price = None
+            try:
+                stock_quote = self.get_stock_quote(underlying_symbol)
+                if stock_quote and stock_quote.close:
+                    underlying_price = stock_quote.close
+                    logger.debug(f"Fetched underlying price: {underlying_price}")
+            except Exception as e:
+                logger.debug(f"Could not fetch underlying stock quote: {e}")
+
+            if underlying_price is None:
+                logger.warning(f"Cannot calculate Greeks: no underlying price for {underlying_symbol}")
+                return None
+
+            # Step 3: Get or estimate IV
+            iv = None
+
+            # Try to get IV from ticker
+            if ticker and hasattr(ticker, 'impliedVolatility') and ticker.impliedVolatility == ticker.impliedVolatility:
+                iv = ticker.impliedVolatility
+
+            # If no IV from ticker, try to get from stock volatility
+            if iv is None:
+                try:
+                    volatility_data = self.get_stock_volatility(underlying_symbol, include_iv_rank=False)
+                    if volatility_data:
+                        iv = volatility_data.iv or volatility_data.hv
+                        if iv:
+                            logger.debug(f"Using volatility={iv:.4f} from stock data")
+                except Exception as e:
+                    logger.debug(f"Could not fetch volatility data: {e}")
+
+            # Use default IV if still None
+            if iv is None:
+                iv = 0.30
+                logger.debug(f"Using default IV={iv:.2f}")
+
+            # Step 4: Calculate time to expiry
+            try:
+                expiry_date = datetime.strptime(expiry, "%Y%m%d")
+                days_to_expiry = (expiry_date - datetime.now()).days
+                time_to_expiry = max(days_to_expiry / 365.0, 1/365.0)
+            except ValueError:
+                logger.warning(f"Invalid expiry format: {expiry}")
+                return None
+
+            # Step 5: Build BSParams and calculate Greeks
+            is_call = option_type.lower() == "call"
+
+            params = BSParams(
+                spot_price=underlying_price,
+                strike_price=strike,
+                risk_free_rate=0.03,
+                volatility=iv,
+                time_to_expiry=time_to_expiry,
+                is_call=is_call,
+            )
+
+            greeks = calc_bs_greeks(params)
+
+            result = {
+                "delta": greeks.get("delta"),
+                "gamma": greeks.get("gamma"),
+                "theta": greeks.get("theta"),
+                "vega": greeks.get("vega"),
+                "iv": iv,
+                "underlying_price": underlying_price,
+            }
+
+            logger.info(f"Calculated Greeks for {underlying} using Black-Scholes: "
+                       f"delta={result['delta']:.4f}, gamma={result['gamma']:.4f}, "
+                       f"theta={result['theta']:.4f}, vega={result['vega']:.4f}, "
+                       f"iv={result['iv']:.4f}, underlying_price={result['underlying_price']:.2f}")
+
+            return result
+
+        except Exception as e:
+            logger.warning(f"Failed to calculate Greeks from params for {underlying}: {e}")
+            return None
 
     def fetch_greeks_for_hk_option(
         self,
@@ -1616,7 +1774,16 @@ class IBKRProvider(DataProvider, AccountProvider):
                 return result
             else:
                 logger.warning(f"No Greeks available for HK option: {underlying_code} {expiry} {right} @ {strike}")
-                return None
+
+                # Fallback: Calculate Greeks using Black-Scholes
+                logger.info(f"Attempting to calculate Greeks using Black-Scholes for HK option: {underlying_code}")
+                return self._calculate_greeks_from_params(
+                    underlying=underlying_code,
+                    strike=strike,
+                    expiry=expiry,
+                    option_type=option_type,
+                    ticker=ticker
+                )
 
         except Exception as e:
             logger.error(f"Error fetching Greeks for HK option {underlying}: {e}")

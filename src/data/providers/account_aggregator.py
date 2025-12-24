@@ -101,6 +101,10 @@ class AccountAggregator:
                 ibkr_cash = self._ibkr.get_cash_balances(account_type)
                 ibkr_summary = self._ibkr.get_account_summary(account_type)
 
+                # Assign margin to IBKR positions
+                if ibkr_summary and ibkr_summary.margin_used:
+                    self._assign_position_margins(ibkr_positions, ibkr_summary.margin_used)
+
                 positions.extend(ibkr_positions)
                 cash_balances.extend(ibkr_cash)
                 if ibkr_summary:
@@ -119,6 +123,10 @@ class AccountAggregator:
                 )
                 futu_cash = self._futu.get_cash_balances(account_type)
                 futu_summary = self._futu.get_account_summary(account_type)
+
+                # Assign margin to Futu positions
+                if futu_summary and futu_summary.margin_used:
+                    self._assign_position_margins(futu_positions, futu_summary.margin_used)
 
                 # Collect Futu option positions for Greeks fetching via IBKR
                 for pos in futu_positions:
@@ -224,6 +232,32 @@ class AccountAggregator:
             total_pnl += pnl
 
         return total_pnl
+
+    def _assign_position_margins(
+        self,
+        positions: list[AccountPosition],
+        margin_used: float,
+    ) -> None:
+        """Assign margin to positions proportionally by market value.
+
+        Distributes the account-level margin_used to individual positions
+        based on their market_value proportion.
+
+        Args:
+            positions: List of positions to assign margin to.
+            margin_used: Total margin used for these positions.
+        """
+        if not margin_used or margin_used <= 0:
+            return
+
+        # Calculate total market value (use absolute value)
+        total_mv = sum(abs(p.market_value) for p in positions)
+        if total_mv == 0:
+            return
+
+        # Assign margin proportionally
+        for pos in positions:
+            pos.margin = margin_used * abs(pos.market_value) / total_mv
 
     def _normalize_symbol(self, symbol: str) -> str:
         """Normalize symbol to a canonical form for merging.
@@ -373,6 +407,10 @@ class AccountAggregator:
         total_cost = sum(p.avg_cost * p.quantity for p in positions)
         avg_cost = total_cost / total_qty if total_qty != 0 else 0
 
+        # Sum margins from all positions
+        total_margin = sum(p.margin for p in positions if p.margin is not None)
+        merged_margin = total_margin if total_margin > 0 else None
+
         # Use first position as base
         base = positions[0]
         brokers = list(set(p.broker for p in positions))
@@ -387,6 +425,7 @@ class AccountAggregator:
             unrealized_pnl=total_pnl,
             currency=base.currency,  # Already converted to base
             delta=1.0,  # Stock delta is always 1
+            margin=merged_margin,  # Sum of margins from all brokers
             broker="+".join(brokers),  # e.g., "ibkr+futu"
             last_updated=datetime.now(),
         )
