@@ -195,6 +195,17 @@ with IBKRProvider() as provider:
 - 实时行情需要市场数据订阅
 - 历史数据无需订阅
 
+**Greeks 数据获取增强：**
+- ✅ **自动备用方案**：当 IBKR API 无法提供实时 Greeks 时（非交易时段、低流动性合约），自动使用 Black-Scholes 模型计算
+- ✅ **完整数据保障**：确保即使在非交易时段也能获取完整的 Greeks 数据（delta, gamma, theta, vega, IV）
+- ✅ **智能数据源**：
+  1. 优先使用 IBKR API 实时 Greeks（交易时段）
+  2. 如果失败，自动查询标的股票价格
+  3. 使用标的股票波动率（IV/HV）
+  4. 通过 Black-Scholes 公式计算 Greeks
+- ✅ **支持港股期权**：`fetch_greeks_for_hk_option()` 方法同样支持备用方案
+- ⚠️ **计算 Greeks 精度**：备用方案使用 Black-Scholes 模型，可能与实际市场 Greeks 略有差异，但足以支持策略分析
+
 ### 推荐使用场景
 
 | 场景 | 推荐Provider | 原因 |
