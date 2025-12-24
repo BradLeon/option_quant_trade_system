@@ -9,7 +9,7 @@ from src.data.providers.account_aggregator import AccountAggregator
 import logging
 
 # Enable debug logging for troubleshooting
-logging.basicConfig(level=logging.DEBUG)
+# logging.basicConfig(level=logging.DEBUG)
 
 
 # =============================================================================

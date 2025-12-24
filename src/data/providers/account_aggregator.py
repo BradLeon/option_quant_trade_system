@@ -7,6 +7,8 @@ into a unified portfolio view with currency conversion.
 from __future__ import annotations
 
 import logging
+import re
+from copy import deepcopy
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -138,16 +140,19 @@ class AccountAggregator:
         if futu_option_positions and self._ibkr and self._ibkr.is_available:
             self._fetch_greeks_for_futu_options(futu_option_positions)
 
+        # Merge positions and convert to base currency
+        merged_positions = self._merge_positions(positions, base_currency)
+
         # Calculate totals in base currency
         total_value = self._calc_total_value(positions, cash_balances, base_currency)
         total_pnl = self._calc_total_pnl(positions, base_currency)
 
-        logger.info(f"Consolidated portfolio: {len(positions)} positions, "
+        logger.info(f"Consolidated portfolio: {len(positions)} raw -> {len(merged_positions)} merged positions, "
                    f"total value={total_value:.2f} {base_currency}, "
                    f"unrealized P&L={total_pnl:.2f} {base_currency}")
 
         return ConsolidatedPortfolio(
-            positions=positions,
+            positions=merged_positions,
             cash_balances=cash_balances,
             total_value_usd=total_value,
             total_unrealized_pnl_usd=total_pnl,
@@ -220,6 +225,172 @@ class AccountAggregator:
 
         return total_pnl
 
+    def _normalize_symbol(self, symbol: str) -> str:
+        """Normalize symbol to a canonical form for merging.
+
+        Handles different broker formats:
+        - IBKR: "9988.HK", "0700.HK", "AAPL"
+        - Futu: "HK.09988", "HK.00700", "US.AAPL"
+
+        Returns:
+            Normalized symbol like "9988", "700", "AAPL"
+        """
+        symbol = symbol.upper()
+
+        # Remove market prefix (Futu format: "HK.09988", "US.AAPL")
+        if symbol.startswith(("US.", "HK.", "SH.", "SZ.")):
+            symbol = symbol.split(".", 1)[1]
+
+        # Remove market suffix (IBKR format: "9988.HK")
+        if symbol.endswith((".HK", ".SH", ".SZ")):
+            symbol = symbol.rsplit(".", 1)[0]
+
+        # Remove leading zeros for HK stocks (09988 -> 9988)
+        if re.match(r"^0+\d+$", symbol):
+            symbol = symbol.lstrip("0")
+
+        return symbol
+
+    def _convert_position_currency(
+        self,
+        pos: AccountPosition,
+        base_currency: str,
+    ) -> AccountPosition:
+        """Convert position values to base currency.
+
+        Args:
+            pos: Original position.
+            base_currency: Target currency.
+
+        Returns:
+            New position with converted values.
+        """
+        if pos.currency == base_currency:
+            return pos
+
+        # Create a copy to avoid modifying original
+        converted = deepcopy(pos)
+        converted.market_value = self._converter.convert(
+            pos.market_value, pos.currency, base_currency
+        )
+        converted.unrealized_pnl = self._converter.convert(
+            pos.unrealized_pnl, pos.currency, base_currency
+        )
+        converted.avg_cost = self._converter.convert(
+            pos.avg_cost, pos.currency, base_currency
+        )
+        # Convert underlying_price for delta_dollars calculation
+        if pos.underlying_price is not None:
+            converted.underlying_price = self._converter.convert(
+                pos.underlying_price, pos.currency, base_currency
+            )
+        # Convert theta and vega (they are in local currency)
+        if pos.theta is not None:
+            converted.theta = self._converter.convert(
+                pos.theta, pos.currency, base_currency
+            )
+        if pos.vega is not None:
+            converted.vega = self._converter.convert(
+                pos.vega, pos.currency, base_currency
+            )
+        converted.currency = base_currency
+
+        return converted
+
+    def _merge_positions(
+        self,
+        positions: list[AccountPosition],
+        base_currency: str,
+    ) -> list[AccountPosition]:
+        """Merge positions with the same underlying across brokers.
+
+        Only merges stock positions. Options are kept separate due to
+        different strikes/expiries.
+
+        Args:
+            positions: List of positions to merge.
+            base_currency: Currency for converted values.
+
+        Returns:
+            List of merged positions.
+        """
+        # First convert all positions to base currency
+        converted_positions = [
+            self._convert_position_currency(p, base_currency) for p in positions
+        ]
+
+        # Separate stocks and options
+        stocks: dict[str, list[AccountPosition]] = {}
+        options: list[AccountPosition] = []
+
+        for pos in converted_positions:
+            if pos.asset_type == AssetType.OPTION:
+                options.append(pos)
+            else:
+                # Group stocks by normalized symbol
+                norm_symbol = self._normalize_symbol(pos.symbol)
+                if norm_symbol not in stocks:
+                    stocks[norm_symbol] = []
+                stocks[norm_symbol].append(pos)
+
+        # Merge stocks with same symbol
+        merged: list[AccountPosition] = []
+        for norm_symbol, pos_list in stocks.items():
+            if len(pos_list) == 1:
+                # Single position, keep as is but update symbol
+                pos = pos_list[0]
+                pos.symbol = norm_symbol
+                merged.append(pos)
+            else:
+                # Multiple positions, merge them
+                merged_pos = self._merge_stock_positions(norm_symbol, pos_list)
+                merged.append(merged_pos)
+
+        # Add options (not merged)
+        merged.extend(options)
+
+        return merged
+
+    def _merge_stock_positions(
+        self,
+        symbol: str,
+        positions: list[AccountPosition],
+    ) -> AccountPosition:
+        """Merge multiple stock positions into one.
+
+        Args:
+            symbol: Normalized symbol.
+            positions: List of positions to merge.
+
+        Returns:
+            Merged position.
+        """
+        total_qty = sum(p.quantity for p in positions)
+        total_market_value = sum(p.market_value for p in positions)
+        total_pnl = sum(p.unrealized_pnl for p in positions)
+
+        # Weighted average cost
+        total_cost = sum(p.avg_cost * p.quantity for p in positions)
+        avg_cost = total_cost / total_qty if total_qty != 0 else 0
+
+        # Use first position as base
+        base = positions[0]
+        brokers = list(set(p.broker for p in positions))
+
+        return AccountPosition(
+            symbol=symbol,
+            asset_type=AssetType.STOCK,
+            market=base.market,
+            quantity=total_qty,
+            avg_cost=avg_cost,
+            market_value=total_market_value,
+            unrealized_pnl=total_pnl,
+            currency=base.currency,  # Already converted to base
+            delta=1.0,  # Stock delta is always 1
+            broker="+".join(brokers),  # e.g., "ibkr+futu"
+            last_updated=datetime.now(),
+        )
+
     def _fetch_greeks_for_futu_options(
         self,
         futu_options: list[AccountPosition],
@@ -269,7 +440,9 @@ class AccountAggregator:
                     pos.theta = greeks.get("theta")
                     pos.vega = greeks.get("vega")
                     pos.iv = greeks.get("iv")
-                    logger.info(f"Updated Greeks for {pos.symbol}: delta={pos.delta}, iv={pos.iv}")
+                    pos.underlying_price = greeks.get("underlying_price")
+                    logger.info(f"Updated Greeks for {pos.symbol}: delta={pos.delta}, "
+                               f"iv={pos.iv}, undPrice={pos.underlying_price}")
                 else:
                     logger.warning(f"No Greeks returned for {pos.symbol}")
 

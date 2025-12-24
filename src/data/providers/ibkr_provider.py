@@ -1425,7 +1425,9 @@ class IBKRProvider(DataProvider, AccountProvider):
                     position.strike = contract.strike
                     position.expiry = contract.lastTradeDateOrContractMonth
                     position.option_type = "call" if contract.right == "C" else "put"
-                    position.contract_multiplier = contract.multiplier or 100
+                    # IBKR returns multiplier as string, convert to int
+                    mult = contract.multiplier
+                    position.contract_multiplier = int(mult) 
                 else:
                     # Stock Greeks: delta = +1 (long) or -1 (short), others = 0
                     position.delta = 1.0 if position.quantity > 0 else -1.0 if position.quantity < 0 else 0.0
@@ -1448,6 +1450,10 @@ class IBKRProvider(DataProvider, AccountProvider):
                         port_item = portfolio_lookup[pos.contract.conId]
                         results[i].market_value = port_item.marketValue
                         results[i].unrealized_pnl = port_item.unrealizedPNL
+
+                        # For stocks, underlying_price = market_value / quantity
+                        if results[i].asset_type == AssetType.STOCK and results[i].quantity != 0:
+                            results[i].underlying_price = abs(port_item.marketValue / results[i].quantity)
 
                         # Get Greeks for options from market data (if enabled)
                         if fetch_greeks and results[i].asset_type == AssetType.OPTION:
@@ -1505,7 +1511,11 @@ class IBKRProvider(DataProvider, AccountProvider):
                 position.theta = mg.theta if mg.theta == mg.theta else None
                 position.vega = mg.vega if mg.vega == mg.vega else None
                 position.iv = mg.impliedVol if mg.impliedVol == mg.impliedVol else None
-                logger.debug(f"Fetched Greeks for {position.symbol}: delta={position.delta}, iv={position.iv}")
+                # Get underlying price from modelGreeks
+                if hasattr(mg, "undPrice") and mg.undPrice == mg.undPrice:
+                    position.underlying_price = mg.undPrice
+                logger.debug(f"Fetched Greeks for {position.symbol}: delta={position.delta}, "
+                           f"iv={position.iv}, undPrice={position.underlying_price}")
             else:
                 # Log what we got from ticker for debugging
                 logger.warning(f"No Greeks available for {position.symbol}. "
@@ -1590,15 +1600,19 @@ class IBKRProvider(DataProvider, AccountProvider):
 
             if mg:
                 # Check for NaN values (NaN != NaN is True)
+                und_price = None
+                if hasattr(mg, "undPrice") and mg.undPrice == mg.undPrice:
+                    und_price = mg.undPrice
                 result = {
                     "delta": mg.delta if mg.delta == mg.delta else None,
                     "gamma": mg.gamma if mg.gamma == mg.gamma else None,
                     "theta": mg.theta if mg.theta == mg.theta else None,
                     "vega": mg.vega if mg.vega == mg.vega else None,
                     "iv": mg.impliedVol if mg.impliedVol == mg.impliedVol else None,
+                    "underlying_price": und_price,
                 }
                 logger.info(f"Got Greeks for {underlying_code} {expiry} {right}@{strike}: "
-                           f"delta={result['delta']}, iv={result['iv']}")
+                           f"delta={result['delta']}, iv={result['iv']}, undPrice={und_price}")
                 return result
             else:
                 logger.warning(f"No Greeks available for HK option: {underlying_code} {expiry} {right} @ {strike}")

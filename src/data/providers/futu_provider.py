@@ -810,6 +810,32 @@ class FutuProvider(DataProvider, AccountProvider):
         "HSI": "HSI",    # 恒生指数
     }
 
+    # HK option contract multiplier (shares per contract)
+    # Most HK stocks: 100, some like ALB: 500
+    HK_OPTION_MULTIPLIER = {
+        "ALB": 500,   # 阿里巴巴 9988
+        "TCH": 100,   # 腾讯 700
+        "MIU": 500,   # 小米 1810
+        "BDU": 100,   # 百度 9888
+        "JDH": 100,   # 京东 9618
+        "NTE": 100,   # 网易 9999
+        "BLB": 100,   # 哔哩哔哩 9626
+        "HCH": 500,   # 中国平安 2318
+        "HSI": 50,    # 恒生指数
+    }
+    HK_OPTION_MULTIPLIER_DEFAULT = 100
+
+    def _get_option_multiplier(self, futu_code: str) -> int:
+        """Get contract multiplier for a Futu option code.
+
+        Args:
+            futu_code: Futu option abbreviation (e.g., "ALB", "TCH").
+
+        Returns:
+            Contract multiplier (shares per contract).
+        """
+        return self.HK_OPTION_MULTIPLIER.get(futu_code, self.HK_OPTION_MULTIPLIER_DEFAULT)
+
     def _get_underlying_code(self, futu_code: str) -> str:
         """Get IBKR stock code for a Futu option code.
 
@@ -883,6 +909,7 @@ class FutuProvider(DataProvider, AccountProvider):
                 "expiry": expiry_date,
                 "option_type": "call" if option_type_char == "C" else "put",
                 "strike": strike,
+                "multiplier": self._get_option_multiplier(futu_code),
             }
 
         # Also check stock_name for option indicators (购=call, 沽=put)
@@ -915,6 +942,7 @@ class FutuProvider(DataProvider, AccountProvider):
                     "expiry": expiry_date,
                     "option_type": "call" if "购" in type_str else "put",
                     "strike": strike,
+                    "multiplier": self._get_option_multiplier(futu_code),
                 }
 
         return None
@@ -1006,6 +1034,7 @@ class FutuProvider(DataProvider, AccountProvider):
                     position.strike = option_info["strike"]
                     position.expiry = option_info["expiry"]
                     position.option_type = option_info["option_type"]
+                    position.contract_multiplier = option_info.get("multiplier", 100)
                 else:
                     # Stock Greeks: delta = +1 (long) or -1 (short), others = 0
                     position.delta = 1.0 if position.quantity > 0 else -1.0 if position.quantity < 0 else 0.0
@@ -1013,6 +1042,9 @@ class FutuProvider(DataProvider, AccountProvider):
                     position.theta = 0.0
                     position.vega = 0.0
                     position.iv = None
+                    # For stocks, underlying_price = market_value / quantity
+                    if position.quantity != 0:
+                        position.underlying_price = abs(position.market_value / position.quantity)
 
                 results.append(position)
 

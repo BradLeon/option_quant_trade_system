@@ -72,6 +72,8 @@ class AccountPosition:
     theta: float | None = None
     vega: float | None = None
     iv: float | None = None
+    # Underlying price (for delta_dollars calculation)
+    underlying_price: float | None = None
     # Metadata
     broker: str = ""
     last_updated: datetime | None = None
