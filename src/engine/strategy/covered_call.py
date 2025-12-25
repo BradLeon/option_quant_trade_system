@@ -288,6 +288,34 @@ class CoveredCallStrategy(OptionStrategy):
         """Capital at risk is the stock cost basis."""
         return self.stock_cost_basis
 
+    def calc_roc(self) -> float | None:
+        """Calculate annualized Return on Capital for Covered Call.
+
+        For covered call, capital at risk is the stock cost basis,
+        not the margin requirement (which is minimal for fully covered calls).
+
+        ROC = (premium / stock_cost_basis) * (365 / dte)
+
+        Returns:
+            Annualized ROC, or None if insufficient data.
+        """
+        from src.engine.position.risk_return import calc_roc_from_dte
+
+        dte = self.params.dte
+        if dte is None or dte <= 0:
+            return None
+
+        premium = self.leg.premium
+        if premium <= 0:
+            return None
+
+        # Use stock cost basis as capital at risk
+        capital = self._calc_capital_at_risk()  # = stock_cost_basis
+        if capital <= 0:
+            return None
+
+        return calc_roc_from_dte(premium, capital, dte)
+
     def calc_margin_requirement(self) -> float:
         """Calculate margin requirement using IBKR formula for Covered Call.
 
