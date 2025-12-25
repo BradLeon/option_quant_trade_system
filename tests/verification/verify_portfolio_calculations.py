@@ -43,7 +43,6 @@ from src.engine.portfolio.greeks_agg import (
     calc_portfolio_theta,
     calc_portfolio_vega,
     calc_delta_dollars,
-    calc_gamma_dollars,
     summarize_portfolio_greeks,
 )
 from src.engine.portfolio.risk_metrics import (
@@ -181,12 +180,13 @@ def print_portfolio_greeks(positions: list[Position]) -> None:
 
     # Calculate dollar-based metrics (need underlying prices)
     delta_dollars = calc_delta_dollars(positions)
-    gamma_dollars = calc_gamma_dollars(positions)
+    # Note: After currency conversion, gamma is already in gamma_dollars format
+    # (Γ × S² × 0.01), so total_gamma = gamma_dollars
 
     print(f"\n{'Dollar Metrics':<25} {'Value':>15} {'Description'}")
     print("-" * 70)
     print(f"{'Delta Dollars':<25} ${delta_dollars:>14,.2f} {'$ change per $1 underlying move'}")
-    print(f"{'Gamma Dollars':<25} ${gamma_dollars:>14,.2f} {'Delta$ change per 1% move'}")
+    print(f"{'Gamma Dollars':<25} ${total_gamma:>14,.2f} {'Delta$ change per 1% move (=portfolio_gamma)'}")
     print(f"{'Theta (USD)':<25} ${total_theta:>14,.2f} {'Daily time decay (USD)'}")
     print(f"{'Vega (USD)':<25} ${total_vega:>14,.2f} {'$ change per 1% IV move'}")
 

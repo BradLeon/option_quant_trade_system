@@ -638,6 +638,93 @@ print(f"10,000 HKD = ${hkd_to_usd:,.2f} USD")
 rates = converter.get_all_rates()  # {"HKD": 0.128, "CNY": 0.138, ...}
 ```
 
+### 数据流与 Greeks 货币转换
+
+系统从券商获取持仓数据后，经过货币转换，最终用于策略计算：
+
+```
+AccountPosition (券商原始数据, HKD/USD)
+       ↓
+_convert_position_currency() (account_aggregator.py)
+       ↓
+ConsolidatedPortfolio.positions (统一为 USD)
+       ↓
+  ┌────┴────┐
+  ↓         ↓
+Position    factory.py → OptionLeg + StrategyParams
+(greeks_agg)              ↓
+                      OptionStrategy (strategy metrics)
+```
+
+**Greeks 货币转换规则**：
+
+根据 Greeks 的数学定义，不同的 Greeks 需要不同的转换方式：
+
+| Greek | 数学定义 | 单位 | 转换方式 | 说明 |
+|-------|---------|------|---------|------|
+| Delta | ∂C/∂S | 无量纲 | **不转换** | 货币/货币 自动抵消 |
+| Gamma | ∂²C/∂S² | 1/货币 | **÷ rate** | 二阶导，需除以汇率 |
+| Theta | ∂C/∂t | 货币/天 | **× rate** | HKD→USD 需乘以汇率 |
+| Vega | ∂C/∂σ | 货币/% | **× rate** | HKD→USD 需乘以汇率 |
+| Rho | ∂C/∂r | 货币/% | **× rate** | HKD→USD 需乘以汇率 |
+
+**为什么 Delta 不需要转换？**
+
+```python
+# Delta = (期权价格变化) / (股价变化) = 货币/货币 = 无量纲
+# HKD: Δ = 0.5 HKD / 1 HKD = 0.5
+# USD: Δ = (0.5/rate) / (1/rate) = 0.5 (不变!)
+```
+
+**为什么 Gamma 要除以汇率？**
+
+```python
+# Gamma 是二阶导：Γ = ∂Δ/∂S
+# Δ 无量纲，S 有货币单位
+# Γ_USD = ∂Δ/∂S_USD = ∂Δ/∂(S_HKD × rate) = Γ_HKD / rate
+```
+
+**Gamma Dollars 计算验证**：
+
+系统将 Gamma 转换为 Gamma Dollars 格式以便跨货币聚合：
+
+```python
+# Gamma Dollars = Γ × S² × 0.01
+#
+# 方法1: 先算 HKD，再转 USD
+# Gamma$_HKD = Γ_HKD × S_HKD² × 0.01
+# Gamma$_USD = Gamma$_HKD × rate
+#
+# 方法2: 用转换后的参数计算
+# Gamma$_USD = Γ_HKD × (S_HKD × rate)² × 0.01 / rate
+#            = Γ_HKD × S_HKD² × rate² × 0.01 / rate
+#            = Γ_HKD × S_HKD² × rate × 0.01  ✓ (两种方法结果一致)
+```
+
+**示例 (700.HK Short Put)**：
+
+```python
+# 原始数据 (HKD)
+S_HKD = 602.0
+Γ_HKD = 0.0067
+θ_HKD = -0.0819  # 每天
+ν_HKD = 0.3664   # per 1% IV
+
+# 汇率
+rate = 0.1286  # HKD → USD
+
+# 转换后 (USD)
+S_USD = 602 × 0.1286 = 77.44
+Γ_USD = 0.0067 / 0.1286 = 0.052  # 变大！
+θ_USD = -0.0819 × 0.1286 = -0.0105
+ν_USD = 0.3664 × 0.1286 = 0.0471
+
+# Gamma Dollars (USD)
+Gamma$_USD = 0.0067 × 602² × 0.01 × 0.1286 = 3.12
+# 或等价于
+Gamma$_USD = 0.052 × 77.44² × 0.01 / 0.1286 = 3.12  ✓
+```
+
 ### 核心公式
 
 - **期望收益**: `E[π] = C - N(-d2) × [K - e^(rT) × S × N(-d1) / N(-d2)]`

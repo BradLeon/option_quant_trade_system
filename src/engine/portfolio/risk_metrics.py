@@ -6,7 +6,7 @@ Portfolio-level module for risk metrics that operate on list[Position].
 from src.engine.models.position import Position
 from src.engine.portfolio.greeks_agg import (
     calc_delta_dollars,
-    calc_gamma_dollars,
+    calc_portfolio_gamma,
     calc_portfolio_theta,
 )
 
@@ -41,8 +41,9 @@ def calc_portfolio_tgr(positions: list[Position]) -> float | None:
         return None
 
     # portfolio_theta is already in USD (converted by AccountAggregator)
+    # portfolio_gamma is now in gamma_dollars format (Γ × S² × 0.01) after currency conversion
     theta_usd = calc_portfolio_theta(positions)
-    gamma_dollars = calc_gamma_dollars(positions)
+    gamma_dollars = calc_portfolio_gamma(positions)
 
     if gamma_dollars == 0:
         return None

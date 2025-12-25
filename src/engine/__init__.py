@@ -94,7 +94,7 @@ from src.engine.portfolio import (
     # Greeks aggregation
     calc_beta_weighted_delta,
     calc_delta_dollars,
-    calc_gamma_dollars,
+    calc_portfolio_delta,
     calc_portfolio_gamma,
     calc_portfolio_theta,
     calc_portfolio_vega,
@@ -241,10 +241,10 @@ __all__ = [
     # Portfolio Level - Greeks Aggregation
     "calc_beta_weighted_delta",
     "calc_delta_dollars",
-    "calc_gamma_dollars",
+    "calc_portfolio_delta",
+    "calc_portfolio_gamma",
     "calc_portfolio_theta",
     "calc_portfolio_vega",
-    "calc_portfolio_gamma",
     # Portfolio Level - Risk Metrics
     "calc_portfolio_tgr",
     "calc_portfolio_var",

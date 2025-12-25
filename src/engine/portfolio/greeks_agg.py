@@ -77,6 +77,10 @@ def calc_portfolio_delta(positions: list[Position]) -> float:
     For options, delta represents sensitivity per share. Multiplying by
     contract_multiplier converts to per-contract sensitivity.
 
+    Note on currency: Delta is dimensionless (∂C/∂S = currency/currency),
+    so it does NOT require currency conversion. The same delta value applies
+    regardless of whether prices are in USD, HKD, or any other currency.
+
     Args:
         positions: List of Position objects with delta values.
 
@@ -102,11 +106,16 @@ def calc_portfolio_gamma(positions: list[Position]) -> float:
 
     Formula: Σ(gamma × quantity × contract_multiplier)
 
+    Note: After currency conversion in account_aggregator, gamma is stored
+    in "gamma_dollars per share" format (Γ × S² × 0.01). This function
+    aggregates across positions by multiplying by quantity and multiplier.
+    The result is total gamma_dollars exposure for the portfolio.
+
     Args:
         positions: List of Position objects with gamma values.
 
     Returns:
-        Sum of all position gammas (in share-equivalent terms).
+        Sum of all position gammas in gamma_dollars (base currency).
     """
     if not positions:
         return 0.0
@@ -253,26 +262,31 @@ def calc_delta_dollars(positions: list[Position]) -> float:
 
 
 def calc_gamma_dollars(positions: list[Position]) -> float:
-    """Calculate gamma exposure in dollar terms.
+    """DEPRECATED: Use calc_portfolio_gamma() instead.
+
+    This function calculates gamma exposure from RAW gamma values.
+    After currency conversion in account_aggregator, gamma is already stored
+    in gamma_dollars format (Γ × S² × 0.01), so use calc_portfolio_gamma().
 
     Formula: Gamma$ = Σ(gamma × underlying_price² × multiplier × quantity / 100)
 
-    Physical meaning:
-    - How much Delta$ changes when the underlying moves 1%
-    - Gamma$ of $5,000 means a 1% move changes Delta$ by $5,000
-    - High Gamma$ means the portfolio's directional exposure changes rapidly
-
     Args:
-        positions: List of Position objects with gamma and underlying_price.
+        positions: List of Position objects with RAW gamma and underlying_price.
 
     Returns:
         Total dollar gamma exposure.
 
-    Example:
-        # AAPL Call: gamma=0.02, AAPL=$150, 3 contracts
-        # Gamma$ = 0.02 × 150² × 100 × 3 / 100 = $1,350
-        # A 1% move in AAPL changes Delta$ by $1,350
+    .. deprecated::
+        Use :func:`calc_portfolio_gamma` instead. After currency conversion,
+        gamma is already in gamma_dollars format.
     """
+    import warnings
+    warnings.warn(
+        "calc_gamma_dollars is deprecated. Use calc_portfolio_gamma() instead. "
+        "After currency conversion, gamma is already in gamma_dollars format.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     if not positions:
         return 0.0
 
@@ -299,13 +313,16 @@ def summarize_portfolio_greeks(positions: list[Position]) -> dict[str, float | N
     Returns:
         Dictionary with all aggregated Greek values.
     """
+    # Note: After currency conversion in account_aggregator, gamma is stored
+    # in gamma_dollars format (Γ × S² × 0.01), so total_gamma = gamma_dollars.
+    total_gamma = calc_portfolio_gamma(positions)
     summary: dict[str, float | None] = {
         "total_delta": calc_portfolio_delta(positions),
-        "total_gamma": calc_portfolio_gamma(positions),
+        "total_gamma": total_gamma,
         "total_theta": calc_portfolio_theta(positions),
         "total_vega": calc_portfolio_vega(positions),
         "delta_dollars": calc_delta_dollars(positions),
-        "gamma_dollars": calc_gamma_dollars(positions),
+        "gamma_dollars": total_gamma,  # Same as total_gamma after currency conversion
         "beta_weighted_delta": calc_beta_weighted_delta(positions),
     }
 

@@ -83,14 +83,11 @@ class OptionStrategy(ABC):
         """Calculate probability of profit."""
         pass
 
-    def calc_sharpe_ratio(self, margin_ratio: float = 1.0) -> float | None:
+    def calc_sharpe_ratio(self) -> float | None:
         """Calculate Sharpe ratio.
 
         SR = (E[π] - Rf) / Std[π]
-        Rf = margin_ratio × K × (e^(rT) - 1)
-
-        Args:
-            margin_ratio: Margin requirement as fraction of capital at risk
+        Rf = margin × (e^(rT) - 1)
 
         Returns:
             Sharpe ratio, or None if std is zero.
@@ -101,26 +98,27 @@ class OptionStrategy(ABC):
         if std_pi <= 0:
             return None
 
-        # Calculate capital at risk for risk-free return
-        capital = self._calc_capital_at_risk() * margin_ratio
+        # Use actual margin requirement from broker formula
+        try:
+            margin = self.calc_margin_requirement()
+        except Exception:
+            # Fallback to capital at risk if margin calc fails
+            margin = self._calc_capital_at_risk()
 
         # Risk-free return on margin capital
-        rf = capital * (math.exp(self.params.risk_free_rate * self.params.time_to_expiry) - 1)
+        rf = margin * (math.exp(self.params.risk_free_rate * self.params.time_to_expiry) - 1)
 
         return (e_pi - rf) / std_pi
 
-    def calc_sharpe_ratio_annualized(self, margin_ratio: float = 1.0) -> float | None:
+    def calc_sharpe_ratio_annualized(self) -> float | None:
         """Calculate annualized Sharpe ratio.
 
         SR_annual = SR / sqrt(T)
 
-        Args:
-            margin_ratio: Margin requirement as fraction of capital at risk
-
         Returns:
             Annualized Sharpe ratio, or None if not calculable.
         """
-        sr = self.calc_sharpe_ratio(margin_ratio)
+        sr = self.calc_sharpe_ratio()
         if sr is None or self.params.time_to_expiry <= 0:
             return None
 
@@ -281,8 +279,10 @@ class OptionStrategy(ABC):
     def calc_roc(self) -> float | None:
         """Calculate annualized Return on Capital (ROC).
 
-        ROC = (expected_return / max_loss) * (365 / dte)
-        Requires: params.dte, max_loss > 0
+        For option strategies, ROC measures the premium received relative to
+        margin requirement, annualized to DTE.
+
+        ROC = (premium / margin) * (365 / dte)
 
         Returns:
             Annualized ROC, or None if insufficient data.
@@ -290,22 +290,31 @@ class OptionStrategy(ABC):
         from src.engine.position.risk_return import calc_roc_from_dte
 
         dte = self.params.dte
-        max_loss = self.calc_max_loss()
-        expected_return = self.calc_expected_return()
-
-        if dte is None or max_loss <= 0:
+        if dte is None or dte <= 0:
             return None
 
-        return calc_roc_from_dte(expected_return, max_loss, dte)
+        # For option strategies, use premium (actual income) not expected return
+        premium = self.leg.premium if self.leg else 0.0
+        if premium <= 0:
+            return None
 
-    def calc_metrics(self, margin_ratio: float = 1.0) -> StrategyMetrics:
+        # Use actual margin requirement from broker formula
+        try:
+            margin = self.calc_margin_requirement()
+        except Exception:
+            # Fallback to capital at risk if margin calc fails
+            margin = self._calc_capital_at_risk()
+
+        if margin <= 0:
+            return None
+
+        return calc_roc_from_dte(premium, margin, dte)
+
+    def calc_metrics(self) -> StrategyMetrics:
         """Calculate all metrics for the strategy.
 
         Extended metrics (prei, sas, tgr, roc) are calculated automatically
         if the required data is available in legs and params.
-
-        Args:
-            margin_ratio: Margin requirement for Sharpe calculation.
 
         Returns:
             StrategyMetrics with all calculated values.
@@ -318,7 +327,7 @@ class OptionStrategy(ABC):
             max_loss=self.calc_max_loss(),
             breakeven=self.calc_breakeven(),
             win_probability=self.calc_win_probability(),
-            sharpe_ratio=self.calc_sharpe_ratio(margin_ratio),
+            sharpe_ratio=self.calc_sharpe_ratio(),
             kelly_fraction=self.calc_kelly_fraction(),
             prei=self.calc_prei(),
             sas=self.calc_sas(),

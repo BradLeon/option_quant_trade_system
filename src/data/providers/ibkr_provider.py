@@ -32,6 +32,7 @@ from src.data.providers.base import (
     DataNotFoundError,
     DataProvider,
 )
+from src.data.utils import SymbolFormatter
 
 logger = logging.getLogger(__name__)
 
@@ -210,24 +211,9 @@ class IBKRProvider(DataProvider, AccountProvider):
         Returns:
             Stock contract object.
         """
-        symbol = symbol.upper()
-
-        # Handle HK stocks: 0700.HK or HK.00700 format
-        # IBKR uses symbol without leading zeros (e.g., 700 not 0700)
-        if symbol.endswith(".HK"):
-            # Yahoo format: 0700.HK -> symbol=700, exchange=SEHK, currency=HKD
-            code = symbol[:-3].lstrip("0")  # Remove .HK and leading zeros
-            return Stock(code, "SEHK", "HKD")
-        elif symbol.startswith("HK."):
-            # Futu format: HK.00700 -> symbol=700, exchange=SEHK, currency=HKD
-            code = symbol[3:].lstrip("0")  # Remove HK. and leading zeros
-            return Stock(code, "SEHK", "HKD")
-
-        # Handle US stocks: AAPL or US.AAPL format
-        if symbol.startswith("US."):
-            symbol = symbol[3:]  # Remove US.
-
-        return Stock(symbol, "SMART", "USD")
+        # Use SymbolFormatter to get IBKR contract parameters
+        contract = SymbolFormatter.to_ibkr_contract(symbol)
+        return Stock(contract.symbol, contract.exchange, contract.currency)
 
     def normalize_symbol(self, symbol: str) -> str:
         """Normalize symbol to standard format.
@@ -240,21 +226,8 @@ class IBKRProvider(DataProvider, AccountProvider):
         Returns:
             Symbol in standard format.
         """
-        symbol = symbol.upper()
-
-        # Keep HK stocks in Yahoo format for consistency (0700.HK)
-        if symbol.endswith(".HK"):
-            return symbol
-        if symbol.startswith("HK."):
-            # Convert HK.00700 -> 00700.HK
-            code = symbol[3:]
-            return f"{code}.HK"
-
-        # For US stocks, remove market prefix
-        if symbol.startswith("US."):
-            return symbol[3:]
-
-        return symbol
+        # Use SymbolFormatter for consistent normalization
+        return SymbolFormatter.to_standard(symbol)
 
     def get_stock_quote(self, symbol: str) -> StockQuote | None:
         """Get real-time stock quote."""
@@ -1400,11 +1373,10 @@ class IBKRProvider(DataProvider, AccountProvider):
                 else:
                     asset_type = AssetType.STOCK
 
-                # Build symbol
-                symbol = contract.symbol
-                if market == Market.HK:
-                    # Format as HK stock symbol
-                    symbol = f"{contract.symbol.zfill(4)}.HK"
+                # Build symbol using SymbolFormatter
+                # For options, contract.symbol is the underlying symbol
+                # For stocks, it's the stock symbol
+                symbol = SymbolFormatter.from_ibkr_contract(contract.symbol, contract.exchange)
 
                 # Create position
                 position = AccountPosition(
@@ -1597,12 +1569,8 @@ class IBKRProvider(DataProvider, AccountProvider):
             from src.engine.bs import calc_bs_greeks
             from src.engine.models import BSParams
 
-            # Step 1: Normalize underlying symbol to .HK format
-            underlying_symbol = underlying
-            if underlying_symbol.isdigit():
-                underlying_symbol = f"{int(underlying_symbol):04d}.HK"
-            elif not underlying_symbol.endswith(".HK"):
-                underlying_symbol = f"{underlying_symbol}.HK"
+            # Step 1: Normalize underlying symbol using SymbolFormatter
+            underlying_symbol = SymbolFormatter.to_standard(underlying)
 
             # Step 2: Get underlying price
             underlying_price = None
@@ -1708,11 +1676,8 @@ class IBKRProvider(DataProvider, AccountProvider):
         self._ensure_connected()
 
         try:
-            # Normalize underlying - remove leading zeros and HK suffix
-            underlying_code = underlying.upper()
-            if underlying_code.endswith(".HK"):
-                underlying_code = underlying_code[:-3]
-            underlying_code = underlying_code.lstrip("0")
+            # Normalize underlying to IBKR symbol format
+            underlying_code = SymbolFormatter.to_ibkr_symbol(underlying)
 
             # Convert option_type to IBKR right format
             right = "C" if option_type.lower() == "call" else "P"

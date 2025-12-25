@@ -7,7 +7,7 @@ from src.engine.models import Position
 from src.engine.portfolio import (
     calc_beta_weighted_delta,
     calc_delta_dollars,
-    calc_gamma_dollars,
+    calc_portfolio_delta,
     calc_portfolio_gamma,
     calc_portfolio_prei,
     calc_portfolio_sas,
@@ -23,33 +23,43 @@ class TestPortfolioGreeks:
     """Tests for portfolio Greeks aggregation."""
 
     def test_calc_portfolio_theta(self):
-        """Test portfolio theta calculation."""
+        """Test portfolio theta calculation.
+
+        Formula: Σ(theta × quantity × contract_multiplier)
+        """
         positions = [
-            Position(symbol="AAPL", quantity=1, greeks=Greeks(theta=-5.0)),
-            Position(symbol="MSFT", quantity=2, greeks=Greeks(theta=-3.0)),
-            Position(symbol="GOOGL", quantity=-1, greeks=Greeks(theta=-4.0)),
+            Position(symbol="AAPL", quantity=1, greeks=Greeks(theta=-5.0), contract_multiplier=1),
+            Position(symbol="MSFT", quantity=2, greeks=Greeks(theta=-3.0), contract_multiplier=1),
+            Position(symbol="GOOGL", quantity=-1, greeks=Greeks(theta=-4.0), contract_multiplier=1),
         ]
         theta = calc_portfolio_theta(positions)
-        # 1*(-5) + 2*(-3) + (-1)*(-4) = -5 - 6 + 4 = -7
+        # 1*(-5)*1 + 2*(-3)*1 + (-1)*(-4)*1 = -5 - 6 + 4 = -7
         assert theta == -7.0
 
     def test_calc_portfolio_vega(self):
-        """Test portfolio vega calculation."""
+        """Test portfolio vega calculation.
+
+        Formula: Σ(vega × quantity × contract_multiplier)
+        """
         positions = [
-            Position(symbol="AAPL", quantity=1, greeks=Greeks(vega=10.0)),
-            Position(symbol="MSFT", quantity=-2, greeks=Greeks(vega=8.0)),
+            Position(symbol="AAPL", quantity=1, greeks=Greeks(vega=10.0), contract_multiplier=1),
+            Position(symbol="MSFT", quantity=-2, greeks=Greeks(vega=8.0), contract_multiplier=1),
         ]
         vega = calc_portfolio_vega(positions)
-        # 1*10 + (-2)*8 = 10 - 16 = -6
+        # 1*10*1 + (-2)*8*1 = 10 - 16 = -6
         assert vega == -6.0
 
     def test_calc_portfolio_gamma(self):
-        """Test portfolio gamma calculation."""
+        """Test portfolio gamma calculation.
+
+        Formula: Σ(gamma × quantity × contract_multiplier)
+        """
         positions = [
-            Position(symbol="AAPL", quantity=1, greeks=Greeks(gamma=0.05)),
-            Position(symbol="MSFT", quantity=1, greeks=Greeks(gamma=0.03)),
+            Position(symbol="AAPL", quantity=1, greeks=Greeks(gamma=0.05), contract_multiplier=1),
+            Position(symbol="MSFT", quantity=1, greeks=Greeks(gamma=0.03), contract_multiplier=1),
         ]
         gamma = calc_portfolio_gamma(positions)
+        # 1*0.05*1 + 1*0.03*1 = 0.08
         assert gamma == 0.08
 
     def test_calc_portfolio_greeks_empty(self):
@@ -100,13 +110,13 @@ class TestPortfolioGreeks:
         # Total: 18,000 - 16,000 = 2,000
         assert delta_dollars == 2000.0
 
-    def test_calc_gamma_dollars(self):
-        """Test gamma dollars calculation.
+    def test_calc_portfolio_gamma_with_multiplier(self):
+        """Test portfolio gamma aggregation with multiplier.
 
-        Formula: Gamma$ = gamma × underlying_price² × multiplier × quantity / 100
+        After currency conversion, gamma is stored as gamma_dollars per share
+        (Γ × S² × 0.01). This test uses raw gamma values.
 
-        Example: AAPL Call, gamma=0.02, AAPL=$150, 3 contracts
-        Gamma$ = 0.02 × 150² × 100 × 3 / 100 = $1,350
+        Formula for aggregation: Σ(gamma × quantity × multiplier)
         """
         positions = [
             Position(
@@ -117,10 +127,11 @@ class TestPortfolioGreeks:
                 contract_multiplier=100,
             ),
         ]
-        gamma_dollars = calc_gamma_dollars(positions)
-        assert gamma_dollars == 1350.0
+        # Raw gamma aggregation: 0.02 × 3 × 100 = 6.0
+        portfolio_gamma = calc_portfolio_gamma(positions)
+        assert portfolio_gamma == 6.0
 
-    def test_calc_beta_weighted_delta(self):
+    def test_calc_beta_weighted_delta(self, mocker):
         """Test beta-weighted delta calculation.
 
         Formula: BWD = delta × underlying_price × multiplier × quantity × beta / spy_price
@@ -128,6 +139,11 @@ class TestPortfolioGreeks:
         Example: NVDA Call, delta=0.5, NVDA=$500, beta=1.8, 2 contracts, SPY=$450
         BWD = 0.5 × 500 × 100 × 2 × 1.8 / 450 = 200 SPY shares
         """
+        # Mock the SPY price fetcher
+        mocker.patch(
+            "src.engine.portfolio.greeks_agg._get_spy_price",
+            return_value=450.0,
+        )
         positions = [
             Position(
                 symbol="NVDA",
@@ -138,11 +154,15 @@ class TestPortfolioGreeks:
                 contract_multiplier=100,
             ),
         ]
-        bwd = calc_beta_weighted_delta(positions, spy_price=450.0)
+        bwd = calc_beta_weighted_delta(positions)
         assert bwd == 200.0
 
-    def test_calc_beta_weighted_delta_multiple_positions(self):
+    def test_calc_beta_weighted_delta_multiple_positions(self, mocker):
         """Test BWD with multiple positions."""
+        mocker.patch(
+            "src.engine.portfolio.greeks_agg._get_spy_price",
+            return_value=450.0,
+        )
         positions = [
             Position(
                 symbol="NVDA",
@@ -159,14 +179,18 @@ class TestPortfolioGreeks:
                 beta=1.2,
             ),
         ]
-        bwd = calc_beta_weighted_delta(positions, spy_price=450.0)
+        bwd = calc_beta_weighted_delta(positions)
         # NVDA: 0.5 × 500 × 100 × 1 × 1.8 / 450 = 100
         # AAPL: 0.6 × 150 × 100 × 2 × 1.2 / 450 = 48
         # Total: 148
         assert bwd == 148.0
 
-    def test_calc_beta_weighted_delta_missing_data(self):
+    def test_calc_beta_weighted_delta_missing_data(self, mocker):
         """Test BWD skips positions with missing data."""
+        mocker.patch(
+            "src.engine.portfolio.greeks_agg._get_spy_price",
+            return_value=450.0,
+        )
         positions = [
             Position(
                 symbol="NVDA",
@@ -182,7 +206,7 @@ class TestPortfolioGreeks:
                 # Missing underlying_price and beta
             ),
         ]
-        bwd = calc_beta_weighted_delta(positions, spy_price=450.0)
+        bwd = calc_beta_weighted_delta(positions)
         # Only NVDA counted: 0.5 × 500 × 100 × 1 × 1.8 / 450 = 100
         assert bwd == 100.0
 
@@ -452,15 +476,21 @@ class TestCompositeMetrics:
     def test_calc_portfolio_prei_normalized_to_01(self):
         """Test that each risk component is normalized to 0-1."""
         # Create a position with known values
+        # Using contract_multiplier=1 to simplify calculation
         position = Position(
             symbol="AAPL",
             greeks=Greeks(gamma=1.0, vega=100.0),  # gamma normalized: 1/(1+1) = 0.5
             underlying_price=100.0,
             quantity=1,
+            contract_multiplier=1,  # Use 1 for simplified calculation
             dte=1,  # DTE risk: sqrt(1/1) = 1.0
         )
         prei = calc_portfolio_prei(positions=[position])
         assert prei is not None
-        # w1*0.5 + w2*0.5 + w3*1.0 = 0.4*0.5 + 0.3*0.5 + 0.3*1.0 = 0.2 + 0.15 + 0.3 = 0.65
-        # PREI = 0.65 * 100 = 65
+        # portfolio_gamma = 1.0 * 1 * 1 = 1.0
+        # portfolio_vega = 100.0 * 1 * 1 = 100.0
+        # gamma_risk = 1/(1+1) = 0.5
+        # vega_risk = 100/(100+100) = 0.5
+        # dte_risk = sqrt(1/1) = 1.0
+        # PREI = (0.4*0.5 + 0.3*0.5 + 0.3*1.0) * 100 = 65
         assert 60 <= prei <= 70

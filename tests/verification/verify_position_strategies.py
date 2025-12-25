@@ -39,8 +39,11 @@ from src.data.providers import IBKRProvider, FutuProvider
 from src.data.providers.account_aggregator import AccountAggregator
 from src.engine.models.enums import PositionSide
 from src.engine.models.strategy import OptionLeg, StrategyMetrics, StrategyParams
-from src.engine.strategy.covered_call import CoveredCallStrategy
-from src.engine.strategy.short_put import ShortPutStrategy
+from src.engine.strategy import (
+    StrategyInstance,
+    create_strategies_from_position,
+)
+from src.engine.strategy.factory import calc_dte_from_expiry
 
 # Configure logging
 logging.basicConfig(
@@ -48,329 +51,6 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
-
-
-# ============================================================================
-# Strategy Classification
-# ============================================================================
-
-
-def classify_option_strategy(
-    position: AccountPosition, all_positions: list[AccountPosition]
-) -> str:
-    """Classify option strategy type based on position characteristics.
-
-    Args:
-        position: Option position to classify.
-        all_positions: All positions in the portfolio (for checking stock holdings).
-
-    Returns:
-        Strategy type: "short_put", "covered_call", "naked_call", "long_call",
-        "long_put", "not_option", or "unknown".
-    """
-    if position.asset_type != AssetType.OPTION:
-        return "not_option"
-
-    # Short Put: PUT + quantity < 0 (sold)
-    if position.option_type == "put" and position.quantity < 0:
-        return "short_put"
-
-    # Covered Call / Naked Call: CALL + quantity < 0 (sold)
-    if position.option_type == "call" and position.quantity < 0:
-        # Check if we have the underlying stock
-        underlying_symbol = position.underlying or position.symbol
-        # Normalize symbol for matching (e.g., "9988" from "HK.09988")
-        underlying_symbol = normalize_symbol(underlying_symbol)
-
-        has_stock = any(
-            p.asset_type == AssetType.STOCK
-            and normalize_symbol(p.symbol) == underlying_symbol
-            and p.quantity > 0
-            for p in all_positions
-        )
-
-        if has_stock:
-            return "covered_call"
-        else:
-            return "naked_call"
-
-    # Long Call: CALL + quantity > 0 (bought)
-    if position.option_type == "call" and position.quantity > 0:
-        return "long_call"
-
-    # Long Put: PUT + quantity > 0 (bought)
-    if position.option_type == "put" and position.quantity > 0:
-        return "long_put"
-
-    return "unknown"
-
-
-def normalize_symbol(symbol: str) -> str:
-    """Normalize symbol for matching across brokers.
-
-    Examples:
-        "HK.09988" -> "9988"
-        "9988.HK" -> "9988"
-        "AAPL" -> "AAPL"
-    """
-    # Remove HK prefix/suffix
-    symbol = symbol.replace("HK.", "").replace(".HK", "")
-    # Remove leading zeros for HK stocks
-    if symbol.isdigit():
-        symbol = str(int(symbol))
-    return symbol
-
-
-# ============================================================================
-# Data Model Builders
-# ============================================================================
-
-
-def calc_dte_from_expiry(expiry_str: str) -> int | None:
-    """Calculate days to expiry from YYYYMMDD format.
-
-    Args:
-        expiry_str: Expiry date in YYYYMMDD format (e.g., "20250117").
-
-    Returns:
-        Days to expiry (non-negative), or None if parsing fails.
-    """
-    if not expiry_str:
-        return None
-    try:
-        expiry_date = datetime.strptime(expiry_str, "%Y%m%d")
-        dte = (expiry_date - datetime.now()).days
-        return max(0, dte)  # Cannot be negative
-    except ValueError:
-        return None
-
-
-def build_option_leg(ap: AccountPosition) -> OptionLeg:
-    """Build OptionLeg data model from AccountPosition.
-
-    Args:
-        ap: AccountPosition with option data.
-
-    Returns:
-        OptionLeg with option_type, side, strike, premium, greeks.
-    """
-    # Determine side: quantity < 0 = SHORT (sold), > 0 = LONG (bought)
-    side = PositionSide.SHORT if ap.quantity < 0 else PositionSide.LONG
-
-    # Calculate premium per share
-    # market_value is total value, need to divide by (quantity * multiplier)
-    premium = abs(ap.market_value / (ap.quantity * ap.contract_multiplier))
-
-    # Build Greeks
-    greeks = Greeks(
-        delta=ap.delta,
-        gamma=ap.gamma,
-        theta=ap.theta,
-        vega=ap.vega,
-    )
-
-    return OptionLeg(
-        option_type=OptionType.CALL if ap.option_type == "call" else OptionType.PUT,
-        side=side,
-        strike=ap.strike,
-        premium=premium,
-        greeks=greeks,
-    )
-
-
-def build_strategy_params(
-    ap: AccountPosition, hv: float | None = None
-) -> StrategyParams:
-    """Build StrategyParams data model from AccountPosition.
-
-    Args:
-        ap: AccountPosition with option data.
-        hv: Historical volatility (from StockVolatility), optional.
-
-    Returns:
-        StrategyParams with spot_price, volatility, time_to_expiry, hv, dte.
-    """
-    dte_days = calc_dte_from_expiry(ap.expiry)
-    time_to_expiry = dte_days / 365.0 if dte_days else 0.01  # Minimum 0.01 years
-
-    return StrategyParams(
-        spot_price=ap.underlying_price,
-        volatility=ap.iv,
-        time_to_expiry=time_to_expiry,
-        risk_free_rate=0.03,
-        hv=hv,
-        dte=dte_days,
-    )
-
-
-def get_volatility_data(
-    symbol: str, provider: IBKRProvider | None
-) -> StockVolatility | None:
-    """Get stock volatility data (IV + HV) from provider.
-
-    Args:
-        symbol: Stock symbol (normalized).
-        provider: IBKR provider instance (has get_stock_volatility method).
-
-    Returns:
-        StockVolatility model with iv, hv, iv_rank, iv_percentile, pcr.
-        Returns None if provider unavailable or data fetch fails.
-    """
-    if provider is None:
-        return None
-
-    try:
-        volatility = provider.get_stock_volatility(symbol)
-        return volatility
-    except Exception as e:
-        logger.warning(f"Failed to get volatility for {symbol}: {e}")
-        return None
-
-
-# ============================================================================
-# Strategy Creation
-# ============================================================================
-
-
-def create_strategy_from_position(
-    position: AccountPosition,
-    strategy_type: str,
-    all_positions: list[AccountPosition],
-    ibkr_provider: IBKRProvider | None,
-) -> ShortPutStrategy | CoveredCallStrategy | None:
-    """Create Strategy object from AccountPosition.
-
-    Builds complete data pipeline:
-      AccountPosition → StockVolatility → OptionLeg + StrategyParams → Strategy
-
-    Args:
-        position: Option position.
-        strategy_type: Strategy classification ("short_put", "covered_call", etc.).
-        all_positions: All positions (for covered call stock lookup).
-        ibkr_provider: IBKR provider for volatility data.
-
-    Returns:
-        Strategy instance, or None if required data is missing.
-    """
-    # Validate required fields - but try to fetch underlying_price if missing
-    if not position.strike or not position.iv:
-        logger.warning(
-            f"{position.symbol}: Missing required data "
-            f"(strike={position.strike}, iv={position.iv})"
-        )
-        return None
-
-    # If underlying_price is missing, try to fetch it
-    if not position.underlying_price:
-        underlying_symbol = position.underlying or position.symbol
-
-        # Convert HK stocks to .HK format if needed
-        if underlying_symbol.startswith("HK."):
-            code = underlying_symbol[3:].lstrip("0") or "0"
-            underlying_symbol = f"{int(code):04d}.HK"
-        elif underlying_symbol.isdigit():
-            underlying_symbol = f"{int(underlying_symbol):04d}.HK"
-
-        try:
-            if ibkr_provider:
-                stock_quote = ibkr_provider.get_stock_quote(underlying_symbol)
-                if stock_quote and stock_quote.close:
-                    position.underlying_price = stock_quote.close
-                    logger.info(f"Fetched missing underlying_price for {position.symbol}: {position.underlying_price}")
-        except Exception as e:
-            logger.warning(f"Could not fetch underlying price for {position.symbol}: {e}")
-
-        if not position.underlying_price:
-            logger.warning(
-                f"{position.symbol}: Missing underlying_price and could not fetch it"
-            )
-            return None
-
-    # Step 1: Get volatility data (StockVolatility model)
-    # Don't normalize - keep original format with .HK suffix for IBKR provider
-    underlying_symbol = position.underlying or position.symbol
-
-    # Convert HK stocks to .HK format if needed
-    if underlying_symbol.startswith("HK."):
-        # Futu format: HK.00700 -> 0700.HK
-        code = underlying_symbol[3:].lstrip("0") or "0"
-        underlying_symbol = f"{int(code):04d}.HK"
-    elif underlying_symbol.isdigit():
-        # IBKR format: "700" -> 0700.HK
-        underlying_symbol = f"{int(underlying_symbol):04d}.HK"
-
-    volatility_data = get_volatility_data(underlying_symbol, ibkr_provider)
-    hv = volatility_data.hv if volatility_data else None
-
-    # Step 2: Build OptionLeg
-    try:
-        leg = build_option_leg(position)
-    except Exception as e:
-        logger.warning(f"{position.symbol}: Failed to build OptionLeg: {e}")
-        return None
-
-    # Step 3: Build StrategyParams
-    try:
-        params = build_strategy_params(position, hv=hv)
-    except Exception as e:
-        logger.warning(f"{position.symbol}: Failed to build StrategyParams: {e}")
-        return None
-
-    # Step 4: Create Strategy instance
-    if strategy_type == "short_put":
-        return ShortPutStrategy(
-            spot_price=params.spot_price,
-            strike_price=leg.strike,
-            premium=leg.premium,
-            volatility=params.volatility,
-            time_to_expiry=params.time_to_expiry,
-            risk_free_rate=params.risk_free_rate,
-            hv=params.hv,
-            dte=params.dte,
-            delta=leg.delta,
-            gamma=leg.gamma,
-            theta=leg.theta,
-            vega=leg.vega,
-        )
-    elif strategy_type == "covered_call":
-        # Find stock position for cost basis
-        underlying_symbol = normalize_symbol(position.underlying or position.symbol)
-        stock_position = next(
-            (
-                p
-                for p in all_positions
-                if p.asset_type == AssetType.STOCK
-                and normalize_symbol(p.symbol) == underlying_symbol
-            ),
-            None,
-        )
-
-        if stock_position is None:
-            logger.warning(
-                f"{position.symbol}: Covered call without stock position (should not happen)"
-            )
-            return None
-
-        stock_cost_basis = stock_position.avg_cost
-
-        return CoveredCallStrategy(
-            spot_price=params.spot_price,
-            strike_price=leg.strike,
-            premium=leg.premium,
-            stock_cost_basis=stock_cost_basis,
-            volatility=params.volatility,
-            time_to_expiry=params.time_to_expiry,
-            risk_free_rate=params.risk_free_rate,
-            hv=params.hv,
-            dte=params.dte,
-            delta=leg.delta,
-            gamma=leg.gamma,
-            theta=leg.theta,
-            vega=leg.vega,
-        )
-
-    # Other strategy types not yet implemented
-    return None
 
 
 # ============================================================================
@@ -383,6 +63,76 @@ def print_section_header(title: str) -> None:
     print("\n" + "=" * 70)
     print(f"  {title}")
     print("=" * 70)
+
+
+def print_strategy_debug_info(strategy, position: AccountPosition) -> None:
+    """Print detailed strategy information for debugging.
+
+    Args:
+        strategy: OptionStrategy instance.
+        position: Original AccountPosition.
+    """
+    print(f"\n{'='*70}")
+    print(f"DEBUG: Strategy Details for {position.symbol}")
+    print(f"{'='*70}")
+
+    # OptionLeg Info
+    if strategy.leg:
+        print(f"\nOptionLeg:")
+        print(f"  Type: {strategy.leg.option_type}")
+        print(f"  Side: {strategy.leg.side}")
+        print(f"  Strike: ${strategy.leg.strike:.2f}")
+        print(f"  Premium: ${strategy.leg.premium:.4f}")
+        print(f"  Quantity: {strategy.leg.quantity}")
+        print(f"  Greeks:")
+        if strategy.leg.delta is not None:
+            print(f"    Delta: {strategy.leg.delta:.4f}")
+        else:
+            print("    Delta: None")
+        if strategy.leg.gamma is not None:
+            print(f"    Gamma: {strategy.leg.gamma:.6f}")
+        else:
+            print("    Gamma: None")
+        if strategy.leg.theta is not None:
+            print(f"    Theta: {strategy.leg.theta:.4f}")
+        else:
+            print("    Theta: None")
+        if strategy.leg.vega is not None:
+            print(f"    Vega: {strategy.leg.vega:.4f}")
+        else:
+            print("    Vega: None")
+
+    # StrategyParams Info
+    params = strategy.params
+    print(f"\nStrategyParams:")
+    print(f"  Spot Price: ${params.spot_price:.2f}")
+    print(f"  Volatility (IV): {params.volatility:.4f} ({params.volatility*100:.2f}%)")
+    print(f"  Time to Expiry: {params.time_to_expiry:.4f} years")
+    print(f"  Risk-Free Rate: {params.risk_free_rate:.4f}")
+    if params.hv is not None:
+        print(f"  HV: {params.hv:.4f} ({params.hv*100:.2f}%)")
+    else:
+        print("  HV: None")
+    if params.dte is not None:
+        print(f"  DTE: {params.dte} days")
+    else:
+        print("  DTE: None")
+
+    # Calculated values
+    print(f"\nCalculated Metrics:")
+    try:
+        margin_req = strategy.calc_margin_requirement()
+        print(f"  Margin Requirement: ${margin_req:.2f}")
+    except Exception as e:
+        print(f"  Margin Requirement: Error - {e}")
+
+    capital = strategy._calc_capital_at_risk()
+    print(f"  Capital at Risk: ${capital:.2f}")
+    print(f"  Expected Return: ${strategy.calc_expected_return():.4f}")
+    print(f"  Max Profit: ${strategy.calc_max_profit():.2f}")
+    print(f"  Max Loss: ${strategy.calc_max_loss():.2f}")
+
+    print(f"{'='*70}\n")
 
 
 def print_strategy_metrics(
@@ -399,13 +149,17 @@ def print_strategy_metrics(
     dte = calc_dte_from_expiry(position.expiry)
     dte_str = f"{dte} DTE" if dte is not None else "N/A"
 
+    # Calculate premium per share and total
+    premium_per_share = abs(position.market_value / (position.quantity * position.contract_multiplier))
+    premium_total = abs(position.market_value / position.quantity)
+
     print(f"\n[Position: {position.symbol} {position.option_type.upper()} "
           f"{position.strike:.1f} {position.expiry}]")
     print(f"Strategy Type: {strategy_type}")
     print(f"Symbol: {position.symbol}")
     print(f"Strike: ${position.strike:.2f}")
     print(f"Expiry: {position.expiry} ({dte_str})")
-    print(f"Premium: ${abs(position.market_value / position.quantity):.2f}")
+    print(f"Premium: ${premium_per_share:.2f}/share (${premium_total:.2f} total)")
     print(f"IV: {position.iv:.1%}" if position.iv else "IV: N/A")
     print(f"Underlying Price: ${position.underlying_price:.2f}")
 
@@ -531,39 +285,75 @@ def verify_position_strategies(
     for pos in option_positions:
         total_positions += 1
 
-        # Step 1: Classify strategy
-        strategy_type = classify_option_strategy(pos, portfolio.positions)
-
-        if strategy_type in ("not_option", "unknown", "naked_call", "long_call", "long_put"):
-            logger.info(f"Skipping {pos.symbol}: strategy_type={strategy_type}")
-            skipped_positions += 1
-            continue
-
-        # Track strategy types
-        strategy_counts[strategy_type] = strategy_counts.get(strategy_type, 0) + 1
-
-        # Step 2: Create strategy and calculate metrics
-        strategy = create_strategy_from_position(
-            pos, strategy_type, portfolio.positions, ibkr_provider
+        # Step 1: Create strategy instance(s) using factory
+        # Factory handles classification, splitting, and all complex logic
+        strategy_instances = create_strategies_from_position(
+            position=pos,
+            all_positions=portfolio.positions,
+            ibkr_provider=ibkr_provider,
         )
 
-        if strategy is None:
-            print(f"\n{pos.symbol}: Unable to create strategy (missing data)")
+        if not strategy_instances:
+            logger.info(f"Skipping {pos.symbol}: no strategies created")
             skipped_positions += 1
             continue
 
-        # Step 3: Calculate metrics
-        try:
-            metrics = strategy.calc_metrics()
-            verified_positions += 1
-        except Exception as e:
-            print(f"\n{pos.symbol}: Error calculating metrics: {e}")
-            logger.exception(f"Error calculating metrics for {pos.symbol}")
-            skipped_positions += 1
-            continue
+        # Step 2: Process each strategy instance
+        # (Most positions return 1 strategy, but partial coverage returns 2)
+        for idx, instance in enumerate(strategy_instances, 1):
+            strategy = instance.strategy
+            ratio = instance.quantity_ratio
+            desc = instance.description
 
-        # Step 4: Print results
-        print_strategy_metrics(pos, strategy_type, metrics)
+            # Extract strategy type from description
+            strategy_type = desc.split("(")[0].strip()
+
+            # Track strategy types
+            strategy_counts[strategy_type] = strategy_counts.get(strategy_type, 0) + 1
+
+            # Log coverage info
+            if len(strategy_instances) > 1:
+                logger.info(f"{pos.symbol} [{idx}/{len(strategy_instances)}]: {desc}")
+                print(f"\n>>> Strategy {idx}/{len(strategy_instances)}: {desc}")
+            else:
+                logger.info(f"{pos.symbol}: {desc}")
+
+            # Print debug info for strategy
+            print_strategy_debug_info(strategy, pos)
+
+            # Step 3: Calculate margin for logging
+            try:
+                margin_per_contract = strategy.calc_margin_requirement()
+                capital_at_risk = strategy._calc_capital_at_risk()
+
+                # Apply quantity ratio
+                margin = margin_per_contract * ratio
+
+                margin_ratio = margin / capital_at_risk if capital_at_risk > 0 else 1.0
+
+                logger.info(
+                    f"{pos.symbol}: Margin=${margin:.2f} "
+                    f"(${margin_per_contract:.2f}×{ratio:.0%}), "
+                    f"Capital@Risk=${capital_at_risk:.2f}, "
+                    f"Ratio={margin_ratio:.1%}"
+                )
+            except Exception as e:
+                logger.warning(f"{pos.symbol}: Could not calculate margin: {e}")
+
+            # Step 4: Calculate metrics (now uses calc_margin_requirement internally)
+            try:
+                metrics = strategy.calc_metrics()
+                verified_positions += 1
+            except Exception as e:
+                print(f"\n{pos.symbol}: Error calculating metrics: {e}")
+                logger.exception(f"Error calculating metrics for {pos.symbol}")
+                skipped_positions += 1
+                continue
+
+            # Step 5: Print results with ratio annotation
+            if len(strategy_instances) > 1:
+                print(f"\n{pos.symbol} [{idx}/{len(strategy_instances)}] - {desc}:")
+            print_strategy_metrics(pos, strategy_type, metrics)
 
     # Summary
     print_section_header("Verification Summary")

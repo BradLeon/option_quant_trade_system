@@ -248,19 +248,11 @@ def _calc_greeks_fallback(
     )
 
     # Calculate all Greeks using B-S
+    # Note: calc_bs_greeks already returns correct units:
+    # - theta: per day
+    # - vega: per 1% IV change
+    # - rho: per 1% rate change
     greeks_dict = calc_bs_greeks(params)
-
-    # Convert theta from annual to daily (more intuitive)
-    if greeks_dict["theta"] is not None:
-        greeks_dict["theta"] = greeks_dict["theta"] / 365.0
-
-    # Convert vega to per-1%-IV-change (more standard)
-    if greeks_dict["vega"] is not None:
-        greeks_dict["vega"] = greeks_dict["vega"] / 100.0
-
-    # Convert rho to per-1%-rate-change (more standard)
-    if greeks_dict["rho"] is not None:
-        greeks_dict["rho"] = greeks_dict["rho"] / 100.0
 
     return Greeks(
         delta=greeks_dict["delta"],
@@ -324,21 +316,19 @@ def _calc_single_greek_fallback(
     )
 
     # Calculate the specific Greek
+    # Note: All calc_bs_* functions now return correct units:
+    # - theta: per day
+    # - vega: per 1% IV change
+    # - rho: per 1% rate change
     if greek_name == "delta":
         return calc_bs_delta(params)
     elif greek_name == "gamma":
         return calc_bs_gamma(params)
     elif greek_name == "theta":
-        theta = calc_bs_theta(params)
-        # Convert to daily theta
-        return theta / 365.0 if theta is not None else None
+        return calc_bs_theta(params)
     elif greek_name == "vega":
-        vega = calc_bs_vega(params)
-        # Convert to per-1%-IV-change
-        return vega / 100.0 if vega is not None else None
+        return calc_bs_vega(params)
     elif greek_name == "rho":
-        rho = calc_bs_rho(params)
-        # Convert to per-1%-rate-change
-        return rho / 100.0 if rho is not None else None
+        return calc_bs_rho(params)
 
     return None

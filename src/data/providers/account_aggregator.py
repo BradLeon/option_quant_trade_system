@@ -292,6 +292,13 @@ class AccountAggregator:
     ) -> AccountPosition:
         """Convert position values to base currency.
 
+        Currency conversion rules for Greeks (based on their mathematical definitions):
+        - Delta (∂C/∂S): No conversion - dimensionless ratio (currency/currency cancels)
+        - Gamma (∂Δ/∂S): Divide by rate - unit is 1/currency
+        - Theta (∂C/∂t): Multiply by rate - unit is currency/day
+        - Vega (∂C/∂σ): Multiply by rate - unit is currency/%
+        - Rho (∂C/∂r): Multiply by rate - unit is currency/%
+
         Args:
             pos: Original position.
             base_currency: Target currency.
@@ -304,29 +311,33 @@ class AccountAggregator:
 
         # Create a copy to avoid modifying original
         converted = deepcopy(pos)
-        converted.market_value = self._converter.convert(
-            pos.market_value, pos.currency, base_currency
-        )
-        converted.unrealized_pnl = self._converter.convert(
-            pos.unrealized_pnl, pos.currency, base_currency
-        )
-        converted.avg_cost = self._converter.convert(
-            pos.avg_cost, pos.currency, base_currency
-        )
-        # Convert underlying_price for delta_dollars calculation
+
+        # Get the conversion rate (e.g., HKD→USD: rate ≈ 0.128)
+        rate = self._converter.get_rate(pos.currency, base_currency)
+
+        # Price fields: multiply by rate (HKD → USD)
+        converted.market_value = pos.market_value * rate
+        converted.unrealized_pnl = pos.unrealized_pnl * rate
+        converted.avg_cost = pos.avg_cost * rate
+
+        # Convert underlying_price for strategy calculations
         if pos.underlying_price is not None:
-            converted.underlying_price = self._converter.convert(
-                pos.underlying_price, pos.currency, base_currency
-            )
-        # Convert theta and vega (they are in local currency)
+            converted.underlying_price = pos.underlying_price * rate
+
+        # Convert strike for strategy calculations (critical for HK options!)
+        if pos.strike is not None:
+            converted.strike = pos.strike * rate
+
+        if pos.gamma is not None and converted.underlying_price is not None:
+            #   → "股价每上涨 1 港币，Delta 增加 0.0067"   → "股价每上涨 1 美元，Delta 增加 0.0067 × 7.77 = 0.052"  
+            converted.gamma = pos.gamma / rate
         if pos.theta is not None:
-            converted.theta = self._converter.convert(
-                pos.theta, pos.currency, base_currency
-            )
+            # "每过1天，期权价格下跌 0.0819 港币"  -> "每过1天，期权价格下跌 0.0105 美元"   
+            converted.theta = pos.theta * rate
         if pos.vega is not None:
-            converted.vega = self._converter.convert(
-                pos.vega, pos.currency, base_currency
-            )
+           # "IV每上升1%，期权价格上涨 0.3664 港币"  → "IV每上升1%，期权价格上涨 0.0471 美元"      
+            converted.vega = pos.vega * rate
+
         converted.currency = base_currency
 
         return converted
