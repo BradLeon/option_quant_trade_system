@@ -139,9 +139,12 @@ class ShortCallStrategy(OptionStrategy):
 
         Var[π] = E[π²] - (E[π])²
 
+        Short Call payoff when exercised: π = C + K - S_T
+        Expanding (C + K - S_T)² = (C+K)² - 2(C+K)×S_T + S_T²
+
         E[π²] = C² × (1-N(d2))
-                + (C-K)² × N(d2)  # Capped loss if assigned
-                - 2(K-C) × S × e^(rT) × N(d1)
+                + (C+K)² × N(d2)
+                - 2(C+K) × S × e^(rT) × N(d1)
                 + S² × e^(2rT + σ²T) × N(d3)
 
         Returns:
@@ -165,12 +168,12 @@ class ShortCallStrategy(OptionStrategy):
         exp_2rt_sigma2t = math.exp(2 * r * t + sigma**2 * t)
 
         # E[π²] calculation
-        # Region 1: S_T <= K (not exercised, keep premium)
-        # Region 2: S_T > K (exercised, loss)
+        # Region 1: S_T <= K (not exercised, keep premium C)
+        # Region 2: S_T > K (exercised, payoff = C + K - S_T)
         e_pi_squared = (
             c**2 * (1 - n_d2)
             + (c + k) ** 2 * n_d2
-            - 2 * (k - c) * exp_rt * s * n_d1
+            - 2 * (c + k) * exp_rt * s * n_d1  # Fixed: (c+k) not (k-c)
             + s**2 * exp_2rt_sigma2t * n_d3
         )
 
