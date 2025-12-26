@@ -8,10 +8,15 @@ Monitoring Models - 监控系统数据模型
 - MonitorResult: 监控结果
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from src.business.monitoring.suggestions import PositionSuggestion
 
 
 class AlertLevel(str, Enum):
@@ -83,56 +88,92 @@ class Alert:
 
 @dataclass
 class PositionData:
-    """持仓数据（用于监控）"""
+    """持仓数据（统一支持期权和股票）
 
+    设计原则：
+    - 纯数据容器，不包含计算逻辑（遵循 Decision #0）
+    - 期权专用字段（strike, expiry等）股票持仓为 None
+    - 标的分析字段（技术面、波动率）期权和股票都可以有
+    - 期权的标的分析基于 underlying，股票基于自身
+    - 所有派生值由 DataBridge 调用 engine 层算子计算后填充
+    """
+
+    # === 基础信息 ===
     position_id: str
-    symbol: str
-    underlying: str
-    option_type: str  # "put" or "call"
-    strike: float
-    expiry: str  # YYYY-MM-DD
-    quantity: int
-    entry_price: float
-    current_price: float
+    symbol: str  # 持仓代码
+    asset_type: str = "option"  # "option" / "stock"
+    quantity: float = 0
+    entry_price: float = 0.0
+    current_price: float = 0.0
+    market_value: float = 0.0
+    unrealized_pnl: float = 0.0
+    unrealized_pnl_pct: float = 0.0
+    currency: str = "USD"
+    broker: str = ""
     timestamp: datetime = field(default_factory=datetime.now)
 
-    # 标的价格
-    underlying_price: Optional[float] = None
+    # === 期权专用字段（股票为 None）===
+    underlying: Optional[str] = None  # 底层标的
+    option_type: Optional[str] = None  # "put" / "call"
+    strike: Optional[float] = None
+    expiry: Optional[str] = None  # YYYYMMDD
+    dte: Optional[int] = None
+    contract_multiplier: int = 1
+    moneyness: Optional[float] = None  # 由 DataBridge 计算: (S-K)/K
 
-    # Greeks
+    # === Greeks（期权必须，股票 delta=quantity）===
     delta: Optional[float] = None
     gamma: Optional[float] = None
     theta: Optional[float] = None
     vega: Optional[float] = None
-
-    # 波动率
     iv: Optional[float] = None
-    hv: Optional[float] = None
 
-    # 到期信息
-    dte: int = 0
+    # === 标的价格（期权为 underlying 价格，股票为自身价格）===
+    underlying_price: Optional[float] = None
 
-    # 盈亏
-    unrealized_pnl: Optional[float] = None
-    unrealized_pnl_pct: Optional[float] = None
+    # === 波动率数据（由 DataBridge 调用 engine 层算子填充）===
+    hv: Optional[float] = None  # 来自 StockVolatility.hv
+    iv_rank: Optional[float] = None  # 来自 VolatilityScore.iv_rank
+    iv_percentile: Optional[float] = None  # 来自 VolatilityScore.iv_percentile
+    iv_hv_ratio: Optional[float] = None  # 来自 VolatilityScore.iv_hv_ratio
+    volatility_score: Optional[float] = None  # 来自 evaluate_volatility().score
+    volatility_rating: Optional[str] = None  # 来自 evaluate_volatility().rating
 
-    # 策略指标
-    prei: Optional[float] = None
-    tgr: Optional[float] = None
+    # === 技术面分析（由 DataBridge 调用 calc_technical_score 填充）===
+    trend_signal: Optional[str] = None  # 来自 TechnicalScore.trend_signal
+    ma_alignment: Optional[str] = None  # 来自 TechnicalScore.ma_alignment
+    rsi: Optional[float] = None  # 来自 TechnicalScore.rsi
+    rsi_zone: Optional[str] = None  # 来自 TechnicalScore.rsi_zone
+    adx: Optional[float] = None  # 来自 TechnicalScore.adx
+    support: Optional[float] = None  # 来自 TechnicalScore.support
+    resistance: Optional[float] = None  # 来自 TechnicalScore.resistance
+
+    # === 基本面分析（由 DataBridge 调用 evaluate_fundamentals 填充）===
+    pe_ratio: Optional[float] = None  # 来自 Fundamental.pe_ratio
+    fundamental_score: Optional[float] = None  # 来自 FundamentalScore.score
+    analyst_rating: Optional[str] = None  # 来自 FundamentalScore.rating
+
+    # === 策略指标（由 DataBridge 调用 strategy.calc_metrics() 填充）===
+    strategy_type: Optional[str] = None  # "short_put" / "covered_call" 等
+    prei: Optional[float] = None  # 来自 StrategyMetrics.prei
+    tgr: Optional[float] = None  # 来自 StrategyMetrics.tgr
+    sas: Optional[float] = None  # 来自 StrategyMetrics.sas
+    roc: Optional[float] = None  # 来自 StrategyMetrics.roc
+    expected_roc: Optional[float] = None  # 来自 StrategyMetrics.expected_roc
+    sharpe: Optional[float] = None  # 来自 StrategyMetrics.sharpe_ratio
+    kelly: Optional[float] = None  # 来自 StrategyMetrics.kelly_fraction
+    win_probability: Optional[float] = None  # 来自 StrategyMetrics.win_probability
+
+    # === 便捷属性（仅做类型判断，无计算逻辑）===
+    @property
+    def is_option(self) -> bool:
+        """是否为期权持仓"""
+        return self.asset_type == "option"
 
     @property
-    def moneyness(self) -> Optional[float]:
-        """计算虚值程度 (S-K)/K"""
-        if self.underlying_price and self.strike:
-            return (self.underlying_price - self.strike) / self.strike
-        return None
-
-    @property
-    def iv_hv_ratio(self) -> Optional[float]:
-        """IV/HV 比率"""
-        if self.iv and self.hv and self.hv > 0:
-            return self.iv / self.hv
-        return None
+    def is_stock(self) -> bool:
+        """是否为股票持仓"""
+        return self.asset_type == "stock"
 
 
 @dataclass
@@ -203,11 +244,17 @@ class MonitorResult:
     # 持仓数据
     positions: list[PositionData] = field(default_factory=list)
 
+    # 调整建议列表
+    suggestions: list[PositionSuggestion] = field(default_factory=list)
+
     # 组合指标
     portfolio_metrics: Optional[PortfolioMetrics] = None
 
     # 资金指标
     capital_metrics: Optional[CapitalMetrics] = None
+
+    # 市场情绪
+    market_sentiment: Optional[dict[str, Any]] = None
 
     # 统计信息
     total_positions: int = 0
@@ -230,6 +277,13 @@ class MonitorResult:
         return [a for a in self.alerts if a.level == AlertLevel.GREEN]
 
     @property
+    def immediate_suggestions(self) -> list[PositionSuggestion]:
+        """需要立即处理的建议"""
+        from src.business.monitoring.suggestions import UrgencyLevel
+
+        return [s for s in self.suggestions if s.urgency == UrgencyLevel.IMMEDIATE]
+
+    @property
     def summary(self) -> dict:
         """监控摘要"""
         return {
@@ -241,4 +295,6 @@ class MonitorResult:
             "green_alerts": len(self.green_alerts),
             "positions_at_risk": self.positions_at_risk,
             "positions_opportunity": self.positions_opportunity,
+            "suggestions_count": len(self.suggestions),
+            "immediate_actions": len(self.immediate_suggestions),
         }

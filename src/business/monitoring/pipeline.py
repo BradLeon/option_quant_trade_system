@@ -28,6 +28,7 @@ from src.business.monitoring.models import (
 from src.business.monitoring.monitors.capital_monitor import CapitalMonitor
 from src.business.monitoring.monitors.portfolio_monitor import PortfolioMonitor
 from src.business.monitoring.monitors.position_monitor import PositionMonitor
+from src.business.monitoring.suggestions import SuggestionGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -48,11 +49,13 @@ class MonitoringPipeline:
     def __init__(
         self,
         config: Optional[MonitoringConfig] = None,
+        suggestion_generator: Optional[SuggestionGenerator] = None,
     ) -> None:
         """初始化监控管道
 
         Args:
             config: 监控配置，如果为 None 则使用默认配置
+            suggestion_generator: 建议生成器，如果为 None 则创建默认实例
         """
         self.config = config or MonitoringConfig.load()
 
@@ -61,11 +64,16 @@ class MonitoringPipeline:
         self.position_monitor = PositionMonitor(self.config)
         self.capital_monitor = CapitalMonitor(self.config)
 
+        # 建议生成器
+        self.suggestion_generator = suggestion_generator or SuggestionGenerator()
+
     def run(
         self,
         positions: list[PositionData],
         capital_metrics: Optional[CapitalMetrics] = None,
         spy_beta_map: Optional[dict[str, float]] = None,
+        vix: Optional[float] = None,
+        market_sentiment: Optional[dict] = None,
     ) -> MonitorResult:
         """执行完整监控流程
 
@@ -73,6 +81,8 @@ class MonitoringPipeline:
             positions: 持仓数据列表
             capital_metrics: 资金指标（可选）
             spy_beta_map: 标的对 SPY 的 Beta 映射表（可选）
+            vix: 当前 VIX 值，用于市场环境调整（可选）
+            market_sentiment: 市场情绪数据（可选）
 
         Returns:
             MonitorResult: 监控结果
@@ -110,6 +120,19 @@ class MonitoringPipeline:
         # 确定整体状态
         overall_status = self._determine_overall_status(all_alerts)
 
+        # 4. 生成调整建议
+        logger.info("Step 4: 生成调整建议...")
+        temp_result = MonitorResult(
+            status=overall_status,
+            alerts=all_alerts,
+        )
+        suggestions = self.suggestion_generator.generate(
+            monitor_result=temp_result,
+            positions=positions,
+            vix=vix,
+        )
+        logger.info(f"生成建议: {len(suggestions)} 个")
+
         # 统计
         positions_at_risk = len(set(
             a.position_id for a in all_alerts
@@ -123,15 +146,18 @@ class MonitoringPipeline:
         elapsed = (datetime.now() - start_time).total_seconds()
         logger.info(
             f"监控完成: 状态={overall_status.value}, "
-            f"预警={len(all_alerts)} 个, 耗时 {elapsed:.2f}s"
+            f"预警={len(all_alerts)} 个, 建议={len(suggestions)} 个, "
+            f"耗时 {elapsed:.2f}s"
         )
 
         return MonitorResult(
             status=overall_status,
             alerts=all_alerts,
             positions=positions,
+            suggestions=suggestions,
             portfolio_metrics=portfolio_metrics,
             capital_metrics=capital_metrics,
+            market_sentiment=market_sentiment,
             total_positions=len(positions),
             positions_at_risk=positions_at_risk,
             positions_opportunity=positions_opportunity,

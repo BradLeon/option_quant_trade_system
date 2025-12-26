@@ -96,6 +96,12 @@ class PositionMonitor:
         # 检查盈亏
         alerts.extend(self._check_pnl(pos))
 
+        # 检查 SAS (策略吸引力)
+        alerts.extend(self._check_sas(pos))
+
+        # 检查 TGR (Position Level)
+        alerts.extend(self._check_tgr(pos))
+
         return alerts
 
     def _check_moneyness(self, pos: PositionData) -> list[Alert]:
@@ -388,6 +394,87 @@ class PositionMonitor:
                     current_value=pnl_pct,
                     threshold_value=self.thresholds.stop_loss_pct,
                     suggested_action="触发止损，执行风险管理",
+                )
+            )
+
+        return alerts
+
+    def _check_sas(self, pos: PositionData) -> list[Alert]:
+        """检查 SAS (Strategy Attractiveness Score)
+
+        SAS 阈值规则：
+        - SAS < 30: RED - 策略失效，建议平仓
+        - SAS 30-50: YELLOW - 边缘区域，需要评估
+        - SAS >= 50: GREEN - 可持有
+        """
+        alerts: list[Alert] = []
+        sas = pos.sas
+
+        if sas is None:
+            return alerts
+
+        # 使用配置的阈值或默认值
+        sas_red = getattr(self.thresholds, "sas_red_below", 30.0)
+        sas_yellow = getattr(self.thresholds, "sas_yellow_range", (30.0, 50.0))
+
+        if sas < sas_red:
+            alerts.append(
+                Alert(
+                    alert_type=AlertType.TGR_LOW,  # 复用 TGR_LOW 类型
+                    level=AlertLevel.RED,
+                    message=f"持仓 {pos.symbol} SAS 过低: {sas:.1f}",
+                    symbol=pos.symbol,
+                    position_id=pos.position_id,
+                    current_value=sas,
+                    threshold_value=sas_red,
+                    suggested_action="策略吸引力不足，考虑平仓",
+                    details={"metric": "sas"},
+                )
+            )
+        elif sas < sas_yellow[1]:
+            alerts.append(
+                Alert(
+                    alert_type=AlertType.TGR_LOW,
+                    level=AlertLevel.YELLOW,
+                    message=f"持仓 {pos.symbol} SAS 偏低: {sas:.1f}",
+                    symbol=pos.symbol,
+                    position_id=pos.position_id,
+                    current_value=sas,
+                    suggested_action="策略吸引力边缘，密切关注",
+                    details={"metric": "sas"},
+                )
+            )
+
+        return alerts
+
+    def _check_tgr(self, pos: PositionData) -> list[Alert]:
+        """检查 TGR (Theta/Gamma Ratio) at Position Level
+
+        TGR 阈值规则：
+        - TGR < 0.1: YELLOW - 效率较低，需调整
+        - TGR >= 0.1: GREEN - 效率良好
+        """
+        alerts: list[Alert] = []
+        tgr = pos.tgr
+
+        if tgr is None:
+            return alerts
+
+        # 使用配置的阈值或默认值
+        tgr_yellow = getattr(self.thresholds, "tgr_yellow_below", 0.1)
+
+        if tgr < tgr_yellow:
+            alerts.append(
+                Alert(
+                    alert_type=AlertType.TGR_LOW,
+                    level=AlertLevel.YELLOW,
+                    message=f"持仓 {pos.symbol} TGR 偏低: {tgr:.2f}",
+                    symbol=pos.symbol,
+                    position_id=pos.position_id,
+                    current_value=tgr,
+                    threshold_value=tgr_yellow,
+                    suggested_action="Theta/Gamma 效率偏低，考虑调整",
+                    details={"metric": "tgr"},
                 )
             )
 

@@ -2,6 +2,10 @@
 Monitor Command - 持仓监控命令
 
 运行三层持仓监控，生成风险预警。
+
+支持两种模式：
+1. 文件模式：从 JSON 文件加载持仓数据
+2. 账户模式：从真实账户（IBKR/Futu）获取持仓数据
 """
 
 import json
@@ -22,10 +26,27 @@ logger = logging.getLogger(__name__)
 
 @click.command()
 @click.option(
+    "--account-type",
+    "-a",
+    type=click.Choice(["paper", "real"]),
+    default=None,
+    help="账户类型：paper（模拟）或 real（真实）",
+)
+@click.option(
+    "--ibkr-only",
+    is_flag=True,
+    help="仅使用 IBKR 账户",
+)
+@click.option(
+    "--futu-only",
+    is_flag=True,
+    help="仅使用 Futu 账户",
+)
+@click.option(
     "--positions",
     "-p",
     type=click.Path(exists=True),
-    help="持仓数据 JSON 文件路径",
+    help="持仓数据 JSON 文件路径（与 --account-type 互斥）",
 )
 @click.option(
     "--capital",
@@ -65,6 +86,9 @@ logger = logging.getLogger(__name__)
     help="显示详细日志",
 )
 def monitor(
+    account_type: Optional[str],
+    ibkr_only: bool,
+    futu_only: bool,
     positions: Optional[str],
     capital: Optional[str],
     config: Optional[str],
@@ -79,8 +103,11 @@ def monitor(
 
     \b
     示例：
-      # 使用示例数据运行监控
-      optrade monitor
+      # 从真实 Paper 账户监控
+      optrade monitor --account-type paper
+
+      # 仅使用 IBKR 账户
+      optrade monitor --account-type paper --ibkr-only
 
       # 从文件加载持仓数据
       optrade monitor -p positions.json -C capital.json
@@ -102,15 +129,24 @@ def monitor(
     click.echo("-" * 50)
 
     try:
-        # 加载数据
-        position_list = _load_positions(positions)
-        capital_metrics = _load_capital(capital)
+        # 选择数据来源：账户模式 vs 文件模式
+        if account_type:
+            position_list, capital_metrics = _load_from_account(
+                account_type, ibkr_only, futu_only
+            )
+        elif positions:
+            position_list = _load_positions(positions)
+            capital_metrics = _load_capital(capital)
+        else:
+            # 默认使用示例数据
+            position_list = _load_positions(None)
+            capital_metrics = _load_capital(None)
 
         click.echo(f"📋 持仓数量: {len(position_list)}")
         click.echo()
 
         # 创建监控管道
-        pipeline = MonitoringPipeline(config_path=config)
+        pipeline = MonitoringPipeline()
 
         # 运行监控
         result = pipeline.run(
@@ -126,7 +162,7 @@ def monitor(
         if output == "json":
             _output_json(result)
         else:
-            _output_text(result)
+            _output_text(result, verbose)
 
         # 推送预警
         if push and result.alerts:
@@ -146,8 +182,126 @@ def monitor(
         sys.exit(3)
 
 
+def _load_from_account(
+    account_type: str,
+    ibkr_only: bool,
+    futu_only: bool,
+) -> tuple[list[PositionData], CapitalMetrics]:
+    """从真实账户加载持仓数据
+
+    Args:
+        account_type: "paper" 或 "real"
+        ibkr_only: 仅使用 IBKR
+        futu_only: 仅使用 Futu
+
+    Returns:
+        (持仓列表, 资金指标)
+    """
+    from src.data.models.account import AccountType as AccType
+    from src.data.providers.account_aggregator import AccountAggregator
+    from src.data.providers.ibkr_provider import IBKRProvider
+    from src.data.providers.futu_provider import FutuProvider
+    from src.data.providers.unified_provider import UnifiedDataProvider
+    from src.business.monitoring.data_bridge import MonitoringDataBridge
+
+    click.echo(f"📡 连接账户: {account_type}")
+
+    # 初始化 providers
+    ibkr = None
+    futu = None
+
+    if not futu_only:
+        try:
+            ibkr = IBKRProvider()
+            ibkr.connect()
+            click.echo("  ✅ IBKR 连接成功")
+        except Exception as e:
+            click.echo(f"  ⚠️ IBKR 连接失败: {e}")
+
+    if not ibkr_only:
+        try:
+            futu = FutuProvider()
+            futu.connect()
+            click.echo("  ✅ Futu 连接成功")
+        except Exception as e:
+            click.echo(f"  ⚠️ Futu 连接失败: {e}")
+
+    if not ibkr and not futu:
+        raise click.ClickException("无法连接任何券商账户")
+
+    # 创建聚合器
+    aggregator = AccountAggregator(
+        ibkr_provider=ibkr,
+        futu_provider=futu,
+    )
+
+    # 获取合并后的组合
+    acc_type = AccType.PAPER if account_type == "paper" else AccType.REAL
+    click.echo(f"📥 获取 {acc_type.value} 账户持仓...")
+
+    portfolio = aggregator.get_consolidated_portfolio(account_type=acc_type)
+
+    click.echo(f"  原始持仓: {len(portfolio.positions)} 个")
+
+    # 使用 DataBridge 转换持仓
+    unified_provider = UnifiedDataProvider(
+        ibkr_provider=ibkr,
+        futu_provider=futu,
+    )
+    bridge = MonitoringDataBridge(data_provider=unified_provider)
+    position_list = bridge.convert_positions(portfolio)
+
+    click.echo(f"  转换后持仓: {len(position_list)} 个")
+
+    # 构造 CapitalMetrics
+    capital_metrics = _build_capital_metrics(portfolio)
+
+    # 清理连接
+    if ibkr:
+        try:
+            ibkr.disconnect()
+        except Exception:
+            pass
+    if futu:
+        try:
+            futu.disconnect()
+        except Exception:
+            pass
+
+    return position_list, capital_metrics
+
+
+def _build_capital_metrics(portfolio) -> CapitalMetrics:
+    """从组合数据构造 CapitalMetrics"""
+    total_equity = portfolio.total_value_usd
+    total_pnl = portfolio.total_unrealized_pnl_usd
+
+    # 从 broker summaries 获取保证金信息
+    margin_used = 0.0
+    margin_available = 0.0
+    cash_balance = 0.0
+
+    for summary in portfolio.by_broker.values():
+        if summary.margin_used:
+            margin_used += summary.margin_used
+        if summary.margin_available:
+            margin_available += summary.margin_available
+        if summary.cash:
+            cash_balance += summary.cash
+
+    margin_usage = margin_used / (margin_used + margin_available) if (margin_used + margin_available) > 0 else 0
+
+    return CapitalMetrics(
+        total_equity=total_equity,
+        cash_balance=cash_balance,
+        maintenance_margin=margin_used,
+        margin_usage=margin_usage,
+        unrealized_pnl=total_pnl,
+    )
+
+
 def _load_positions(path: Optional[str]) -> list[PositionData]:
-    """加载持仓数据"""
+    """从 JSON 文件加载持仓数据"""
     if path:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -156,13 +310,15 @@ def _load_positions(path: Optional[str]) -> list[PositionData]:
     # 返回示例数据
     return [
         PositionData(
+            position_id="AAPL_180_20250117",
             symbol="AAPL",
-            position_type="short_put",
+            asset_type="option",
+            option_type="put",
             quantity=-1,
             entry_price=3.50,
             current_price=2.80,
             strike=180.0,
-            expiry="2025-01-17",
+            expiry="20250117",
             underlying_price=185.0,
             delta=-0.25,
             gamma=0.02,
@@ -172,13 +328,15 @@ def _load_positions(path: Optional[str]) -> list[PositionData]:
             dte=25,
         ),
         PositionData(
+            position_id="MSFT_400_20250117",
             symbol="MSFT",
-            position_type="short_put",
+            asset_type="option",
+            option_type="put",
             quantity=-2,
             entry_price=4.20,
             current_price=5.50,
             strike=400.0,
-            expiry="2025-01-17",
+            expiry="20250117",
             underlying_price=395.0,
             delta=-0.40,
             gamma=0.03,
@@ -214,7 +372,7 @@ def _load_capital(path: Optional[str]) -> CapitalMetrics:
     )
 
 
-def _output_text(result) -> None:
+def _output_text(result, verbose: bool = False) -> None:
     """文本格式输出"""
     click.echo(f"📊 监控状态: {result.status.value}")
     click.echo()
@@ -248,6 +406,58 @@ def _output_text(result) -> None:
     else:
         click.echo("✅ 无预警，持仓状态正常")
 
+    # 调整建议
+    if result.suggestions:
+        click.echo()
+        click.echo("💡 调整建议:")
+        click.echo("-" * 80)
+
+        for suggestion in result.suggestions:
+            urgency_icon = {
+                "immediate": "🚨",
+                "soon": "⚡",
+                "monitor": "👁️",
+            }.get(suggestion.urgency.value, "📌")
+
+            action_str = suggestion.action.value.upper()
+            click.echo(f"{urgency_icon} [{suggestion.symbol}] {action_str}")
+            click.echo(f"   原因: {suggestion.reason}")
+            if suggestion.details:
+                click.echo(f"   详情: {suggestion.details}")
+            click.echo()
+
+        click.echo("-" * 80)
+
+    # 详细模式：显示持仓指标
+    if verbose and result.positions:
+        click.echo()
+        click.echo("📈 持仓详情:")
+        click.echo("-" * 80)
+
+        for pos in result.positions:
+            if pos.is_option:
+                option_type = pos.option_type.upper() if pos.option_type else "?"
+                delta_str = f"{pos.delta:.2f}" if pos.delta is not None else "N/A"
+                dte_str = str(pos.dte) if pos.dte is not None else "N/A"
+                click.echo(
+                    f"[{pos.symbol}] {option_type} K={pos.strike} "
+                    f"DTE={dte_str} Δ={delta_str}"
+                )
+                if pos.sas is not None and pos.prei is not None and pos.tgr is not None:
+                    click.echo(f"   SAS={pos.sas:.1f} PREI={pos.prei:.1f} TGR={pos.tgr:.2f}")
+                if pos.iv is not None and pos.hv is not None and pos.iv_hv_ratio is not None:
+                    click.echo(f"   IV={pos.iv:.1%} HV={pos.hv:.1%} IV/HV={pos.iv_hv_ratio:.2f}")
+            else:
+                click.echo(f"[{pos.symbol}] 股票 数量={pos.quantity}")
+                if pos.trend_signal:
+                    click.echo(f"   趋势={pos.trend_signal} RSI={pos.rsi_zone}")
+                if pos.fundamental_score is not None:
+                    click.echo(f"   基本面评分={pos.fundamental_score:.1f}")
+
+            click.echo()
+
+        click.echo("-" * 80)
+
     # 摘要
     if result.summary:
         click.echo()
@@ -264,8 +474,10 @@ def _output_json(result) -> None:
             "red_alerts": len(result.red_alerts),
             "yellow_alerts": len(result.yellow_alerts),
             "green_alerts": len(result.green_alerts),
+            "suggestions": len(result.suggestions),
         },
         "alerts": [],
+        "suggestions": [],
         "summary": result.summary,
     }
 
@@ -278,6 +490,16 @@ def _output_json(result) -> None:
             "current_value": alert.current_value,
             "threshold_value": alert.threshold_value,
             "suggested_action": alert.suggested_action,
+        })
+
+    for suggestion in result.suggestions:
+        output_data["suggestions"].append({
+            "position_id": suggestion.position_id,
+            "symbol": suggestion.symbol,
+            "action": suggestion.action.value,
+            "urgency": suggestion.urgency.value,
+            "reason": suggestion.reason,
+            "details": suggestion.details,
         })
 
     click.echo(json.dumps(output_data, indent=2, ensure_ascii=False))
