@@ -247,6 +247,11 @@ def print_strategy_metrics(
     else:
         print("  ROC: N/A (missing margin data)")
 
+    if metrics.expected_roc is not None:
+        print(f"  Expected ROC: {metrics.expected_roc:.1%} (annualized)")
+    else:
+        print("  Expected ROC: N/A (missing data)")
+
     print("-" * 70)
 
 

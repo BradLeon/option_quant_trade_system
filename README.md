@@ -731,6 +731,69 @@ Gamma$_USD = 0.052 × 77.44² × 0.01 / 0.1286 = 3.12  ✓
 - **夏普比率**: `SR = (E[π] - Rf) / Std[π]`，其中 `Rf = margin × K × (e^(rT) - 1)`
 - **Kelly公式**: `f* = E[π] / Var[π]`
 
+### ROC 与 Expected ROC
+
+系统提供两个关键的年化收益指标，用于评估期权策略的收益潜力：
+
+| 指标 | 公式 | 说明 |
+|------|------|------|
+| **ROC** | `(premium / capital) × (365/dte)` | 确定性权利金收入的年化收益率 |
+| **Expected ROC** | `(expected_return / capital) × (365/dte)` | 概率加权期望收益的年化收益率 |
+
+**Capital 的选择（按策略类型）**：
+
+| 策略 | Capital | 说明 |
+|------|---------|------|
+| Short Put | margin_requirement | IBKR保证金公式 |
+| Short Call | margin_requirement | IBKR保证金公式 |
+| Covered Call | stock_cost_basis | 正股持仓成本（资金锁定） |
+| Short Strangle | margin_requirement | 两腿中较高的保证金 |
+
+**为什么 Covered Call 使用 stock_cost_basis？**
+
+对于 Covered Call，真正锁定的资金是购买正股的成本，而不是期权保证金（几乎为零）。如果使用 margin_requirement，会导致 ROC 虚高：
+
+```python
+# 错误示例
+ROC = 0.72 / 0.72 × (365/21) = 1738%  # ← 使用 margin = premium
+
+# 正确计算
+ROC = 0.72 / 315.47 × (365/21) = 3.97%  # ← 使用 stock_cost_basis
+```
+
+**ROC vs Expected ROC 的意义**：
+
+ROC 告诉你「确定能收到多少钱」，Expected ROC 告诉你「这笔交易的期望价值」。
+
+```
+示例: ATM Short Put (3 DTE)
+├─ ROC = 237.8% (权利金年化，看起来很诱人)
+└─ Expected ROC = -78.5% (实际期望为负，这是亏钱的交易!)
+
+原因分析:
+├─ 58% 概率: 赚 $0.30 (保留权利金)
+└─ 42% 概率: 亏 $0.66 (被行权损失)
+加权期望 = 0.58×0.30 + 0.42×(-0.66) = -$0.10
+```
+
+**Expected ROC 与其他指标的一致性**：
+- Expected ROC < 0 → Sharpe Ratio < 0 → Kelly Fraction = 0
+- 三个指标一致表明这是一个负期望交易，不应该做
+
+**Covered Call 的 Expected Return 计算**：
+
+Covered Call 的期望收益包含股票和期权两部分：
+
+```python
+# E[Return] = E[Stock Gain] + Premium - E[Call Payoff]
+#           = (S × e^(rT) - S) + C - (S × e^(rT) × N(d1) - K × N(d2))
+```
+
+因此对于 Covered Call：
+- ROC 仅反映期权权利金收入
+- Expected ROC 反映整体策略收益（含股票增值期望）
+- 通常 Expected ROC > ROC（因为包含了股票上涨预期）
+
 ## 环境配置
 
 创建 `.env` 文件：
