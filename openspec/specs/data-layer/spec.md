@@ -194,3 +194,49 @@ TBD - created by archiving change implement-data-layer. Update Purpose after arc
 - **THEN** 系统从 Supabase 返回指定时间范围的数据
 - **AND** 按时间升序排列
 
+### Requirement: Multi-Broker Account Aggregation
+
+系统 SHALL 支持从多个券商获取账户持仓并聚合为统一视图。
+
+#### Scenario: 获取单券商持仓
+- **WHEN** 用户请求 IBKR 或 Futu 的账户持仓
+- **THEN** 系统返回该券商的所有持仓列表
+- **AND** 每个持仓包含标的、数量、成本、市值、盈亏
+- **AND** 期权持仓包含行权价、到期日、期权类型
+
+#### Scenario: 获取账户现金余额
+- **WHEN** 用户请求账户现金余额
+- **THEN** 系统返回按币种分类的现金余额
+- **AND** 包含可用余额和总余额
+
+#### Scenario: 多券商持仓聚合
+- **WHEN** 用户请求合并后的投资组合
+- **THEN** 系统从所有可用券商获取持仓
+- **AND** 使用实时汇率转换为统一货币
+- **AND** 计算总资产和总盈亏
+
+#### Scenario: 汇率转换
+- **WHEN** 合并不同币种的持仓
+- **THEN** 系统从 Yahoo Finance 获取实时汇率
+- **AND** 将所有持仓价值转换为目标货币
+
+### Requirement: Option Greeks Routing
+
+系统 SHALL 使用智能路由为期权持仓获取 Greeks 数据。
+
+#### Scenario: HK 期权 Greeks 路由
+- **WHEN** 用户请求港股期权的 Greeks
+- **THEN** 系统优先使用 IBKR（提供完整 IV/Greeks）
+- **AND** IBKR 失败时回退到 Futu
+
+#### Scenario: US 期权 Greeks 路由
+- **WHEN** 用户请求美股期权的 Greeks
+- **THEN** 系统按优先级尝试 IBKR → Futu → Yahoo
+- **AND** 返回第一个成功的结果
+
+#### Scenario: 统一 Greeks 获取
+- **WHEN** AccountAggregator 获取持仓
+- **THEN** 先从各券商获取持仓（不含 Greeks）
+- **AND** 再通过 UnifiedProvider 统一获取 Greeks
+- **AND** 使用路由规则选择最佳数据源
+

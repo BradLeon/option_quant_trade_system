@@ -15,11 +15,17 @@ Models:
     TechnicalScore: Technical analysis score result
     TrendResult: Trend analysis result
     SupportResistance: Support and resistance levels
+    VixTermStructure: VIX term structure analysis result
+    MarketTrend: Market trend analysis result
+    PcrResult: Put/Call Ratio analysis result
+    MarketSentiment: Aggregated market sentiment
 
 Enums:
     TrendSignal: Market trend signal
     RatingSignal: Analyst rating signal
     VixZone: VIX volatility zones
+    TermStructure: VIX term structure state
+    MarketType: Market type (US or HK)
     OptionType: Call or Put (from data layer)
     PositionSide: Long or Short
 """
@@ -27,10 +33,18 @@ Enums:
 from src.data.models.option import Greeks, OptionType  # 统一使用 data 层定义
 from src.engine.models.bs_params import BSParams
 from src.engine.models.enums import (
+    MarketType,
     PositionSide,
     RatingSignal,
+    TermStructure,
     TrendSignal,
     VixZone,
+)
+from src.engine.models.sentiment import (
+    MarketSentiment,
+    MarketTrend,
+    PcrResult,
+    VixTermStructure,
 )
 from src.engine.models.position import Position
 from src.engine.models.result import (
@@ -50,6 +64,8 @@ __all__ = [
     "TrendSignal",
     "RatingSignal",
     "VixZone",
+    "TermStructure",
+    "MarketType",
     "OptionType",
     "PositionSide",
     # Greeks (from data layer)
@@ -63,6 +79,11 @@ __all__ = [
     "TechnicalSignal",
     "TrendResult",
     "SupportResistance",
+    # Sentiment
+    "VixTermStructure",
+    "MarketTrend",
+    "PcrResult",
+    "MarketSentiment",
     # Strategy
     "OptionLeg",
     "StrategyParams",

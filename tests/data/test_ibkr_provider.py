@@ -38,7 +38,9 @@ class TestIBKRProviderInit:
                     assert provider.name == "ibkr"
                     assert provider._host == "127.0.0.1"
                     assert provider._port == 7497
-                    assert provider._client_id == 1
+                    # client_id is now generated from PID modulo: 100 + (PID % 900)
+                    # Range is 100-999 to avoid conflicts with TWS GUI (0) and common apps (1-10)
+                    assert 100 <= provider._client_id <= 999
         finally:
             # Restore environment variables
             os.environ.update(env_backup)

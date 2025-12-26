@@ -8,7 +8,7 @@ This module provides portfolio-level aggregation of:
 import math
 
 from src.engine.models.position import Position
-from src.engine.portfolio.greeks_agg import calc_gamma_dollars, calc_portfolio_gamma, calc_portfolio_vega
+from src.engine.portfolio.greeks_agg import calc_portfolio_gamma, calc_portfolio_vega
 
 
 def calc_portfolio_sas(

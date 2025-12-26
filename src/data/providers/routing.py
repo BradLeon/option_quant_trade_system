@@ -201,18 +201,19 @@ class RoutingConfig:
                 data_type="history_kline",
                 providers=["ibkr", "yahoo"],
             ),
-            # HK K-line/technical data → IBKR > Futu > Yahoo
-            # Verified: IBKR best, Futu second, Yahoo fallback
+            # HK K-line/technical data → Futu > IBKR > Yahoo
+            # Futu supports HK indices (800000.HK, 800125.HK) that IBKR doesn't
             RoutingRule(
                 market="hk",
                 data_type="history_kline",
-                providers=["ibkr", "futu", "yahoo"],
+                providers=["futu", "ibkr", "yahoo"],
             ),
-            # HK options → Futu only (Yahoo doesn't support HK options)
+            # HK options → IBKR preferred (has IV/Greeks), Futu fallback
+            # Note: IBKR provides IV data, Futu only provides contract structure
             RoutingRule(
                 market="hk",
                 data_type=["option_chain", "option_quote", "option_quotes"],
-                providers=["futu"],
+                providers=["ibkr", "futu"],
             ),
             # HK stocks (quote) → Futu preferred
             RoutingRule(

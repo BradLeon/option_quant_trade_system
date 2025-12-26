@@ -38,6 +38,7 @@ class CoveredCallStrategy(OptionStrategy):
         time_to_expiry: float,
         risk_free_rate: float = 0.03,
         stock_cost_basis: float | None = None,
+        coverage_ratio: float = 1.0,
         hv: float | None = None,
         dte: int | None = None,
         delta: float | None = None,
@@ -55,6 +56,10 @@ class CoveredCallStrategy(OptionStrategy):
             time_to_expiry: Time to expiration in years (T)
             risk_free_rate: Annual risk-free rate (r)
             stock_cost_basis: Original cost of stock (defaults to spot_price) --正股买入价
+            coverage_ratio: Ratio of stock shares to call shares (0.0-1.0)
+                - 1.0 = fully covered (stock >= calls)
+                - 0.75 = 75% covered, 25% naked
+                - 0.0 = fully naked (no stock)
             hv: Historical volatility for SAS calculation (optional)
             dte: Days to expiration for PREI/ROC calculation (optional)
             delta: Option delta (optional)
@@ -80,6 +85,7 @@ class CoveredCallStrategy(OptionStrategy):
         super().__init__([leg], params)
 
         self.stock_cost_basis = stock_cost_basis or spot_price
+        self.coverage_ratio = max(0.0, min(1.0, coverage_ratio))  # Clamp to [0, 1]
 
         # Create BSParams for B-S calculations
         self._bs_params = BSParams(
@@ -281,3 +287,79 @@ class CoveredCallStrategy(OptionStrategy):
     def _calc_capital_at_risk(self) -> float:
         """Capital at risk is the stock cost basis."""
         return self.stock_cost_basis
+
+    def calc_roc(self) -> float | None:
+        """Calculate annualized Return on Capital for Covered Call.
+
+        For covered call, capital at risk is the stock cost basis,
+        not the margin requirement (which is minimal for fully covered calls).
+
+        ROC = (premium / stock_cost_basis) * (365 / dte)
+
+        Returns:
+            Annualized ROC, or None if insufficient data.
+        """
+        from src.engine.position.risk_return import calc_roc_from_dte
+
+        dte = self.params.dte
+        if dte is None or dte <= 0:
+            return None
+
+        premium = self.leg.premium
+        if premium <= 0:
+            return None
+
+        # Use stock cost basis as capital at risk
+        capital = self._calc_capital_at_risk()  # = stock_cost_basis
+        if capital <= 0:
+            return None
+
+        return calc_roc_from_dte(premium, capital, dte)
+
+    def calc_expected_roc(self) -> float | None:
+        """Calculate annualized Expected ROC for Covered Call.
+
+        For covered call, capital at risk is the stock cost basis,
+        not the margin requirement.
+
+        Formula: (expected_return / stock_cost_basis) × (365 / dte)
+
+        Returns:
+            Annualized expected ROC, or None if insufficient data.
+        """
+        from src.engine.position.risk_return import calc_roc_from_dte
+
+        dte = self.params.dte
+        if dte is None or dte <= 0:
+            return None
+
+        expected_return = self.calc_expected_return()
+        if expected_return is None:
+            return None
+
+        # Use stock cost basis as capital at risk
+        capital = self._calc_capital_at_risk()  # = stock_cost_basis
+        if capital <= 0:
+            return None
+
+        return calc_roc_from_dte(expected_return, capital, dte)
+
+    def calc_margin_requirement(self) -> float:
+        """Calculate margin requirement using IBKR formula for Covered Call.
+
+        For covered call, since we own the underlying stock, the margin
+        requirement is typically just the call premium (no additional margin
+        needed because the stock covers the short call obligation).
+
+        ASSUMPTION: This assumes **full coverage** where stock_quantity >=
+        call_quantity * contract_multiplier. Partial coverage scenarios
+        should be handled separately with a combination of covered and
+        naked call strategies.
+
+        Returns:
+            Margin requirement in dollars (minimal for fully covered calls).
+        """
+        # For fully covered call, margin requirement is minimal because
+        # the stock position covers the short call obligation
+        # Return the call premium as a conservative estimate
+        return self.leg.premium
