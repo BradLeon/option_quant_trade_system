@@ -12,46 +12,44 @@ from src.engine.portfolio.greeks_agg import (
 
 
 def calc_portfolio_tgr(positions: list[Position]) -> float | None:
-    """Calculate Portfolio Theta/Gamma Ratio (TGR).
+    """Calculate Portfolio Theta/Gamma Ratio (TGR) in dollar terms.
 
-    TGR measures the ratio of daily time decay income to gamma risk.
+    TGR measures the ratio of daily theta income to gamma risk, both in dollars.
     Higher TGR indicates more favorable risk/reward for theta strategies.
 
+    Formula: TGR = |theta_dollars| / |gamma_dollars|
+
     Physical meaning:
-    - Theta is daily income from time decay (negative value = you earn)
-    - Gamma is the rate of delta change (convexity risk)
-    - High TGR = more theta income per unit of gamma risk
-    - Typical target: TGR > 2-3 for income strategies
+    - Theta$ is daily income from time decay in dollars
+    - Gamma$ is the dollar gamma risk (delta change per 1% move)
+    - High TGR = more theta income per dollar of gamma risk
+    - Using dollars normalizes across different underlyings and multipliers
+    - Typical target: TGR > 0.5-1.0 for income strategies
 
     Args:
-        positions: List of Position objects with theta and gamma.
+        positions: List of Position objects with theta, gamma, and underlying_price.
 
     Returns:
         TGR value. Higher is better for theta strategies.
-        Returns None if gamma is zero or no valid positions.
+        Returns None if gamma_dollars is zero or no valid positions.
 
     Example:
-        >>> positions = [
-        ...     Position(symbol="AAPL", quantity=1, theta=-30, gamma=5),
-        ...     Position(symbol="MSFT", quantity=1, theta=-20, gamma=5),
-        ... ]
-        >>> calc_portfolio_tgr(positions)
-        5.0  # (-30-20) / (5+5) = 50/10
+        # Short put: theta=$50/day, gamma risk=$100
+        # TGR = 50/100 = 0.5 (earn $0.50 theta per $1 gamma risk)
     """
     if not positions:
         return None
 
-    total_theta = calc_portfolio_theta(positions)
-    total_gamma = calc_portfolio_gamma(positions)
+    # portfolio_theta is already in USD (converted by AccountAggregator)
+    # portfolio_gamma is now in gamma_dollars format (Γ × S² × 0.01) after currency conversion
+    theta_usd = calc_portfolio_theta(positions)
+    gamma_dollars = calc_portfolio_gamma(positions)
 
-    if total_gamma is None or total_gamma == 0:
+    if gamma_dollars == 0:
         return None
 
-    if total_theta is None:
-        return None
-
-    # Use absolute values as theta is typically negative (decay)
-    return abs(total_theta) / abs(total_gamma)
+    # Use absolute values as theta is typically negative for short options
+    return abs(theta_usd) / abs(gamma_dollars)
 
 
 def calc_portfolio_var(

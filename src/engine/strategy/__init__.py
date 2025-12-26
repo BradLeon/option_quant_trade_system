@@ -10,8 +10,15 @@ from src.engine.strategy.base import OptionStrategy
 
 # Strategy implementations
 from src.engine.strategy.covered_call import CoveredCallStrategy
+from src.engine.strategy.short_call import ShortCallStrategy
 from src.engine.strategy.short_put import ShortPutStrategy
 from src.engine.strategy.strangle import ShortStrangleStrategy
+
+# Factory pattern
+from src.engine.strategy.factory import (
+    StrategyInstance,
+    create_strategies_from_position,
+)
 
 __all__ = [
     # Models (re-exported for convenience)
@@ -24,6 +31,10 @@ __all__ = [
     "OptionStrategy",
     # Strategies
     "ShortPutStrategy",
+    "ShortCallStrategy",
     "CoveredCallStrategy",
     "ShortStrangleStrategy",
+    # Factory
+    "StrategyInstance",
+    "create_strategies_from_position",
 ]

@@ -276,7 +276,7 @@ class StrategyParams:
     spot_price: float
     volatility: float
     time_to_expiry: float
-    risk_free_rate: float = 0.03
+    risk_free_rate: float = 0.035
     hv: float | None = None
     dte: int | None = None
 
@@ -322,3 +322,4 @@ class StrategyMetrics:
     sas: float | None = None
     tgr: float | None = None
     roc: float | None = None
+    expected_roc: float | None = None

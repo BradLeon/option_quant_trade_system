@@ -10,9 +10,15 @@ from typing import Any
 from dotenv import load_dotenv
 
 from src.data.models import (
+    AccountCash,
+    AccountPosition,
+    AccountSummary,
+    AccountType,
+    AssetType,
     Fundamental,
     KlineBar,
     MacroData,
+    Market,
     OptionChain,
     OptionQuote,
     StockQuote,
@@ -21,10 +27,12 @@ from src.data.models import (
 from src.data.models.option import Greeks, OptionContract, OptionType
 from src.data.models.stock import KlineType
 from src.data.providers.base import (
+    AccountProvider,
     ConnectionError,
     DataNotFoundError,
     DataProvider,
 )
+from src.data.utils import SymbolFormatter
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +40,9 @@ logger = logging.getLogger(__name__)
 try:
     from ib_async import IB, Contract, Option, Stock, util
     IBKR_AVAILABLE = True
+    # Configure ib_async to use Python's logging
+    # Suppress default ib_async logging to avoid duplicate/encoded messages
+    logging.getLogger("ib_async").setLevel(logging.CRITICAL)
 except ImportError:
     IBKR_AVAILABLE = False
     logger.warning("ib_async not installed. IBKR provider will be unavailable.")
@@ -62,15 +73,21 @@ KLINE_DURATION_MAP = {
 }
 
 
-class IBKRProvider(DataProvider):
+class IBKRProvider(DataProvider, AccountProvider):
     """IBKR TWS API data provider.
 
     Requires TWS or IB Gateway to be running locally.
+    Supports both market data and account/position queries.
 
     Usage:
         with IBKRProvider() as provider:
             quote = provider.get_stock_quote("AAPL")
+            positions = provider.get_positions()
     """
+
+    # Port mapping for account types
+    PAPER_PORT = 7497
+    LIVE_PORT = 7496
 
     def __init__(
         self,
@@ -78,20 +95,43 @@ class IBKRProvider(DataProvider):
         port: int | None = None,
         client_id: int | None = None,
         timeout: int = 30,
+        account_type: AccountType = AccountType.PAPER,
     ) -> None:
         """Initialize IBKR provider.
 
         Args:
             host: TWS/Gateway host. Defaults to env var or 127.0.0.1.
-            port: TWS/Gateway port. Defaults to env var or 7497 (paper).
-            client_id: Client ID for connection. Defaults to env var or 1.
+            port: TWS/Gateway port. If not specified, auto-selects based on account_type.
+            client_id: Client ID for connection. Defaults to PID-based unique ID.
             timeout: Request timeout in seconds.
+            account_type: Account type (PAPER or REAL). Used to auto-select port if not specified.
         """
         load_dotenv()
 
         self._host = host or os.getenv("IBKR_HOST", "127.0.0.1")
-        self._port = port or int(os.getenv("IBKR_PORT", "7497"))
-        self._client_id = client_id or int(os.getenv("IBKR_CLIENT_ID", "1"))
+        self._account_type = account_type
+
+        # Auto-select port based on account_type
+        # Priority: explicit port > account_type-based > env var > default (live)
+        if port is not None:
+            self._port = port
+        elif account_type is not None:
+            # When account_type is explicitly specified, use the corresponding port
+            # This takes priority over env var to ensure correct account connection
+            self._port = self.PAPER_PORT if account_type == AccountType.PAPER else self.LIVE_PORT
+        else:
+            env_port = os.getenv("IBKR_PORT")
+            if env_port:
+                self._port = int(env_port)
+            else:
+                # Default to live port if nothing specified
+                self._port = self.LIVE_PORT
+
+        # Generate unique clientId based on process ID to avoid conflicts
+        # TWS GUI uses 0, other apps commonly use 1-10
+        # Use PID modulo to get a number in range 100-999
+        default_client_id = 100 + (os.getpid() % 900)
+        self._client_id = client_id if client_id is not None else default_client_id
         self._timeout = timeout
         self._ib: Any = None
         self._connected = False
@@ -171,24 +211,9 @@ class IBKRProvider(DataProvider):
         Returns:
             Stock contract object.
         """
-        symbol = symbol.upper()
-
-        # Handle HK stocks: 0700.HK or HK.00700 format
-        # IBKR uses symbol without leading zeros (e.g., 700 not 0700)
-        if symbol.endswith(".HK"):
-            # Yahoo format: 0700.HK -> symbol=700, exchange=SEHK, currency=HKD
-            code = symbol[:-3].lstrip("0")  # Remove .HK and leading zeros
-            return Stock(code, "SEHK", "HKD")
-        elif symbol.startswith("HK."):
-            # Futu format: HK.00700 -> symbol=700, exchange=SEHK, currency=HKD
-            code = symbol[3:].lstrip("0")  # Remove HK. and leading zeros
-            return Stock(code, "SEHK", "HKD")
-
-        # Handle US stocks: AAPL or US.AAPL format
-        if symbol.startswith("US."):
-            symbol = symbol[3:]  # Remove US.
-
-        return Stock(symbol, "SMART", "USD")
+        # Use SymbolFormatter to get IBKR contract parameters
+        contract = SymbolFormatter.to_ibkr_contract(symbol)
+        return Stock(contract.symbol, contract.exchange, contract.currency)
 
     def normalize_symbol(self, symbol: str) -> str:
         """Normalize symbol to standard format.
@@ -201,21 +226,8 @@ class IBKRProvider(DataProvider):
         Returns:
             Symbol in standard format.
         """
-        symbol = symbol.upper()
-
-        # Keep HK stocks in Yahoo format for consistency (0700.HK)
-        if symbol.endswith(".HK"):
-            return symbol
-        if symbol.startswith("HK."):
-            # Convert HK.00700 -> 00700.HK
-            code = symbol[3:]
-            return f"{code}.HK"
-
-        # For US stocks, remove market prefix
-        if symbol.startswith("US."):
-            return symbol[3:]
-
-        return symbol
+        # Use SymbolFormatter for consistent normalization
+        return SymbolFormatter.to_standard(symbol)
 
     def get_stock_quote(self, symbol: str) -> StockQuote | None:
         """Get real-time stock quote."""
@@ -412,13 +424,12 @@ class IBKRProvider(DataProvider):
                 chain = chains[0]
 
             # Convert expiry_min_days/max_days to dates
+            # ONLY apply min/max days defaults if expiry_start/expiry_end are not provided
             today = date.today()
-            if expiry_min_days is not None:
-                min_date = today + timedelta(days=expiry_min_days)
-                expiry_start = max(expiry_start, min_date) if expiry_start else min_date
-            if expiry_max_days is not None:
-                max_date = today + timedelta(days=expiry_max_days)
-                expiry_end = min(expiry_end, max_date) if expiry_end else max_date
+            if expiry_start is None and expiry_min_days is not None:
+                expiry_start = today + timedelta(days=expiry_min_days)
+            if expiry_end is None and expiry_max_days is not None:
+                expiry_end = today + timedelta(days=expiry_max_days)
 
             # Filter expirations by date range
             expirations = []
@@ -1203,3 +1214,607 @@ class IBKRProvider(DataProvider):
 
         logger.error("All reconnection attempts failed")
         return False
+
+    # Account Provider Methods
+
+    def get_account_summary(
+        self,
+        account_type: AccountType | None = None,
+    ) -> AccountSummary | None:
+        """Get account summary information.
+
+        Note: IBKR account type is determined at connection time by the port.
+        The account_type parameter is for interface compatibility; if provided
+        and mismatched, a warning will be logged.
+
+        Args:
+            account_type: Optional. If provided and different from the connected
+                         account type, a warning will be logged.
+
+        Returns:
+            AccountSummary instance or None if not available.
+        """
+        self._ensure_connected()
+        self._validate_account_type(account_type)
+
+        try:
+            # Get account values - this returns a list of AccountValue objects
+            account_values = self._ib.accountValues()
+
+            if not account_values:
+                logger.warning("No account values returned from IBKR")
+                return None
+
+            # Extract account ID from first value
+            account_id = account_values[0].account if account_values else "unknown"
+
+            # Build a lookup dict for easier access
+            values: dict[str, dict[str, float]] = {}
+            for av in account_values:
+                key = av.tag
+                currency = av.currency
+                try:
+                    value = float(av.value)
+                except (ValueError, TypeError):
+                    continue
+                if key not in values:
+                    values[key] = {}
+                values[key][currency] = value
+
+            # Extract key metrics
+            # For most metrics, prefer USD then BASE
+            # For P&L metrics, prefer BASE (total across all currencies) then USD
+            def get_value(tag: str, prefer_base: bool = False) -> float | None:
+                if tag in values:
+                    if prefer_base:
+                        # For P&L, BASE contains the total across all currencies
+                        return values[tag].get("BASE") or values[tag].get("USD") or values[tag].get("")
+                    return values[tag].get("USD") or values[tag].get("BASE") or values[tag].get("")
+                return None
+
+            total_assets = get_value("NetLiquidation")
+            cash = get_value("TotalCashValue") or get_value("AvailableFunds")
+            market_value = get_value("GrossPositionValue") or get_value("StockMarketValue")
+            # Use BASE for unrealized P&L to get total across all currencies
+            unrealized_pnl = get_value("UnrealizedPnL", prefer_base=True)
+            margin_used = get_value("MaintMarginReq") or get_value("InitMarginReq")
+            margin_available = get_value("AvailableFunds")
+            buying_power = get_value("BuyingPower")
+
+            # Get cash by currency
+            cash_by_currency: dict[str, float] = {}
+            if "CashBalance" in values:
+                for currency, amount in values["CashBalance"].items():
+                    if currency and currency not in ("BASE", ""):
+                        cash_by_currency[currency] = amount
+
+            logger.info(f"IBKR account summary: NetLiq={total_assets}, Cash={cash}, "
+                       f"MarketValue={market_value}, UnrealizedPnL={unrealized_pnl}")
+
+            return AccountSummary(
+                broker="ibkr",
+                account_type=self._account_type,
+                account_id=account_id,
+                total_assets=total_assets or 0.0,
+                cash=cash or 0.0,
+                market_value=market_value or 0.0,
+                unrealized_pnl=unrealized_pnl or 0.0,
+                margin_used=margin_used,
+                margin_available=margin_available,
+                buying_power=buying_power,
+                cash_by_currency=cash_by_currency if cash_by_currency else None,
+                timestamp=datetime.now(),
+            )
+
+        except Exception as e:
+            logger.error(f"Error getting account summary: {e}")
+            return None
+
+    def _validate_account_type(self, account_type: AccountType | None) -> None:
+        """Validate that requested account type matches connected account.
+
+        Args:
+            account_type: Requested account type.
+        """
+        if account_type is not None and account_type != self._account_type:
+            logger.warning(
+                f"Requested account_type={account_type.value} but connected to "
+                f"{self._account_type.value} (port {self._port}). "
+                f"Returning {self._account_type.value} account data."
+            )
+
+    def get_positions(
+        self,
+        account_type: AccountType | None = None,
+        fetch_greeks: bool = True,
+    ) -> list[AccountPosition]:
+        """Get all positions in the account.
+
+        Note: IBKR account type is determined at connection time by the port.
+        The account_type parameter is for interface compatibility.
+
+        Args:
+            account_type: Optional. If provided and different from the connected
+                         account type, a warning will be logged.
+            fetch_greeks: Whether to fetch Greeks for option positions.
+                Set to False when using a centralized Greeks fetcher (e.g., UnifiedProvider).
+
+        Returns:
+            List of AccountPosition instances.
+        """
+        self._ensure_connected()
+        self._validate_account_type(account_type)
+
+        try:
+            # Get positions from IBKR
+            positions = self._ib.positions()
+
+            if not positions:
+                logger.info("No positions found in IBKR account")
+                return []
+
+            results = []
+            for pos in positions:
+                contract = pos.contract
+                avg_cost = pos.avgCost
+
+                # Determine market based on contract
+                market = Market.US
+                currency = contract.currency or "USD"
+                if currency == "HKD":
+                    market = Market.HK
+                elif currency == "CNY" or currency == "CNH":
+                    market = Market.CN
+
+                # Determine asset type
+                sec_type = contract.secType
+                if sec_type == "OPT":
+                    asset_type = AssetType.OPTION
+                else:
+                    asset_type = AssetType.STOCK
+
+                # Build symbol using SymbolFormatter
+                # For options, contract.symbol is the underlying symbol
+                # For stocks, it's the stock symbol
+                symbol = SymbolFormatter.from_ibkr_contract(contract.symbol, contract.exchange)
+
+                # Create position
+                position = AccountPosition(
+                    symbol=symbol,
+                    asset_type=asset_type,
+                    market=market,
+                    quantity=float(pos.position),
+                    avg_cost=avg_cost,
+                    market_value=0.0,  # Will be calculated below
+                    unrealized_pnl=0.0,  # Will be calculated below
+                    currency=currency,
+                    broker="ibkr",
+                    last_updated=datetime.now(),
+                )
+
+                # Add option-specific fields
+                if sec_type == "OPT":
+                    position.underlying = contract.symbol  # Underlying stock symbol
+                    position.strike = contract.strike
+                    position.expiry = contract.lastTradeDateOrContractMonth
+                    position.option_type = "call" if contract.right == "C" else "put"
+                    # IBKR returns multiplier as string, convert to int
+                    mult = contract.multiplier
+                    position.contract_multiplier = int(mult) 
+                else:
+                    # Stock Greeks: delta = +1 (long) or -1 (short), others = 0
+                    position.delta = 1.0 if position.quantity > 0 else -1.0 if position.quantity < 0 else 0.0
+                    position.gamma = 0.0
+                    position.theta = 0.0
+                    position.vega = 0.0
+                    position.iv = None
+
+                results.append(position)
+
+            # Try to get market values and P&L from portfolio
+            try:
+                portfolio = self._ib.portfolio()
+                portfolio_lookup = {
+                    (p.contract.conId): p for p in portfolio
+                }
+
+                for i, pos in enumerate(positions):
+                    if pos.contract.conId in portfolio_lookup:
+                        port_item = portfolio_lookup[pos.contract.conId]
+                        results[i].market_value = port_item.marketValue
+                        results[i].unrealized_pnl = port_item.unrealizedPNL
+
+                        # For stocks, underlying_price = market_value / quantity
+                        if results[i].asset_type == AssetType.STOCK and results[i].quantity != 0:
+                            results[i].underlying_price = abs(port_item.marketValue / results[i].quantity)
+
+                        # Get Greeks for options from market data (if enabled)
+                        if fetch_greeks and results[i].asset_type == AssetType.OPTION:
+                            self._fetch_option_greeks(results[i], pos.contract)
+
+            except Exception as e:
+                logger.warning(f"Could not fetch portfolio details: {e}")
+
+            logger.info(f"Found {len(results)} positions in IBKR account")
+            return results
+
+        except Exception as e:
+            logger.error(f"Error getting positions: {e}")
+            return []
+
+    def _fetch_option_greeks(self, position: AccountPosition, contract: Any) -> None:
+        """Fetch Greeks for an option position.
+
+        Args:
+            position: AccountPosition to update with Greeks.
+            contract: IBKR contract object.
+        """
+        try:
+            # Ensure contract is qualified
+            qualified = self._ib.qualifyContracts(contract)
+            if not qualified:
+                logger.warning(f"Could not qualify contract for {position.symbol}")
+                return
+
+            logger.debug(f"Requesting Greeks for {position.symbol}, conId={contract.conId}, "
+                        f"secType={contract.secType}, exchange={contract.exchange}")
+
+            # Request market data with Greeks
+            # Generic tick types: 100=Option Volume, 101=Open Interest, 104=Historical Volatility
+            # 106=Implied Volatility - need multiple tick types for Greeks to populate
+            ticker = self._ib.reqMktData(contract, "100,101,104,106", snapshot=False, regulatorySnapshot=False)
+
+            # Wait for Greeks to populate - options may need more time
+            for i in range(5):  # Try up to 5 times (5 seconds total)
+                self._ib.sleep(1)
+                if ticker.modelGreeks is not None:
+                    logger.debug(f"Got modelGreeks after {i+1}s for {position.symbol}")
+                    break
+                # Also check bidGreeks and askGreeks as alternatives
+                if ticker.bidGreeks is not None or ticker.askGreeks is not None:
+                    logger.debug(f"Got bid/askGreeks after {i+1}s for {position.symbol}")
+                    break
+
+            # Try modelGreeks first, then bidGreeks, then askGreeks
+            mg = ticker.modelGreeks or ticker.bidGreeks or ticker.askGreeks
+
+            if mg:
+                position.delta = mg.delta if mg.delta == mg.delta else None
+                position.gamma = mg.gamma if mg.gamma == mg.gamma else None
+                position.theta = mg.theta if mg.theta == mg.theta else None
+                position.vega = mg.vega if mg.vega == mg.vega else None
+                position.iv = mg.impliedVol if mg.impliedVol == mg.impliedVol else None
+                # Get underlying price from modelGreeks
+                if hasattr(mg, "undPrice") and mg.undPrice == mg.undPrice:
+                    position.underlying_price = mg.undPrice
+                logger.debug(f"Fetched Greeks for {position.symbol}: delta={position.delta}, "
+                           f"iv={position.iv}, undPrice={position.underlying_price}")
+            else:
+                # Log what we got from ticker for debugging
+                logger.warning(f"No Greeks available for {position.symbol}. "
+                             f"Ticker: bid={ticker.bid}, ask={ticker.ask}, last={ticker.last}")
+
+                # Fallback: Calculate Greeks using Black-Scholes if we have enough data
+                logger.info(f"Attempting to calculate Greeks using Black-Scholes for {position.symbol}")
+                self._calculate_greeks_fallback(position, ticker)
+
+            self._ib.cancelMktData(contract)
+
+        except Exception as e:
+            logger.debug(f"Could not fetch Greeks for {position.symbol}: {e}")
+
+    def _calculate_greeks_fallback(self, position: AccountPosition, ticker: Any) -> None:
+        """Calculate Greeks using Black-Scholes when API Greeks are unavailable.
+
+        This is a wrapper around _calculate_greeks_from_params that works with AccountPosition.
+
+        Args:
+            position: AccountPosition to update with calculated Greeks.
+            ticker: IBKR ticker object (may have price data).
+        """
+        try:
+            # Extract parameters from position
+            underlying = position.underlying or position.symbol.split()[0]
+
+            # Call core calculation function
+            result = self._calculate_greeks_from_params(
+                underlying=underlying,
+                strike=position.strike,
+                expiry=position.expiry,
+                option_type=position.option_type,
+                ticker=ticker
+            )
+
+            # Update position with calculated Greeks
+            if result:
+                position.delta = result.get("delta")
+                position.gamma = result.get("gamma")
+                position.theta = result.get("theta")
+                position.vega = result.get("vega")
+                position.iv = result.get("iv")
+                position.underlying_price = result.get("underlying_price")
+
+                logger.info(f"Calculated Greeks for {position.symbol} using Black-Scholes: "
+                           f"delta={position.delta:.4f}, gamma={position.gamma:.4f}, "
+                           f"theta={position.theta:.4f}, vega={position.vega:.4f}, "
+                           f"iv={position.iv:.4f}, underlying_price={position.underlying_price:.2f}")
+            else:
+                logger.warning(f"Could not calculate Greeks for {position.symbol}")
+
+        except Exception as e:
+            logger.warning(f"Failed to calculate Greeks fallback for {position.symbol}: {e}")
+
+    def _calculate_greeks_from_params(
+        self,
+        underlying: str,
+        strike: float,
+        expiry: str,
+        option_type: str,
+        ticker: Any = None,
+    ) -> dict[str, float | None] | None:
+        """Calculate Greeks using Black-Scholes from raw parameters.
+
+        Args:
+            underlying: Underlying stock code (e.g., "9988").
+            strike: Strike price.
+            expiry: Expiry date in YYYYMMDD format.
+            option_type: "call" or "put".
+            ticker: Optional IBKR ticker object.
+
+        Returns:
+            Dictionary with calculated Greeks, or None if calculation fails.
+        """
+        try:
+            from datetime import datetime
+            from src.engine.bs import calc_bs_greeks
+            from src.engine.models import BSParams
+
+            # Step 1: Normalize underlying symbol using SymbolFormatter
+            underlying_symbol = SymbolFormatter.to_standard(underlying)
+
+            # Step 2: Get underlying price
+            underlying_price = None
+            try:
+                stock_quote = self.get_stock_quote(underlying_symbol)
+                if stock_quote and stock_quote.close:
+                    underlying_price = stock_quote.close
+                    logger.debug(f"Fetched underlying price: {underlying_price}")
+            except Exception as e:
+                logger.debug(f"Could not fetch underlying stock quote: {e}")
+
+            if underlying_price is None:
+                logger.warning(f"Cannot calculate Greeks: no underlying price for {underlying_symbol}")
+                return None
+
+            # Step 3: Get or estimate IV
+            iv = None
+
+            # Try to get IV from ticker
+            if ticker and hasattr(ticker, 'impliedVolatility') and ticker.impliedVolatility == ticker.impliedVolatility:
+                iv = ticker.impliedVolatility
+
+            # If no IV from ticker, try to get from stock volatility
+            if iv is None:
+                try:
+                    volatility_data = self.get_stock_volatility(underlying_symbol, include_iv_rank=False)
+                    if volatility_data:
+                        iv = volatility_data.iv or volatility_data.hv
+                        if iv:
+                            logger.debug(f"Using volatility={iv:.4f} from stock data")
+                except Exception as e:
+                    logger.debug(f"Could not fetch volatility data: {e}")
+
+            # Use default IV if still None
+            if iv is None:
+                iv = 0.30
+                logger.debug(f"Using default IV={iv:.2f}")
+
+            # Step 4: Calculate time to expiry
+            try:
+                expiry_date = datetime.strptime(expiry, "%Y%m%d")
+                days_to_expiry = (expiry_date - datetime.now()).days
+                time_to_expiry = max(days_to_expiry / 365.0, 1/365.0)
+            except ValueError:
+                logger.warning(f"Invalid expiry format: {expiry}")
+                return None
+
+            # Step 5: Build BSParams and calculate Greeks
+            is_call = option_type.lower() == "call"
+
+            params = BSParams(
+                spot_price=underlying_price,
+                strike_price=strike,
+                risk_free_rate=0.03,
+                volatility=iv,
+                time_to_expiry=time_to_expiry,
+                is_call=is_call,
+            )
+
+            greeks = calc_bs_greeks(params)
+
+            result = {
+                "delta": greeks.get("delta"),
+                "gamma": greeks.get("gamma"),
+                "theta": greeks.get("theta"),
+                "vega": greeks.get("vega"),
+                "iv": iv,
+                "underlying_price": underlying_price,
+            }
+
+            logger.info(f"Calculated Greeks for {underlying} using Black-Scholes: "
+                       f"delta={result['delta']:.4f}, gamma={result['gamma']:.4f}, "
+                       f"theta={result['theta']:.4f}, vega={result['vega']:.4f}, "
+                       f"iv={result['iv']:.4f}, underlying_price={result['underlying_price']:.2f}")
+
+            return result
+
+        except Exception as e:
+            logger.warning(f"Failed to calculate Greeks from params for {underlying}: {e}")
+            return None
+
+    def fetch_greeks_for_hk_option(
+        self,
+        underlying: str,
+        strike: float,
+        expiry: str,
+        option_type: str,
+    ) -> dict[str, float | None] | None:
+        """Fetch Greeks for a Hong Kong option position via IBKR.
+
+        This method is used to get Greeks for options held at other brokers
+        (e.g., Futu) that don't provide Greeks data directly.
+
+        Args:
+            underlying: Underlying stock code (e.g., "9988" for Alibaba).
+            strike: Strike price.
+            expiry: Expiry date string in YYYYMMDD format (e.g., "20260129").
+            option_type: "call" or "put".
+
+        Returns:
+            Dictionary with Greeks (delta, gamma, theta, vega, iv) or None if failed.
+        """
+        self._ensure_connected()
+
+        try:
+            # Normalize underlying to IBKR symbol format
+            underlying_code = SymbolFormatter.to_ibkr_symbol(underlying)
+
+            # Convert option_type to IBKR right format
+            right = "C" if option_type.lower() == "call" else "P"
+
+            logger.info(f"Fetching Greeks for HK option: symbol={underlying_code}, "
+                       f"expiry={expiry}, strike={strike}, right={right}")
+
+            # Build Contract for HK option
+            # HK options: SEHK exchange, HKD currency, multiplier 500
+            contract = Contract()
+            contract.conId = 0
+            contract.symbol = underlying_code
+            contract.secType = "OPT"
+            contract.exchange = "SEHK"
+            contract.currency = "HKD"
+            contract.lastTradeDateOrContractMonth = expiry
+            contract.strike = strike
+            contract.right = right
+
+            # Qualify the contract
+            self._ib.qualifyContracts(contract)
+            if not contract.conId:
+                logger.warning(f"Could not qualify HK option contract: "
+                             f"{underlying_code} {expiry} {right} @ {strike}")
+                return None
+
+            logger.info(f"Qualified contract: conId={contract.conId}")
+
+            # Request market data with Greeks
+            ticker = self._ib.reqMktData(contract, "100,101,104,106", snapshot=False, regulatorySnapshot=False)
+
+            # Wait for Greeks to populate (up to 5 seconds)
+            for _ in range(5):
+                self._ib.sleep(1)
+                if ticker.modelGreeks is not None:
+                    break
+                if ticker.bidGreeks is not None or ticker.askGreeks is not None:
+                    break
+
+            # Extract Greeks from model, bid, or ask Greeks
+            mg = ticker.modelGreeks or ticker.bidGreeks or ticker.askGreeks
+            self._ib.cancelMktData(contract)
+
+            if mg:
+                # Check for NaN values (NaN != NaN is True)
+                und_price = None
+                if hasattr(mg, "undPrice") and mg.undPrice == mg.undPrice:
+                    und_price = mg.undPrice
+                result = {
+                    "delta": mg.delta if mg.delta == mg.delta else None,
+                    "gamma": mg.gamma if mg.gamma == mg.gamma else None,
+                    "theta": mg.theta if mg.theta == mg.theta else None,
+                    "vega": mg.vega if mg.vega == mg.vega else None,
+                    "iv": mg.impliedVol if mg.impliedVol == mg.impliedVol else None,
+                    "underlying_price": und_price,
+                }
+                logger.info(f"Got Greeks for {underlying_code} {expiry} {right}@{strike}: "
+                           f"delta={result['delta']}, iv={result['iv']}, undPrice={und_price}")
+                return result
+            else:
+                logger.warning(f"No Greeks available for HK option: {underlying_code} {expiry} {right} @ {strike}")
+
+                # Fallback: Calculate Greeks using Black-Scholes
+                logger.info(f"Attempting to calculate Greeks using Black-Scholes for HK option: {underlying_code}")
+                return self._calculate_greeks_from_params(
+                    underlying=underlying_code,
+                    strike=strike,
+                    expiry=expiry,
+                    option_type=option_type,
+                    ticker=ticker
+                )
+
+        except Exception as e:
+            logger.error(f"Error fetching Greeks for HK option {underlying}: {e}")
+            return None
+
+    def get_cash_balances(
+        self,
+        account_type: AccountType | None = None,
+    ) -> list[AccountCash]:
+        """Get cash balances by currency.
+
+        Note: IBKR account type is determined at connection time by the port.
+        The account_type parameter is for interface compatibility.
+
+        Args:
+            account_type: Optional. If provided and different from the connected
+                         account type, a warning will be logged.
+
+        Returns:
+            List of AccountCash instances.
+        """
+        self._ensure_connected()
+        self._validate_account_type(account_type)
+
+        try:
+            # Get account values
+            account_values = self._ib.accountValues()
+
+            if not account_values:
+                logger.warning("No account values returned from IBKR")
+                return []
+
+            # Extract cash balances by currency
+            cash_balances: dict[str, dict[str, float]] = {}
+
+            for av in account_values:
+                currency = av.currency
+                if not currency or currency in ("", "BASE"):
+                    continue
+
+                try:
+                    value = float(av.value)
+                except (ValueError, TypeError):
+                    continue
+
+                if currency not in cash_balances:
+                    cash_balances[currency] = {"balance": 0.0, "available": 0.0}
+
+                if av.tag == "CashBalance":
+                    cash_balances[currency]["balance"] = value
+                elif av.tag == "AvailableFunds":
+                    cash_balances[currency]["available"] = value
+
+            results = []
+            for currency, amounts in cash_balances.items():
+                if amounts["balance"] != 0 or amounts["available"] != 0:
+                    results.append(AccountCash(
+                        currency=currency,
+                        balance=amounts["balance"],
+                        available=amounts["available"],
+                        broker="ibkr",
+                    ))
+
+            logger.info(f"Found cash balances in {len(results)} currencies")
+            return results
+
+        except Exception as e:
+            logger.error(f"Error getting cash balances: {e}")
+            return []

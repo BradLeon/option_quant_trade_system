@@ -5,6 +5,10 @@ from datetime import date
 from typing import Protocol
 
 from src.data.models import (
+    AccountCash,
+    AccountPosition,
+    AccountSummary,
+    AccountType,
     Fundamental,
     KlineBar,
     MacroData,
@@ -187,3 +191,82 @@ class DataNotFoundError(DataProviderError):
     """Data not found errors."""
 
     pass
+
+
+class AccountProvider(ABC):
+    """Abstract base class for account/trading data providers.
+
+    This is a mixin interface for providers that support
+    account and position queries. Providers implementing this
+    interface can fetch positions, cash balances, and account summaries.
+
+    Note:
+        Trading methods (place_order, cancel_order) are placeholders
+        and raise NotImplementedError. Only read operations are supported.
+    """
+
+    @abstractmethod
+    def get_account_summary(
+        self,
+        account_type: AccountType = AccountType.PAPER,
+    ) -> AccountSummary | None:
+        """Get account summary information.
+
+        Args:
+            account_type: Real or paper account.
+
+        Returns:
+            AccountSummary instance or None if not available.
+        """
+        pass
+
+    @abstractmethod
+    def get_positions(
+        self,
+        account_type: AccountType = AccountType.PAPER,
+        fetch_greeks: bool = True,
+    ) -> list[AccountPosition]:
+        """Get all positions in the account.
+
+        Args:
+            account_type: Real or paper account.
+            fetch_greeks: Whether to fetch Greeks for option positions.
+                Set to False when using a centralized Greeks fetcher.
+
+        Returns:
+            List of AccountPosition instances.
+        """
+        pass
+
+    @abstractmethod
+    def get_cash_balances(
+        self,
+        account_type: AccountType = AccountType.PAPER,
+    ) -> list[AccountCash]:
+        """Get cash balances by currency.
+
+        Args:
+            account_type: Real or paper account.
+
+        Returns:
+            List of AccountCash instances.
+        """
+        pass
+
+    # Trading placeholders (not implemented)
+
+    def place_order(self, *args, **kwargs) -> None:
+        """Place an order (not implemented).
+
+        Raises:
+            NotImplementedError: Trading is not implemented.
+        """
+        raise NotImplementedError("Trading not implemented. Read-only mode.")
+
+    def cancel_order(self, *args, **kwargs) -> None:
+        """Cancel an order (not implemented).
+
+        Raises:
+            NotImplementedError: Trading is not implemented.
+        """
+        raise NotImplementedError("Trading not implemented. Read-only mode.")

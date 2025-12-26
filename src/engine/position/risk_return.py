@@ -102,11 +102,11 @@ def calc_prei(
 
     w1, w2, w3 = weights
 
-    # Gamma Risk: sigmoid normalization, k=1.0 means gamma=1 -> risk=0.5
+    # Gamma Risk: sigmoid normalization, k=10.0 means gamma=10 -> risk=0.5
     gamma_risk = _normalize_to_01(abs(gamma), k=1.0)
 
-    # Vega Risk: sigmoid normalization, k=100.0 means vega=100 -> risk=0.5
-    vega_risk = _normalize_to_01(abs(vega), k=100.0)
+    # Vega Risk: sigmoid normalization, k=1.0 means vega=1 -> risk=0.5
+    vega_risk = _normalize_to_01(abs(vega), k=1.0)
 
     # DTE Risk: sqrt(1/DTE), already in 0-1 range for DTE >= 1
     dte_clamped = max(1, dte)

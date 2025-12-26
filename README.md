@@ -8,8 +8,13 @@
 option_quant_trade_system/
 ├── src/
 │   ├── data/                    # 数据层
-│   │   ├── models/              # 数据模型 (Option, Stock, Greeks, etc.)
+│   │   ├── models/              # 数据模型 (Option, Stock, Greeks, Technical)
+│   │   │   ├── account.py       # AccountPosition, AccountSummary, ConsolidatedPortfolio
+│   │   │   └── technical.py     # TechnicalData (K线→技术指标输入)
 │   │   ├── providers/           # 数据提供者 (Yahoo, Futu, IBKR)
+│   │   │   ├── account_aggregator.py  # 多券商账户聚合
+│   │   │   └── unified_provider.py    # 统一数据路由 (含Greeks路由)
+│   │   ├── currency/            # 汇率转换 (Yahoo Finance FX)
 │   │   ├── formatters/          # 数据格式化 (QuantConnect)
 │   │   └── cache/               # 数据缓存 (Supabase)
 │   └── engine/                  # 计算引擎层
@@ -32,7 +37,14 @@ option_quant_trade_system/
 │       │   ├── option_metrics.py # calc_sas (策略吸引力评分)
 │       │   ├── risk_return.py   # calc_prei, calc_tgr, calc_roc
 │       │   ├── volatility/      # HV/IV/IV Rank 计算
-│       │   ├── technical/       # RSI, 支撑位计算
+│       │   ├── technical/       # 技术指标 (MA/ADX/BB/RSI/ATR)
+│       │   │   ├── metrics.py   # TechnicalScore, TechnicalSignal
+│       │   │   ├── thresholds.py # TechnicalThresholds 可配置阈值
+│       │   │   ├── moving_average.py # SMA/EMA (20/50/200)
+│       │   │   ├── adx.py       # ADX/+DI/-DI (趋势强度)
+│       │   │   ├── bollinger_bands.py # BB/%B/Bandwidth
+│       │   │   ├── rsi.py       # RSI (相对强弱)
+│       │   │   └── support.py   # 支撑/阻力位
 │       │   └── fundamental/     # 基本面指标提取
 │       ├── portfolio/           # 组合级计算
 │       │   ├── greeks_agg.py    # 组合Greeks汇总(delta$, BWD, gamma$)
@@ -89,6 +101,9 @@ python examples/data_layer_demo.py --ibkr
 | **Put/Call Ratio** | ✅ (计算) | ❌ | ❌ |
 | **分析师评级** | ✅ | ❌ | ❌ |
 | **实时数据** | ❌ 延迟 | ✅ | ✅ |
+| **账户持仓** | ❌ | ✅ | ✅ |
+| **现金余额** | ❌ | ✅ | ✅ |
+| **期权Greeks路由** | N/A | fallback | 首选 |
 | **需要网关** | ❌ | ✅ OpenD | ✅ TWS/Gateway |
 
 ### Yahoo Finance Provider
@@ -179,6 +194,17 @@ with IBKRProvider() as provider:
 - API端口：Paper Trading=7497, Live=7496
 - 实时行情需要市场数据订阅
 - 历史数据无需订阅
+
+**Greeks 数据获取增强：**
+- ✅ **自动备用方案**：当 IBKR API 无法提供实时 Greeks 时（非交易时段、低流动性合约），自动使用 Black-Scholes 模型计算
+- ✅ **完整数据保障**：确保即使在非交易时段也能获取完整的 Greeks 数据（delta, gamma, theta, vega, IV）
+- ✅ **智能数据源**：
+  1. 优先使用 IBKR API 实时 Greeks（交易时段）
+  2. 如果失败，自动查询标的股票价格
+  3. 使用标的股票波动率（IV/HV）
+  4. 通过 Black-Scholes 公式计算 Greeks
+- ✅ **支持港股期权**：`fetch_greeks_for_hk_option()` 方法同样支持备用方案
+- ⚠️ **计算 Greeks 精度**：备用方案使用 Black-Scholes 模型，可能与实际市场 Greeks 略有差异，但足以支持策略分析
 
 ### 推荐使用场景
 
@@ -372,11 +398,401 @@ prei = calc_portfolio_prei(positions)    # 组合风险暴露指数
 | Covered Call | `CoveredCallStrategy` | 持股卖购 |
 | Short Strangle | `ShortStrangleStrategy` | 卖出宽跨式 |
 
+### 技术面指标模块
+
+技术指标模块专为期权卖方策略设计，提供统一接口：
+
+```python
+from src.data.models.technical import TechnicalData
+from src.engine.position.technical import (
+    calc_technical_score,
+    calc_technical_signal,
+    TechnicalThresholds,
+)
+
+# 1. 从K线数据创建 TechnicalData
+bars = provider.get_history_kline("TSLA", KlineType.DAY, start_date, end_date)
+data = TechnicalData.from_klines(bars)
+
+# 2. 计算技术指标 (TechnicalScore)
+score = calc_technical_score(data)
+print(f"SMA20: {score.sma20:.2f}")
+print(f"RSI: {score.rsi:.2f} ({score.rsi_zone})")
+print(f"ADX: {score.adx:.2f}")
+print(f"BB %B: {score.bb_percent_b:.2f}")
+print(f"ATR: {score.atr:.2f}")
+
+# 3. 生成交易信号 (TechnicalSignal)
+signal = calc_technical_signal(data)
+print(f"市场状态: {signal.market_regime} (趋势强度: {signal.trend_strength})")
+print(f"卖Put信号: {signal.sell_put_signal}")
+print(f"卖Call信号: {signal.sell_call_signal}")
+print(f"Put行权价建议: < {signal.recommended_put_strike_zone:.2f}")
+print(f"危险时段: {signal.is_dangerous_period}")
+
+# 4. 自定义阈值 (用于回测优化)
+custom_thresholds = TechnicalThresholds(
+    adx_strong=30.0,      # 更保守的强趋势阈值
+    rsi_stabilizing_low=35.0,  # 调整企稳区间
+    atr_buffer_multiplier=2.0,  # 更大的行权价buffer
+)
+signal = calc_technical_signal(data, thresholds=custom_thresholds)
+```
+
+**TechnicalScore 指标**：
+| 指标 | 字段 | 说明 |
+|------|------|------|
+| 移动平均 | sma20/50/200, ema20 | 趋势判断 |
+| MA排列 | ma_alignment | strong_bullish/bullish/neutral/bearish/strong_bearish |
+| RSI | rsi, rsi_zone | 超买/超卖判断 |
+| ADX | adx, plus_di, minus_di | 趋势强度 |
+| 布林带 | bb_upper/middle/lower, bb_percent_b, bb_bandwidth | 波动率 |
+| ATR | atr | 动态行权价buffer |
+| 支撑阻力 | support, resistance | 关键价位 |
+
+**TechnicalSignal 信号**：
+| 信号 | 说明 |
+|------|------|
+| market_regime | ranging/trending_up/trending_down |
+| allow_short_put/call/strangle | 策略是否适用 |
+| sell_put_signal/sell_call_signal | none/weak/moderate/strong |
+| recommended_put/call_strike_zone | ATR动态buffer计算 |
+| close_put_signal/close_call_signal | 平仓信号 |
+| is_dangerous_period | BB Squeeze / 强趋势 / 接近支撑阻力 |
+
+**信号逻辑**（专家Review优化）：
+- **企稳入场**：RSI 30-45 + %B 0.1-0.3 → 卖Put（避免"接飞刀"）
+- **动能衰竭**：RSI 55-70 + %B 0.7-0.9 → 卖Call
+- **强趋势屏蔽**：ADX > 45 时禁止逆势开仓
+- **BB Squeeze**：bandwidth < 0.08 禁用Strangle
+- **ATR行权价**：strike = support - 1.5×ATR
+
+### 市场情绪模块
+
+市场情绪模块提供宏观层面的市场状态分析，用于账户级风险管理决策：
+
+```python
+from src.data.providers import UnifiedDataProvider
+from src.engine.account.sentiment.data_bridge import (
+    get_us_sentiment,
+    get_hk_sentiment,
+)
+from src.engine.account.sentiment import get_sentiment_summary
+
+provider = UnifiedDataProvider()
+
+# US 市场情绪分析
+us_sentiment = get_us_sentiment(provider)
+print(f"VIX: {us_sentiment.vix_value:.1f} ({us_sentiment.vix_zone.value})")
+print(f"VIX信号: {us_sentiment.vix_signal.value}")  # bullish/bearish/neutral
+print(f"期限结构: {us_sentiment.term_structure.structure.value if us_sentiment.term_structure else 'N/A'}")
+print(f"SPY趋势: {us_sentiment.primary_trend.signal.value if us_sentiment.primary_trend else 'N/A'}")
+print(f"综合评分: {us_sentiment.composite_score:.1f} ({us_sentiment.composite_signal.value})")
+print(f"适合卖权: {us_sentiment.favorable_for_selling}")
+
+# HK 市场情绪分析
+hk_sentiment = get_hk_sentiment(provider)
+print(get_sentiment_summary(hk_sentiment))
+```
+
+**MarketSentiment 字段**：
+| 字段 | 说明 |
+|------|------|
+| vix_value | VIX/VHSI 当前值 |
+| vix_zone | LOW/NORMAL/ELEVATED/HIGH/EXTREME |
+| vix_signal | 逆向信号（高恐慌=bullish，低恐慌=bearish） |
+| term_structure | VIX期限结构（contango/backwardation/flat） |
+| primary_trend | 主指数趋势（SPY/HSI） |
+| secondary_trend | 次指数趋势（QQQ/HSTECH） |
+| pcr | Put/Call Ratio 分析 |
+| composite_score | 综合评分（-100到+100） |
+| composite_signal | 综合信号（>20=bullish, <-20=bearish） |
+| favorable_for_selling | 是否适合卖权策略 |
+
+**数据源配置**：
+| 市场 | 数据项 | 数据源 |
+|------|--------|--------|
+| US | VIX/VIX3M | Yahoo (^VIX, ^VIX3M) |
+| US | SPY/QQQ价格 | Yahoo/Futu/IBKR |
+| US | PCR | Yahoo (计算) |
+| HK | VHSI | Futu (800125.HK) 或 IBKR (2800.HK IV) |
+| HK | HSI价格 | Futu (800000.HK) 或 Yahoo (^HSI) |
+| HK | HSTECH价格 | Futu (3032.HK) |
+| HK | PCR | IBKR (2800.HK Open Interest) |
+
+**注意事项**：
+- HK市场的`vhsi_3m_proxy`目前不可用（IBKR远期期权合约未上市），term_structure返回None
+- 综合评分采用加权计算：VIX(25%) + 期限结构(15%) + 主趋势(25%) + 次趋势(15%) + PCR(20%)
+- 缺失数据时权重自动重新分配
+
+## 账户持仓模块 (Account & Position)
+
+多券商账户聚合模块，支持从 IBKR 和 Futu 获取持仓，统一汇率转换，并使用智能路由获取期权 Greeks。
+
+### 数据模型
+
+```python
+from src.data.models import (
+    AccountType,      # REAL / PAPER
+    AssetType,        # STOCK / OPTION / CASH
+    AccountPosition,  # 单个持仓 (含 Greeks)
+    AccountCash,      # 现金余额
+    AccountSummary,   # 单券商账户概要
+    ConsolidatedPortfolio,  # 合并后的投资组合
+)
+```
+
+**AccountPosition 字段**：
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| symbol | str | 标的代码 (AAPL, 0700.HK) |
+| asset_type | AssetType | 资产类型 |
+| market | Market | 市场 (US/HK) |
+| quantity | float | 持仓数量 |
+| avg_cost | float | 平均成本 |
+| market_value | float | 市值 |
+| unrealized_pnl | float | 未实现盈亏 |
+| currency | str | 货币 (USD/HKD) |
+| strike | float | 期权行权价 |
+| expiry | str | 期权到期日 |
+| option_type | str | call/put |
+| delta/gamma/theta/vega | float | 期权 Greeks |
+| iv | float | 隐含波动率 |
+| broker | str | 券商 (ibkr/futu) |
+
+### 使用示例
+
+```python
+from src.data.providers import (
+    IBKRProvider, FutuProvider, UnifiedDataProvider
+)
+from src.data.providers.account_aggregator import AccountAggregator
+from src.data.models import AccountType
+
+# 连接多个券商
+with IBKRProvider(account_type=AccountType.REAL) as ibkr, \
+     FutuProvider() as futu:
+
+    # 创建 UnifiedProvider 用于期权 Greeks 路由
+    # 路由规则: HK期权 → IBKR > Futu, US期权 → IBKR > Futu > Yahoo
+    unified = UnifiedDataProvider(
+        ibkr_provider=ibkr,
+        futu_provider=futu,
+    )
+
+    # 创建账户聚合器
+    aggregator = AccountAggregator(
+        ibkr_provider=ibkr,
+        futu_provider=futu,
+        unified_provider=unified,  # 启用智能Greeks路由
+    )
+
+    # 获取合并后的投资组合
+    portfolio = aggregator.get_consolidated_portfolio(
+        account_type=AccountType.REAL,
+        base_currency="USD",
+    )
+
+    print(f"总资产: ${portfolio.total_value_usd:,.2f}")
+    print(f"未实现盈亏: ${portfolio.total_unrealized_pnl_usd:,.2f}")
+
+    # 查看持仓
+    for pos in portfolio.positions:
+        print(f"[{pos.broker}] {pos.symbol}: {pos.quantity} @ {pos.market_value:,.2f} {pos.currency}")
+        if pos.asset_type == AssetType.OPTION:
+            print(f"  Delta: {pos.delta}, IV: {pos.iv}")
+
+    # 按券商查看
+    for broker, summary in portfolio.by_broker.items():
+        print(f"{broker}: 总资产={summary.total_assets:,.2f}")
+```
+
+### 期权 Greeks 路由
+
+系统使用智能路由获取期权 Greeks，解决不同券商的数据能力差异：
+
+**路由规则**：
+| 市场 | 数据类型 | Provider优先级 | 原因 |
+|------|---------|---------------|------|
+| HK | option_quote | IBKR > Futu | IBKR提供完整IV/Greeks，Futu需额外订阅 |
+| US | option_quote | IBKR > Futu > Yahoo | IBKR数据最全，Yahoo无Greeks |
+
+**实现原理**：
+1. `AccountAggregator` 调用各券商 `get_positions(fetch_greeks=False)` 获取持仓
+2. 收集完毕后调用 `UnifiedProvider.fetch_option_greeks_for_positions()` 统一获取 Greeks
+3. 根据持仓的 market 属性，选择合适的 provider
+4. 失败时自动 fallback 到下一个 provider
+
+### 汇率转换
+
+```python
+from src.data.currency import CurrencyConverter
+
+converter = CurrencyConverter()
+
+# 自动从 Yahoo Finance 获取实时汇率
+hkd_to_usd = converter.convert(10000, "HKD", "USD")
+print(f"10,000 HKD = ${hkd_to_usd:,.2f} USD")
+
+# 获取所有汇率
+rates = converter.get_all_rates()  # {"HKD": 0.128, "CNY": 0.138, ...}
+```
+
+### 数据流与 Greeks 货币转换
+
+系统从券商获取持仓数据后，经过货币转换，最终用于策略计算：
+
+```
+AccountPosition (券商原始数据, HKD/USD)
+       ↓
+_convert_position_currency() (account_aggregator.py)
+       ↓
+ConsolidatedPortfolio.positions (统一为 USD)
+       ↓
+  ┌────┴────┐
+  ↓         ↓
+Position    factory.py → OptionLeg + StrategyParams
+(greeks_agg)              ↓
+                      OptionStrategy (strategy metrics)
+```
+
+**Greeks 货币转换规则**：
+
+根据 Greeks 的数学定义，不同的 Greeks 需要不同的转换方式：
+
+| Greek | 数学定义 | 单位 | 转换方式 | 说明 |
+|-------|---------|------|---------|------|
+| Delta | ∂C/∂S | 无量纲 | **不转换** | 货币/货币 自动抵消 |
+| Gamma | ∂²C/∂S² | 1/货币 | **÷ rate** | 二阶导，需除以汇率 |
+| Theta | ∂C/∂t | 货币/天 | **× rate** | HKD→USD 需乘以汇率 |
+| Vega | ∂C/∂σ | 货币/% | **× rate** | HKD→USD 需乘以汇率 |
+| Rho | ∂C/∂r | 货币/% | **× rate** | HKD→USD 需乘以汇率 |
+
+**为什么 Delta 不需要转换？**
+
+```python
+# Delta = (期权价格变化) / (股价变化) = 货币/货币 = 无量纲
+# HKD: Δ = 0.5 HKD / 1 HKD = 0.5
+# USD: Δ = (0.5/rate) / (1/rate) = 0.5 (不变!)
+```
+
+**为什么 Gamma 要除以汇率？**
+
+```python
+# Gamma 是二阶导：Γ = ∂Δ/∂S
+# Δ 无量纲，S 有货币单位
+# Γ_USD = ∂Δ/∂S_USD = ∂Δ/∂(S_HKD × rate) = Γ_HKD / rate
+```
+
+**Gamma Dollars 计算验证**：
+
+系统将 Gamma 转换为 Gamma Dollars 格式以便跨货币聚合：
+
+```python
+# Gamma Dollars = Γ × S² × 0.01
+#
+# 方法1: 先算 HKD，再转 USD
+# Gamma$_HKD = Γ_HKD × S_HKD² × 0.01
+# Gamma$_USD = Gamma$_HKD × rate
+#
+# 方法2: 用转换后的参数计算
+# Gamma$_USD = Γ_HKD × (S_HKD × rate)² × 0.01 / rate
+#            = Γ_HKD × S_HKD² × rate² × 0.01 / rate
+#            = Γ_HKD × S_HKD² × rate × 0.01  ✓ (两种方法结果一致)
+```
+
+**示例 (700.HK Short Put)**：
+
+```python
+# 原始数据 (HKD)
+S_HKD = 602.0
+Γ_HKD = 0.0067
+θ_HKD = -0.0819  # 每天
+ν_HKD = 0.3664   # per 1% IV
+
+# 汇率
+rate = 0.1286  # HKD → USD
+
+# 转换后 (USD)
+S_USD = 602 × 0.1286 = 77.44
+Γ_USD = 0.0067 / 0.1286 = 0.052  # 变大！
+θ_USD = -0.0819 × 0.1286 = -0.0105
+ν_USD = 0.3664 × 0.1286 = 0.0471
+
+# Gamma Dollars (USD)
+Gamma$_USD = 0.0067 × 602² × 0.01 × 0.1286 = 3.12
+# 或等价于
+Gamma$_USD = 0.052 × 77.44² × 0.01 / 0.1286 = 3.12  ✓
+```
+
 ### 核心公式
 
 - **期望收益**: `E[π] = C - N(-d2) × [K - e^(rT) × S × N(-d1) / N(-d2)]`
 - **夏普比率**: `SR = (E[π] - Rf) / Std[π]`，其中 `Rf = margin × K × (e^(rT) - 1)`
 - **Kelly公式**: `f* = E[π] / Var[π]`
+
+### ROC 与 Expected ROC
+
+系统提供两个关键的年化收益指标，用于评估期权策略的收益潜力：
+
+| 指标 | 公式 | 说明 |
+|------|------|------|
+| **ROC** | `(premium / capital) × (365/dte)` | 确定性权利金收入的年化收益率 |
+| **Expected ROC** | `(expected_return / capital) × (365/dte)` | 概率加权期望收益的年化收益率 |
+
+**Capital 的选择（按策略类型）**：
+
+| 策略 | Capital | 说明 |
+|------|---------|------|
+| Short Put | margin_requirement | IBKR保证金公式 |
+| Short Call | margin_requirement | IBKR保证金公式 |
+| Covered Call | stock_cost_basis | 正股持仓成本（资金锁定） |
+| Short Strangle | margin_requirement | 两腿中较高的保证金 |
+
+**为什么 Covered Call 使用 stock_cost_basis？**
+
+对于 Covered Call，真正锁定的资金是购买正股的成本，而不是期权保证金（几乎为零）。如果使用 margin_requirement，会导致 ROC 虚高：
+
+```python
+# 错误示例
+ROC = 0.72 / 0.72 × (365/21) = 1738%  # ← 使用 margin = premium
+
+# 正确计算
+ROC = 0.72 / 315.47 × (365/21) = 3.97%  # ← 使用 stock_cost_basis
+```
+
+**ROC vs Expected ROC 的意义**：
+
+ROC 告诉你「确定能收到多少钱」，Expected ROC 告诉你「这笔交易的期望价值」。
+
+```
+示例: ATM Short Put (3 DTE)
+├─ ROC = 237.8% (权利金年化，看起来很诱人)
+└─ Expected ROC = -78.5% (实际期望为负，这是亏钱的交易!)
+
+原因分析:
+├─ 58% 概率: 赚 $0.30 (保留权利金)
+└─ 42% 概率: 亏 $0.66 (被行权损失)
+加权期望 = 0.58×0.30 + 0.42×(-0.66) = -$0.10
+```
+
+**Expected ROC 与其他指标的一致性**：
+- Expected ROC < 0 → Sharpe Ratio < 0 → Kelly Fraction = 0
+- 三个指标一致表明这是一个负期望交易，不应该做
+
+**Covered Call 的 Expected Return 计算**：
+
+Covered Call 的期望收益包含股票和期权两部分：
+
+```python
+# E[Return] = E[Stock Gain] + Premium - E[Call Payoff]
+#           = (S × e^(rT) - S) + C - (S × e^(rT) × N(d1) - K × N(d2))
+```
+
+因此对于 Covered Call：
+- ROC 仅反映期权权利金收入
+- Expected ROC 反映整体策略收益（含股票增值期望）
+- 通常 Expected ROC > ROC（因为包含了股票上涨预期）
 
 ## 环境配置
 

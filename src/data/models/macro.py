@@ -11,6 +11,7 @@ class MacroIndicator(Enum):
 
     # Volatility
     VIX = "^VIX"  # CBOE Volatility Index
+    VIX3M = "^VIX3M"  # CBOE 3-Month Volatility Index (for term structure)
 
     # Interest Rates
     TNX = "^TNX"  # 10-Year Treasury Note Yield
@@ -38,6 +39,12 @@ class MacroIndicator(Enum):
     # International
     EEM = "EEM"  # Emerging Markets ETF
     FXI = "FXI"  # China Large-Cap ETF
+
+    # Hong Kong Market
+    VHSI = "800125.HK"  # VHSI index
+    HSI = "800000.HK"  # Hang Seng Index
+    HSI_ETF = "2800.HK"  # Tracker Fund - Hang Seng Index proxy
+    HSTECH_ETF = "3032.HK"  # Hang Seng TECH Index ETF
 
     # Sentiment Indicators (calculated, not direct tickers)
     PCR = "PCR"  # Put/Call Ratio (calculated from SPY options)

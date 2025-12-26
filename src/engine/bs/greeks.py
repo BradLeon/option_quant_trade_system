@@ -113,17 +113,17 @@ def calc_bs_theta(params: BSParams) -> float | None:
     """Calculate option theta using Black-Scholes formula.
 
     Theta measures the rate of change of option price with respect to time.
-    Returns theta per year; divide by 365 for daily theta.
+    Returns theta per day (daily time decay), consistent with broker APIs.
 
     Formula:
-        Call Theta = -S×n(d1)×σ/(2√T) - r×K×e^(-rT)×N(d2)
-        Put Theta = -S×n(d1)×σ/(2√T) + r×K×e^(-rT)×N(-d2)
+        Call Theta = [-S×n(d1)×σ/(2√T) - r×K×e^(-rT)×N(d2)] / 365
+        Put Theta = [-S×n(d1)×σ/(2√T) + r×K×e^(-rT)×N(-d2)] / 365
 
     Args:
         params: Black-Scholes calculation parameters.
 
     Returns:
-        Theta value (typically negative for long positions).
+        Theta value per day (typically negative for long positions).
         Returns None if inputs are invalid.
     """
     d1 = calc_d1(params)
@@ -146,26 +146,25 @@ def calc_bs_theta(params: BSParams) -> float | None:
     else:
         term2 = params.risk_free_rate * params.strike_price * discount * calc_n(-d2)
 
-    return term1 + term2
+    annual_theta = term1 + term2
+    return annual_theta / 365  # Convert to daily theta
 
 
 def calc_bs_vega(params: BSParams) -> float | None:
     """Calculate option vega using Black-Scholes formula.
 
     Vega measures the sensitivity of option price to changes in volatility.
-    Same for both calls and puts.
+    Same for both calls and puts. Returns vega per 1% change in volatility,
+    consistent with broker APIs.
 
     Formula:
-        Vega = S × n(d1) × √T
-
-    Note: This returns vega per 1 unit (100%) change in volatility.
-    For vega per 1% change, divide by 100.
+        Vega = S × n(d1) × √T / 100
 
     Args:
         params: Black-Scholes calculation parameters.
 
     Returns:
-        Vega value (always positive).
+        Vega value per 1% IV change (always positive).
         Returns None if inputs are invalid.
     """
     d1 = calc_d1(params)
@@ -175,27 +174,25 @@ def calc_bs_vega(params: BSParams) -> float | None:
     sqrt_t = math.sqrt(params.time_to_expiry)
     n_d1_pdf = _calc_n_pdf(d1)
 
-    return params.spot_price * n_d1_pdf * sqrt_t
+    return (params.spot_price * n_d1_pdf * sqrt_t) / 100  # Per 1% IV change
 
 
 def calc_bs_rho(params: BSParams) -> float | None:
     """Calculate option rho using Black-Scholes formula.
 
     Rho measures the sensitivity of option price to changes in the
-    risk-free interest rate.
+    risk-free interest rate. Returns rho per 1% change in rate,
+    consistent with broker APIs.
 
     Formula:
-        Call Rho = K × T × e^(-rT) × N(d2)
-        Put Rho = -K × T × e^(-rT) × N(-d2)
-
-    Note: This returns rho per 1 unit (100%) change in rate.
-    For rho per 1% change, divide by 100.
+        Call Rho = K × T × e^(-rT) × N(d2) / 100
+        Put Rho = -K × T × e^(-rT) × N(-d2) / 100
 
     Args:
         params: Black-Scholes calculation parameters.
 
     Returns:
-        Rho value.
+        Rho value per 1% rate change.
         Returns None if inputs are invalid.
     """
     d1 = calc_d1(params)
@@ -209,16 +206,23 @@ def calc_bs_rho(params: BSParams) -> float | None:
     discount = math.exp(-params.risk_free_rate * params.time_to_expiry)
 
     if params.is_call:
-        return params.strike_price * params.time_to_expiry * discount * calc_n(d2)
+        rho = params.strike_price * params.time_to_expiry * discount * calc_n(d2)
     else:
-        return -params.strike_price * params.time_to_expiry * discount * calc_n(-d2)
+        rho = -params.strike_price * params.time_to_expiry * discount * calc_n(-d2)
+
+    return rho / 100  # Per 1% rate change
 
 
 def calc_bs_greeks(params: BSParams) -> dict[str, float | None]:
     """Calculate all Greeks at once using Black-Scholes formulas.
 
-    More efficient than calling individual functions as d1/d2 are
-    calculated only once.
+    Reuses individual Greek calculation functions to ensure consistent
+    units across all callers:
+    - Delta: standard (0 to 1 for calls, -1 to 0 for puts)
+    - Gamma: per $1 move in underlying
+    - Theta: per day (daily time decay)
+    - Vega: per 1% change in IV
+    - Rho: per 1% change in interest rate
 
     Args:
         params: Black-Scholes calculation parameters.
@@ -235,53 +239,10 @@ def calc_bs_greeks(params: BSParams) -> dict[str, float | None]:
         >>> greeks = calc_bs_greeks(params)
         >>> print(greeks["delta"])
     """
-    result: dict[str, float | None] = {
-        "delta": None,
-        "gamma": None,
-        "theta": None,
-        "vega": None,
-        "rho": None,
+    return {
+        "delta": calc_bs_delta(params),
+        "gamma": calc_bs_gamma(params),
+        "theta": calc_bs_theta(params),  # Daily theta
+        "vega": calc_bs_vega(params),    # Per 1% IV change
+        "rho": calc_bs_rho(params),      # Per 1% rate change
     }
-
-    d1 = calc_d1(params)
-    if d1 is None:
-        return result
-
-    d2 = calc_d2(params, d1)
-    if d2 is None:
-        return result
-
-    sqrt_t = math.sqrt(params.time_to_expiry)
-    n_d1_pdf = _calc_n_pdf(d1)
-    n_d1 = calc_n(d1)
-    n_d2 = calc_n(d2)
-    discount = math.exp(-params.risk_free_rate * params.time_to_expiry)
-
-    # Delta
-    if params.is_call:
-        result["delta"] = n_d1
-    else:
-        result["delta"] = n_d1 - 1
-
-    # Gamma (same for call and put)
-    if params.spot_price > 0 and params.volatility > 0:
-        result["gamma"] = n_d1_pdf / (params.spot_price * params.volatility * sqrt_t)
-
-    # Theta
-    term1 = -(params.spot_price * n_d1_pdf * params.volatility) / (2 * sqrt_t)
-    if params.is_call:
-        term2 = -params.risk_free_rate * params.strike_price * discount * n_d2
-    else:
-        term2 = params.risk_free_rate * params.strike_price * discount * calc_n(-d2)
-    result["theta"] = term1 + term2
-
-    # Vega (same for call and put)
-    result["vega"] = params.spot_price * n_d1_pdf * sqrt_t
-
-    # Rho
-    if params.is_call:
-        result["rho"] = params.strike_price * params.time_to_expiry * discount * n_d2
-    else:
-        result["rho"] = -params.strike_price * params.time_to_expiry * discount * calc_n(-d2)
-
-    return result

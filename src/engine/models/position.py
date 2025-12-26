@@ -52,6 +52,7 @@ class Position:
         contract_multiplier: int = 100,
         margin: float | None = None,
         dte: int | None = None,
+        currency: str = "USD",
     ):
         """Initialize Position.
 
@@ -65,6 +66,7 @@ class Position:
             contract_multiplier: Shares per contract (default 100)
             margin: Margin requirement
             dte: Days to expiration
+            currency: Currency for all price values (default USD)
         """
         self.symbol = symbol
         self.quantity = quantity
@@ -74,6 +76,7 @@ class Position:
         self.contract_multiplier = contract_multiplier
         self.margin = margin
         self.dte = dte
+        self.currency = currency
         self._greeks = greeks if greeks is not None else Greeks()
 
     @property
@@ -173,7 +176,7 @@ class Position:
             f"greeks={self._greeks!r}, beta={self.beta}, "
             f"market_value={self.market_value}, underlying_price={self.underlying_price}, "
             f"contract_multiplier={self.contract_multiplier}, margin={self.margin}, "
-            f"dte={self.dte})"
+            f"dte={self.dte}, currency={self.currency!r})"
         )
 
     def __eq__(self, other: object) -> bool:
@@ -190,6 +193,7 @@ class Position:
             and self.contract_multiplier == other.contract_multiplier
             and self.margin == other.margin
             and self.dte == other.dte
+            and self.currency == other.currency
         )
 
     @classmethod

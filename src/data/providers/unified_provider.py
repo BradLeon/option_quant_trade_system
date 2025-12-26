@@ -50,16 +50,19 @@ class UnifiedDataProvider:
     - Caching support
 
     Usage:
-        # Default configuration
+        # Default configuration (uses routing.py defaults)
         provider = UnifiedDataProvider()
 
-        # Custom config file
-        provider = UnifiedDataProvider(routing_config="config/routing.yaml")
-
         # Auto-routed requests
-        quote = provider.get_stock_quote("AAPL")      # → IBKR → Futu → Yahoo
-        quote = provider.get_stock_quote("HK.0700")   # → Futu → Yahoo
-        fundamental = provider.get_fundamental("AAPL") # → Yahoo
+        quote = provider.get_stock_quote("AAPL")       # US → IBKR → Yahoo
+        quote = provider.get_stock_quote("0700.HK")    # HK → Futu → IBKR → Yahoo
+        fundamental = provider.get_fundamental("AAPL") # → Yahoo only
+
+    Routing Rules (see src/data/providers/routing.py):
+        - US K-line: IBKR > Yahoo
+        - HK K-line: Futu > IBKR > Yahoo (Futu supports HK indices 800xxx.HK)
+        - HK options: Futu only
+        - Fundamental: Yahoo only
     """
 
     def __init__(
