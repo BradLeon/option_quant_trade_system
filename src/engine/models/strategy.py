@@ -322,3 +322,4 @@ class StrategyMetrics:
     sas: float | None = None
     tgr: float | None = None
     roc: float | None = None
+    expected_roc: float | None = None

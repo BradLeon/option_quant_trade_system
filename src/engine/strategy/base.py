@@ -310,6 +310,40 @@ class OptionStrategy(ABC):
 
         return calc_roc_from_dte(premium, margin, dte)
 
+    def calc_expected_roc(self) -> float | None:
+        """Calculate annualized Expected Return on Capital.
+
+        Similar to calc_roc() but uses expected_return instead of premium.
+        While ROC uses the certain premium income, expected ROC uses the
+        probability-weighted expected return from the strategy.
+
+        Formula: (expected_return / capital) × (365 / dte)
+
+        Returns:
+            Annualized expected ROC, or None if insufficient data.
+        """
+        from src.engine.position.risk_return import calc_roc_from_dte
+
+        dte = self.params.dte
+        if dte is None or dte <= 0:
+            return None
+
+        expected_return = self.calc_expected_return()
+        if expected_return is None:
+            return None
+
+        # Use actual margin requirement from broker formula
+        try:
+            capital = self.calc_margin_requirement()
+        except Exception:
+            # Fallback to capital at risk if margin calc fails
+            capital = self._calc_capital_at_risk()
+
+        if capital is None or capital <= 0:
+            return None
+
+        return calc_roc_from_dte(expected_return, capital, dte)
+
     def calc_metrics(self) -> StrategyMetrics:
         """Calculate all metrics for the strategy.
 
@@ -333,4 +367,5 @@ class OptionStrategy(ABC):
             sas=self.calc_sas(),
             tgr=self.calc_tgr(),
             roc=self.calc_roc(),
+            expected_roc=self.calc_expected_roc(),
         )

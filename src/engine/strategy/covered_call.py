@@ -316,6 +316,34 @@ class CoveredCallStrategy(OptionStrategy):
 
         return calc_roc_from_dte(premium, capital, dte)
 
+    def calc_expected_roc(self) -> float | None:
+        """Calculate annualized Expected ROC for Covered Call.
+
+        For covered call, capital at risk is the stock cost basis,
+        not the margin requirement.
+
+        Formula: (expected_return / stock_cost_basis) × (365 / dte)
+
+        Returns:
+            Annualized expected ROC, or None if insufficient data.
+        """
+        from src.engine.position.risk_return import calc_roc_from_dte
+
+        dte = self.params.dte
+        if dte is None or dte <= 0:
+            return None
+
+        expected_return = self.calc_expected_return()
+        if expected_return is None:
+            return None
+
+        # Use stock cost basis as capital at risk
+        capital = self._calc_capital_at_risk()  # = stock_cost_basis
+        if capital <= 0:
+            return None
+
+        return calc_roc_from_dte(expected_return, capital, dte)
+
     def calc_margin_requirement(self) -> float:
         """Calculate margin requirement using IBKR formula for Covered Call.
 
