@@ -8,7 +8,7 @@ Term structure provides insight into market stress levels:
 
 from dataclasses import dataclass
 
-from src.engine.models.enums import TermStructureState
+from src.engine.models.enums import TermStructure
 
 
 @dataclass
@@ -26,7 +26,7 @@ class TermStructureResult:
     vix: float
     vix3m: float
     ratio: float
-    state: TermStructureState
+    state: TermStructure
     is_favorable: bool
 
 
@@ -55,7 +55,7 @@ def calc_term_structure(
         >>> result.ratio
         0.925
         >>> result.state
-        <TermStructureState.CONTANGO: 'contango'>
+        <TermStructure.CONTANGO: 'contango'>
     """
     if vix is None or vix3m is None:
         return None
@@ -78,7 +78,7 @@ def calc_term_structure(
 def get_term_structure_state(
     ratio: float | None,
     flat_threshold: float = 0.02,
-) -> TermStructureState:
+) -> TermStructure:
     """Categorize term structure ratio into states.
 
     Args:
@@ -86,23 +86,23 @@ def get_term_structure_state(
         flat_threshold: Threshold around 1.0 for flat classification.
 
     Returns:
-        TermStructureState enum.
+        TermStructure enum.
 
     Example:
         >>> get_term_structure_state(0.9)
-        <TermStructureState.CONTANGO: 'contango'>
+        <TermStructure.CONTANGO: 'contango'>
         >>> get_term_structure_state(1.15)
-        <TermStructureState.BACKWARDATION: 'backwardation'>
+        <TermStructure.BACKWARDATION: 'backwardation'>
     """
     if ratio is None:
-        return TermStructureState.FLAT
+        return TermStructure.FLAT
 
     if ratio < (1.0 - flat_threshold):
-        return TermStructureState.CONTANGO
+        return TermStructure.CONTANGO
     elif ratio > (1.0 + flat_threshold):
-        return TermStructureState.BACKWARDATION
+        return TermStructure.BACKWARDATION
     else:
-        return TermStructureState.FLAT
+        return TermStructure.FLAT
 
 
 def is_term_structure_favorable(

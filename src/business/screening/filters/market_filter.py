@@ -44,7 +44,7 @@ from src.engine.account.sentiment import (
     get_pcr_zone,
     get_vix_zone,
 )
-from src.engine.models.enums import TermStructureState, TrendSignal
+from src.engine.models.enums import TermStructure, TrendSignal
 
 logger = logging.getLogger(__name__)
 
@@ -503,7 +503,7 @@ class MarketFilter:
             # 业务层判断过滤状态
             if ts_result.ratio >= config.term_structure_threshold:
                 filter_status = FilterStatus.UNFAVORABLE
-            elif ts_result.state == TermStructureState.CONTANGO:
+            elif ts_result.state == TermStructure.CONTANGO:
                 filter_status = FilterStatus.FAVORABLE
             else:
                 filter_status = FilterStatus.NEUTRAL
@@ -512,7 +512,7 @@ class MarketFilter:
                 vix_value=ts_result.vix,
                 vix3m_value=ts_result.vix3m,
                 ratio=ts_result.ratio,
-                is_contango=(ts_result.state == TermStructureState.CONTANGO),
+                is_contango=(ts_result.state == TermStructure.CONTANGO),
                 filter_status=filter_status,
             )
 
