@@ -1456,7 +1456,7 @@ class IBKRProvider(DataProvider, AccountProvider):
                 logger.warning(f"Could not qualify contract for {position.symbol}")
                 return
 
-            logger.debug(f"Requesting Greeks for {position.symbol}, conId={contract.conId}, "
+            logger.info(f"Requesting Greeks for {position.symbol}, conId={contract.conId}, "
                         f"secType={contract.secType}, exchange={contract.exchange}")
 
             # Request market data with Greeks

@@ -456,7 +456,7 @@ def get_provider(name: str):
         return FutuProvider()
     elif name == "ibkr":
         from src.data.providers.ibkr_provider import IBKRProvider
-        return IBKRProvider()
+        return IBKRProvider(account_type="real")
     elif name == "unified":
         return UnifiedDataProvider()
     else:
