@@ -105,8 +105,8 @@ def calc_prei(
     # Gamma Risk: sigmoid normalization, k=10.0 means gamma=10 -> risk=0.5
     gamma_risk = _normalize_to_01(abs(gamma), k=1.0)
 
-    # Vega Risk: sigmoid normalization, k=1.0 means vega=1 -> risk=0.5
-    vega_risk = _normalize_to_01(abs(vega), k=1.0)
+    # Vega Risk: sigmoid normalization, k=10.0 means vega=1 -> risk=0.5
+    vega_risk = _normalize_to_01(abs(vega), k=10.0)
 
     # DTE Risk: sqrt(1/DTE), already in 0-1 range for DTE >= 1
     dte_clamped = max(1, dte)

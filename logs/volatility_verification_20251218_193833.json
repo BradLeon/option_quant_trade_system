@@ -1,0 +1,54 @@
+{
+  "timestamp": "2025-12-18T19:38:33.508408",
+  "reports": [
+    {
+      "symbol": "TSLA",
+      "timestamp": "2025-12-18T19:38:33.507955",
+      "source": "ibkr",
+      "summary": {
+        "total_metrics": 5,
+        "matched": 4,
+        "different": 1,
+        "missing": 0,
+        "skipped": 0
+      },
+      "comparisons": [
+        {
+          "metric": "iv",
+          "expected": 0.5469,
+          "actual": 0.4883092623760089,
+          "diff_percent": -10.713245131466655,
+          "status": "MATCH"
+        },
+        {
+          "metric": "hv",
+          "expected": 0.4128,
+          "actual": 0.49842938543962273,
+          "diff_percent": 20.743552674327212,
+          "status": "DIFF"
+        },
+        {
+          "metric": "pcr",
+          "expected": 0.55,
+          "actual": 0.5510665675988824,
+          "diff_percent": 0.19392138161497288,
+          "status": "MATCH"
+        },
+        {
+          "metric": "iv_rank",
+          "expected": 9,
+          "actual": 9.205116166084046,
+          "diff_percent": 2.2790685120449594,
+          "status": "MATCH"
+        },
+        {
+          "metric": "iv_percentile",
+          "expected": 0.18,
+          "actual": 0.188,
+          "diff_percent": 4.444444444444449,
+          "status": "MATCH"
+        }
+      ]
+    }
+  ]
+}

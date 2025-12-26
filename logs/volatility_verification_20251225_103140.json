@@ -1,0 +1,54 @@
+{
+  "timestamp": "2025-12-25T10:31:40.732590",
+  "reports": [
+    {
+      "symbol": "TSLA",
+      "timestamp": "2025-12-25T10:31:40.732335",
+      "source": "yahoo",
+      "summary": {
+        "total_metrics": 5,
+        "matched": 0,
+        "different": 3,
+        "missing": 0,
+        "skipped": 2
+      },
+      "comparisons": [
+        {
+          "metric": "iv",
+          "expected": 0.5469,
+          "actual": 0.2667309655761718,
+          "diff_percent": -51.228567274424606,
+          "status": "DIFF"
+        },
+        {
+          "metric": "hv",
+          "expected": 0.4128,
+          "actual": 0.35260475040216344,
+          "diff_percent": -14.582182557615447,
+          "status": "DIFF"
+        },
+        {
+          "metric": "pcr",
+          "expected": 0.55,
+          "actual": NaN,
+          "diff_percent": NaN,
+          "status": "DIFF"
+        },
+        {
+          "metric": "iv_rank",
+          "expected": 9,
+          "actual": null,
+          "diff_percent": null,
+          "status": "SKIP"
+        },
+        {
+          "metric": "iv_percentile",
+          "expected": 0.18,
+          "actual": null,
+          "diff_percent": null,
+          "status": "SKIP"
+        }
+      ]
+    }
+  ]
+}

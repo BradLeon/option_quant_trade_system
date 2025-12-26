@@ -1,0 +1,54 @@
+{
+  "timestamp": "2025-12-18T16:57:33.091066",
+  "reports": [
+    {
+      "symbol": "0700.HK",
+      "timestamp": "2025-12-18T16:57:33.090688",
+      "source": "ibkr",
+      "summary": {
+        "total_metrics": 5,
+        "matched": 1,
+        "different": 0,
+        "missing": 2,
+        "skipped": 2
+      },
+      "comparisons": [
+        {
+          "metric": "iv",
+          "expected": 0.2193,
+          "actual": null,
+          "diff_percent": null,
+          "status": "MISSING"
+        },
+        {
+          "metric": "hv",
+          "expected": 0.1839,
+          "actual": 0.1926416585191456,
+          "diff_percent": 4.753484784744753,
+          "status": "MATCH"
+        },
+        {
+          "metric": "pcr",
+          "expected": 1.0,
+          "actual": null,
+          "diff_percent": null,
+          "status": "MISSING"
+        },
+        {
+          "metric": "iv_rank",
+          "expected": 22,
+          "actual": null,
+          "diff_percent": null,
+          "status": "SKIP"
+        },
+        {
+          "metric": "iv_percentile",
+          "expected": 0.04,
+          "actual": null,
+          "diff_percent": null,
+          "status": "SKIP"
+        }
+      ]
+    }
+  ]
+}

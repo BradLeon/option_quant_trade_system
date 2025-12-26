@@ -1,0 +1,105 @@
+{
+  "symbol": "TSLA",
+  "timestamp": "2025-12-19T14:54:11.250857",
+  "source": "yahoo",
+  "summary": {
+    "total_metrics": 13,
+    "matched": 12,
+    "different": 1,
+    "missing": 0,
+    "skipped": 0
+  },
+  "comparisons": [
+    {
+      "metric": "sma20",
+      "expected": 442.689,
+      "actual": 442.6885009765625,
+      "diff_percent": 0.00011272551102436151,
+      "status": "MATCH"
+    },
+    {
+      "metric": "sma50",
+      "expected": 438.801,
+      "actual": 438.80140075683596,
+      "diff_percent": 9.132997326180103e-05,
+      "status": "MATCH"
+    },
+    {
+      "metric": "sma200",
+      "expected": 350.016,
+      "actual": 350.0160001373291,
+      "diff_percent": 3.9235090867498755e-08,
+      "status": "MATCH"
+    },
+    {
+      "metric": "ema20",
+      "expected": 451.621,
+      "actual": 451.62132190451194,
+      "diff_percent": 7.127757831534996e-05,
+      "status": "MATCH"
+    },
+    {
+      "metric": "ema50",
+      "expected": 435.101,
+      "actual": 435.07337943124617,
+      "diff_percent": 0.0063480821128501725,
+      "status": "MATCH"
+    },
+    {
+      "metric": "ema200",
+      "expected": 373.82,
+      "actual": 352.4782487460197,
+      "diff_percent": 5.709098297036089,
+      "status": "DIFF"
+    },
+    {
+      "metric": "bb_upper",
+      "expected": 493.806,
+      "actual": 493.80635776237074,
+      "diff_percent": 7.244998455957285e-05,
+      "status": "MATCH"
+    },
+    {
+      "metric": "bb_middle",
+      "expected": 442.689,
+      "actual": 442.6885009765625,
+      "diff_percent": 0.00011272551102436151,
+      "status": "MATCH"
+    },
+    {
+      "metric": "bb_lower",
+      "expected": 391.571,
+      "actual": 391.5706441907543,
+      "diff_percent": 9.086710857502707e-05,
+      "status": "MATCH"
+    },
+    {
+      "metric": "rsi14",
+      "expected": 62.777,
+      "actual": 62.77705718087433,
+      "diff_percent": 5.7180874328821574e-05,
+      "status": "MATCH"
+    },
+    {
+      "metric": "adx14",
+      "expected": 21.13,
+      "actual": 19.04832072603339,
+      "diff_percent": 2.0816792739666106,
+      "status": "MATCH"
+    },
+    {
+      "metric": "plus_di",
+      "expected": 28.13,
+      "actual": 28.42630465757434,
+      "diff_percent": 0.29630465757434266,
+      "status": "MATCH"
+    },
+    {
+      "metric": "minus_di",
+      "expected": 11.93,
+      "actual": 12.40837858229875,
+      "diff_percent": 0.47837858229875074,
+      "status": "MATCH"
+    }
+  ]
+}

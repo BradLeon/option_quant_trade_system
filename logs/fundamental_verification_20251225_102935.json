@@ -1,0 +1,19 @@
+{
+  "timestamp": "2025-12-25T10:29:35.693603",
+  "reports": [
+    {
+      "symbol": "0700.HK",
+      "timestamp": "2025-12-25T10:29:35.693410",
+      "source": "futu:N/A",
+      "summary": {
+        "total_fields": 0,
+        "matched": 0,
+        "different": 0,
+        "missing": 23,
+        "extra": 0,
+        "match_rate": 0
+      },
+      "comparisons": []
+    }
+  ]
+}
