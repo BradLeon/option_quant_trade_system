@@ -245,7 +245,7 @@ def _load_from_account(
             ibkr_provider=ibkr,
             futu_provider=futu,
         )
-        bridge = MonitoringDataBridge(data_provider=unified_provider)
+        bridge = MonitoringDataBridge(data_provider=unified_provider, ibkr_provider=ibkr)
         position_list = bridge.convert_positions(portfolio)
 
         # 调用 engine 层计算 CapitalMetrics

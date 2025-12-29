@@ -15,13 +15,16 @@ Usage:
     python tests/verification/verify_position_strategies.py
     python tests/verification/verify_position_strategies.py --account-type paper
     python tests/verification/verify_position_strategies.py --ibkr-only
+    python tests/verification/verify_position_strategies.py -v  # verbose mode with debug info
 """
 
 import argparse
 import logging
 import sys
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 # Add project root to path
 project_root = Path(__file__).parent.parent.parent
@@ -54,27 +57,84 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
+# Data Container for Table Output
+# ============================================================================
+
+
+@dataclass
+class StrategyRow:
+    """Container for all strategy data to be displayed in table."""
+
+    # Position Info
+    symbol: str
+    underlying: str
+    option_type: str  # CALL/PUT
+    side: str  # SHORT/LONG
+    strike: float
+    expiry: str
+    dte: Optional[int]
+    quantity: float  # May be fractional due to partial coverage
+    premium: float  # per share
+    iv: Optional[float]
+    underlying_price: float
+    strategy_type: str
+
+    # Greeks
+    delta: Optional[float]
+    gamma: Optional[float]
+    theta: Optional[float]
+    vega: Optional[float]
+
+    # Strategy Params
+    hv: Optional[float]
+    spot_price: float
+
+    # Calculated Values
+    margin: Optional[float]
+    capital_at_risk: Optional[float]
+
+    # Core Metrics
+    expected_return: float
+    max_profit: float
+    max_loss: float
+    breakeven: float | list[float]
+    win_probability: float
+
+    # Risk-Adjusted Metrics
+    return_std: float
+    sharpe_ratio: Optional[float]
+    kelly_fraction: Optional[float]
+
+    # Extended Metrics
+    prei: Optional[float]
+    sas: Optional[float]
+    tgr: Optional[float]
+    roc: Optional[float]
+    expected_roc: Optional[float]
+
+
+# ============================================================================
 # Output Formatting
 # ============================================================================
 
 
 def print_section_header(title: str) -> None:
     """Print a formatted section header."""
-    print("\n" + "=" * 70)
+    print("\n" + "=" * 120)
     print(f"  {title}")
-    print("=" * 70)
+    print("=" * 120)
 
 
 def print_strategy_debug_info(strategy, position: AccountPosition) -> None:
-    """Print detailed strategy information for debugging.
+    """Print detailed strategy information for debugging (verbose mode).
 
     Args:
         strategy: OptionStrategy instance.
         position: Original AccountPosition.
     """
-    print(f"\n{'='*70}")
+    print(f"\n{'='*80}")
     print(f"DEBUG: Strategy Details for {position.symbol}")
-    print(f"{'='*70}")
+    print(f"{'='*80}")
 
     # OptionLeg Info
     if strategy.leg:
@@ -132,13 +192,178 @@ def print_strategy_debug_info(strategy, position: AccountPosition) -> None:
     print(f"  Max Profit: ${strategy.calc_max_profit():.2f}")
     print(f"  Max Loss: ${strategy.calc_max_loss():.2f}")
 
-    print(f"{'='*70}\n")
+    print(f"{'='*80}\n")
 
 
-def print_strategy_metrics(
+def format_value(val, fmt: str = ".2f", suffix: str = "") -> str:
+    """Format a value for table display."""
+    if val is None:
+        return "-"
+    if fmt == ".0%":
+        return f"{val:.0%}"
+    if fmt == ".1%":
+        return f"{val:.1%}"
+    if fmt == ".1f":
+        return f"{val:.1f}{suffix}"
+    if fmt == ".2f":
+        return f"{val:.2f}{suffix}"
+    if fmt == ".3f":
+        return f"{val:.3f}{suffix}"
+    return str(val)
+
+
+def get_prei_rating(prei: Optional[float]) -> str:
+    """Get PREI risk rating."""
+    if prei is None:
+        return ""
+    if prei < 20:
+        return "Low"
+    if prei < 40:
+        return "Med"
+    if prei < 60:
+        return "High"
+    return "VHigh"
+
+
+def get_sas_rating(sas: Optional[float]) -> str:
+    """Get SAS attractiveness rating."""
+    if sas is None:
+        return ""
+    if sas >= 70:
+        return "VGood"
+    if sas >= 50:
+        return "Good"
+    if sas >= 30:
+        return "Med"
+    return "Low"
+
+
+def get_tgr_rating(tgr: Optional[float]) -> str:
+    """Get TGR quality rating."""
+    if tgr is None:
+        return ""
+    if tgr > 0.8:
+        return "Exc"
+    if tgr > 0.5:
+        return "Good"
+    if tgr > 0.3:
+        return "Med"
+    return "Low"
+
+
+def get_kelly_rating(kelly: Optional[float]) -> str:
+    """Get Kelly fraction rating."""
+    if kelly is None:
+        return ""
+    kelly_pct = kelly * 100
+    if kelly_pct > 20:
+        return "Strong"
+    if kelly_pct > 10:
+        return "Med"
+    if kelly_pct > 0:
+        return "Small"
+    return "None"
+
+
+def print_summary_tables(rows: list[StrategyRow]) -> None:
+    """Print all strategies in formatted summary tables.
+
+    Args:
+        rows: List of StrategyRow data containers.
+    """
+    if not rows:
+        print("\nNo strategies to display.")
+        return
+
+    # ========== Table 1: Position Information ==========
+    print_section_header("Table 1: Option Position Information")
+
+    # Header
+    print(f"\n{'Symbol':<8} {'Type':<5} {'Side':<6} {'Strike':>8} {'Expiry':<10} {'DTE':>4} "
+          f"{'Qty':>5} {'Prem':>6} {'IV':>6} {'Und$':>8} {'Strategy':<14}")
+    print("-" * 120)
+
+    for r in rows:
+        iv_str = f"{r.iv*100:.1f}%" if r.iv else "-"
+        qty_str = f"{r.quantity:.1f}" if r.quantity != int(r.quantity) else f"{int(r.quantity)}"
+        print(f"{r.underlying:<8} {r.option_type:<5} {r.side:<6} {r.strike:>8.1f} {r.expiry:<10} "
+              f"{r.dte if r.dte else '-':>4} {qty_str:>5} {r.premium:>6.2f} {iv_str:>6} "
+              f"{r.underlying_price:>8.2f} {r.strategy_type:<14}")
+
+    # ========== Table 2: Greeks ==========
+    print_section_header("Table 2: Greeks")
+
+    print(f"\n{'Symbol':<8} {'Type':<5} {'Strike':>8} {'Delta':>8} {'Gamma':>10} {'Theta':>8} {'Vega':>8} "
+          f"{'HV':>6} {'IV':>6} {'IV/HV':>6}")
+    print("-" * 120)
+
+    for r in rows:
+        delta_str = format_value(r.delta, ".2f") if r.delta else "-"
+        gamma_str = format_value(r.gamma, ".2f") if r.gamma else "-"
+        theta_str = format_value(r.theta, ".2f") if r.theta else "-"
+        vega_str = format_value(r.vega, ".2f") if r.vega else "-"
+        hv_str = f"{r.hv*100:.1f}%" if r.hv else "-"
+        iv_str = f"{r.iv*100:.1f}%" if r.iv else "-"
+        iv_hv = f"{r.iv/r.hv:.2f}" if r.iv and r.hv and r.hv > 0 else "-"
+
+        print(f"{r.underlying:<8} {r.option_type:<5} {r.strike:>8.1f} {delta_str:>8} {gamma_str:>10} "
+              f"{theta_str:>8} {vega_str:>8} {hv_str:>6} {iv_str:>6} {iv_hv:>6}")
+
+    # ========== Table 3: Core Metrics ==========
+    print_section_header("Table 3: Core Metrics")
+
+    print(f"\n{'Symbol':<8} {'Strike':>8} {'Strategy':<14} {'E[Return]':>10} {'MaxProfit':>10} "
+          f"{'MaxLoss':>10} {'Breakeven':>10} {'WinProb':>8}")
+    print("-" * 120)
+
+    for r in rows:
+        be_str = f"{r.breakeven:.2f}" if isinstance(r.breakeven, float) else ",".join([f"{b:.1f}" for b in r.breakeven])
+        print(f"{r.underlying:<8} {r.strike:>8.1f} {r.strategy_type:<14} {r.expected_return:>10.2f} "
+              f"{r.max_profit:>10.2f} {r.max_loss:>10.2f} {be_str:>10} {r.win_probability:>7.1%}")
+
+    # ========== Table 4: Risk-Adjusted Metrics ==========
+    print_section_header("Table 4: Risk-Adjusted & Extended Metrics")
+
+    print(f"\n{'Symbol':<8} {'Strike':>8} {'PREI':>6} {'Risk':>5} {'SAS':>5} {'Attr':>5} "
+          f"{'TGR':>6} {'Qual':>4} {'ROC':>7} {'E[ROC]':>7} {'Sharpe':>7} {'Kelly':>7} {'Edge':>6}")
+    print("-" * 120)
+
+    for r in rows:
+        prei_str = format_value(r.prei, ".1f")
+        prei_rating = get_prei_rating(r.prei)
+        sas_str = format_value(r.sas, ".1f")
+        sas_rating = get_sas_rating(r.sas)
+        tgr_str = format_value(r.tgr, ".3f")
+        tgr_rating = get_tgr_rating(r.tgr)
+        roc_str = f"{r.roc:.1%}" if r.roc is not None else "-"
+        eroc_str = f"{r.expected_roc:.1%}" if r.expected_roc is not None else "-"
+        sharpe_str = format_value(r.sharpe_ratio, ".3f")
+        kelly_str = f"{r.kelly_fraction:.1%}" if r.kelly_fraction is not None else "-"
+        kelly_rating = get_kelly_rating(r.kelly_fraction)
+
+        print(f"{r.underlying:<8} {r.strike:>8.1f} {prei_str:>6} {prei_rating:>5} {sas_str:>5} {sas_rating:>5} "
+              f"{tgr_str:>6} {tgr_rating:>4} {roc_str:>7} {eroc_str:>7} {sharpe_str:>7} {kelly_str:>7} {kelly_rating:>6}")
+
+    # ========== Table 5: Capital & Margin ==========
+    print_section_header("Table 5: Capital & Margin")
+
+    print(f"\n{'Symbol':<8} {'Strike':>8} {'Strategy':<14} {'Margin':>10} {'Capital@Risk':>12} "
+          f"{'ReturnStd':>10} {'Margin/Cap':>10}")
+    print("-" * 120)
+
+    for r in rows:
+        margin_str = f"${r.margin:.2f}" if r.margin else "-"
+        car_str = f"${r.capital_at_risk:.2f}" if r.capital_at_risk else "-"
+        margin_ratio = f"{r.margin/r.capital_at_risk:.1%}" if r.margin and r.capital_at_risk and r.capital_at_risk > 0 else "-"
+
+        print(f"{r.underlying:<8} {r.strike:>8.1f} {r.strategy_type:<14} {margin_str:>10} {car_str:>12} "
+              f"${r.return_std:>9.2f} {margin_ratio:>10}")
+
+
+def print_strategy_metrics_detail(
     position: AccountPosition, strategy_type: str, metrics: StrategyMetrics
 ) -> None:
-    """Print strategy metrics in formatted output.
+    """Print strategy metrics in detailed format (legacy, for verbose mode).
 
     Args:
         position: Original AccountPosition.
@@ -261,15 +486,18 @@ def print_strategy_metrics(
 
 
 def verify_position_strategies(
-    portfolio: ConsolidatedPortfolio, ibkr_provider: IBKRProvider | None
+    portfolio: ConsolidatedPortfolio,
+    ibkr_provider: IBKRProvider | None,
+    verbose: bool = False,
 ) -> None:
     """Verify Position-level strategy metrics for all option positions.
 
     Args:
         portfolio: Consolidated portfolio with all positions.
         ibkr_provider: IBKR provider for volatility data.
+        verbose: If True, print detailed debug info for each strategy.
     """
-    print_section_header("Position-Level Strategy Metrics")
+    print_section_header("Position-Level Strategy Metrics Verification")
 
     option_positions = [
         p for p in portfolio.positions if p.asset_type == AssetType.OPTION
@@ -287,11 +515,13 @@ def verify_position_strategies(
     skipped_positions = 0
     strategy_counts = {}
 
+    # Collect all strategy data for table output
+    strategy_rows: list[StrategyRow] = []
+
     for pos in option_positions:
         total_positions += 1
 
         # Step 1: Create strategy instance(s) using factory
-        # Factory handles classification, splitting, and all complex logic
         strategy_instances = create_strategies_from_position(
             position=pos,
             all_positions=portfolio.positions,
@@ -304,7 +534,6 @@ def verify_position_strategies(
             continue
 
         # Step 2: Process each strategy instance
-        # (Most positions return 1 strategy, but partial coverage returns 2)
         for idx, instance in enumerate(strategy_instances, 1):
             strategy = instance.strategy
             ratio = instance.quantity_ratio
@@ -319,33 +548,24 @@ def verify_position_strategies(
             # Log coverage info
             if len(strategy_instances) > 1:
                 logger.info(f"{pos.symbol} [{idx}/{len(strategy_instances)}]: {desc}")
-                print(f"\n>>> Strategy {idx}/{len(strategy_instances)}: {desc}")
             else:
                 logger.info(f"{pos.symbol}: {desc}")
 
-            # Print debug info for strategy
-            print_strategy_debug_info(strategy, pos)
+            # Verbose: Print debug info
+            if verbose:
+                print_strategy_debug_info(strategy, pos)
 
-            # Step 3: Calculate margin for logging
+            # Step 3: Calculate margin
+            margin = None
+            capital_at_risk = None
             try:
                 margin_per_contract = strategy.calc_margin_requirement()
                 capital_at_risk = strategy._calc_capital_at_risk()
-
-                # Apply quantity ratio
                 margin = margin_per_contract * ratio
-
-                margin_ratio = margin / capital_at_risk if capital_at_risk > 0 else 1.0
-
-                logger.info(
-                    f"{pos.symbol}: Margin=${margin:.2f} "
-                    f"(${margin_per_contract:.2f}×{ratio:.0%}), "
-                    f"Capital@Risk=${capital_at_risk:.2f}, "
-                    f"Ratio={margin_ratio:.1%}"
-                )
             except Exception as e:
                 logger.warning(f"{pos.symbol}: Could not calculate margin: {e}")
 
-            # Step 4: Calculate metrics (now uses calc_margin_requirement internally)
+            # Step 4: Calculate metrics
             try:
                 metrics = strategy.calc_metrics()
                 verified_positions += 1
@@ -355,19 +575,73 @@ def verify_position_strategies(
                 skipped_positions += 1
                 continue
 
-            # Step 5: Print results with ratio annotation
-            if len(strategy_instances) > 1:
-                print(f"\n{pos.symbol} [{idx}/{len(strategy_instances)}] - {desc}:")
-            print_strategy_metrics(pos, strategy_type, metrics)
+            # Verbose: Print detailed metrics
+            if verbose:
+                print_strategy_metrics_detail(pos, strategy_type, metrics)
 
-    # Summary
+            # Step 5: Collect data for table
+            dte = calc_dte_from_expiry(pos.expiry)
+            premium_per_share = abs(pos.market_value / (pos.quantity * pos.contract_multiplier))
+
+            # Determine side from strategy leg
+            side = "SHORT" if strategy.leg and strategy.leg.side == PositionSide.SHORT else "LONG"
+
+            row = StrategyRow(
+                symbol=pos.symbol,
+                underlying=pos.underlying or pos.symbol,
+                option_type=pos.option_type.upper() if pos.option_type else "-",
+                side=side,
+                strike=pos.strike,
+                expiry=pos.expiry,
+                dte=dte,
+                quantity=ratio * abs(pos.quantity),  # Use ratio for partial coverage
+                premium=premium_per_share,
+                iv=pos.iv,
+                underlying_price=pos.underlying_price,
+                strategy_type=strategy_type,
+                delta=strategy.leg.delta if strategy.leg else None,
+                gamma=strategy.leg.gamma if strategy.leg else None,
+                theta=strategy.leg.theta if strategy.leg else None,
+                vega=strategy.leg.vega if strategy.leg else None,
+                hv=strategy.params.hv,
+                spot_price=strategy.params.spot_price,
+                margin=margin,
+                capital_at_risk=capital_at_risk,
+                expected_return=metrics.expected_return,
+                max_profit=metrics.max_profit,
+                max_loss=metrics.max_loss,
+                breakeven=metrics.breakeven,
+                win_probability=metrics.win_probability,
+                return_std=metrics.return_std,
+                sharpe_ratio=metrics.sharpe_ratio,
+                kelly_fraction=metrics.kelly_fraction,
+                prei=metrics.prei,
+                sas=metrics.sas,
+                tgr=metrics.tgr,
+                roc=metrics.roc,
+                expected_roc=metrics.expected_roc,
+            )
+            strategy_rows.append(row)
+
+    # Print summary tables
+    print_summary_tables(strategy_rows)
+
+    # Summary Statistics
     print_section_header("Verification Summary")
     print(f"\nTotal Option Positions: {total_positions}")
     print(f"Successfully Verified: {verified_positions}")
     print(f"Skipped: {skipped_positions}")
     print("\nStrategy Type Distribution:")
-    for stype, count in strategy_counts.items():
+    for stype, count in sorted(strategy_counts.items()):
         print(f"  {stype}: {count}")
+
+    # Quick Reference Legend
+    print("\n" + "-" * 60)
+    print("Rating Legend:")
+    print("  PREI Risk: Low(<20) | Med(20-40) | High(40-60) | VHigh(>60)")
+    print("  SAS Attr:  Low(<30) | Med(30-50) | Good(50-70) | VGood(>70)")
+    print("  TGR Qual:  Low(<0.3) | Med(0.3-0.5) | Good(0.5-0.8) | Exc(>0.8)")
+    print("  Kelly:     None(≤0) | Small(0-10%) | Med(10-20%) | Strong(>20%)")
 
 
 # ============================================================================
@@ -399,7 +673,7 @@ def main():
         "-v",
         "--verbose",
         action="store_true",
-        help="Enable verbose/debug output",
+        help="Enable verbose/debug output with detailed info per strategy",
     )
     args = parser.parse_args()
 
@@ -408,11 +682,12 @@ def main():
 
     account_type = AccountType.PAPER if args.account_type == "paper" else AccountType.REAL
 
-    print("\n" + "=" * 70)
+    print("\n" + "=" * 120)
     print("  Position-Level Strategy Verification")
     print(f"  Account Type: {account_type.value.upper()}")
     print(f"  Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 70)
+    print(f"  Verbose Mode: {'ON' if args.verbose else 'OFF'}")
+    print("=" * 120)
 
     # Initialize providers
     ibkr = None
@@ -459,11 +734,11 @@ def main():
         )
 
         # Verify position strategies
-        verify_position_strategies(portfolio, ibkr)
+        verify_position_strategies(portfolio, ibkr, verbose=args.verbose)
 
-        print("\n" + "=" * 70)
+        print("\n" + "=" * 120)
         print("  Verification Complete")
-        print("=" * 70 + "\n")
+        print("=" * 120 + "\n")
 
     finally:
         # Clean up connections

@@ -170,6 +170,17 @@ class PositionData:
     kelly: Optional[float] = None  # 来自 StrategyMetrics.kelly_fraction
     win_probability: Optional[float] = None  # 来自 StrategyMetrics.win_probability
 
+    # === 核心策略指标（用于详细展示）===
+    expected_return: Optional[float] = None  # 来自 StrategyMetrics.expected_return
+    max_profit: Optional[float] = None  # 来自 StrategyMetrics.max_profit
+    max_loss: Optional[float] = None  # 来自 StrategyMetrics.max_loss
+    breakeven: Optional[float | list[float]] = None  # 来自 StrategyMetrics.breakeven
+    return_std: Optional[float] = None  # 来自 StrategyMetrics.return_std
+
+    # === 资金相关指标 ===
+    margin: Optional[float] = None  # 保证金需求
+    capital_at_risk: Optional[float] = None  # 风险资本
+
     # === 便捷属性（仅做类型判断，无计算逻辑）===
     @property
     def is_option(self) -> bool:

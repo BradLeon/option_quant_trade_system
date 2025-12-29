@@ -321,7 +321,14 @@ class DashboardRenderer:
         return lines
 
     def _render_option_table(self, positions: list[PositionData], alerts: list[Alert]) -> list[str]:
-        """Render Option Positions table.
+        """Render detailed Option Positions tables.
+
+        Displays 5 tables similar to verify_position_strategies.py output:
+        1. Position Info (标的, 类型, 行权价, DTE, 数量, 权利金, IV, 标的价, 策略)
+        2. Greeks (Delta, Gamma, Theta, Vega, HV, IV, IV/HV)
+        3. Core Metrics (E[Return], MaxProfit, MaxLoss, Breakeven, WinProb)
+        4. Risk-Adjusted Metrics (PREI, SAS, TGR, ROC, E[ROC], Sharpe, Kelly)
+        5. Capital & Margin (Margin, Capital@Risk, ReturnStd)
 
         Args:
             positions: List of option positions
@@ -331,65 +338,242 @@ class DashboardRenderer:
             List of table lines
         """
         lines = []
+
+        # 通用前缀列：标的、类型、策略、行权价、Expiry
+        def common_prefix(pos):
+            """返回统一的前缀列值"""
+            return [
+                pos.underlying or pos.symbol[:6],
+                (pos.option_type or "-")[:4].capitalize(),
+                (pos.strategy_type or "-")[:12],
+                f"{pos.strike:.1f}" if pos.strike else "-",
+                pos.expiry if pos.expiry else "-",
+            ]
+
+        # ========== Table 1: Position Information ==========
         lines.append("┌─── 期权持仓明细 " + "─" * 72 + "┐")
 
-        # Define columns: (name, width)
-        columns = [
+        columns1 = [
             ("标的", 6),
             ("类型", 4),
-            ("行权价", 6),
+            ("策略", 12),
+            ("行权价", 7),
+            ("Expiry", 8),
             ("DTE", 4),
-            ("Delta", 6),
-            ("Gamma", 5),
-            ("Theta", 6),
-            ("Vega", 5),
-            ("TGR", 5),
-            ("ROC", 5),
-            ("PREI", 5),
-            ("SAS", 4),
+            ("Qty", 4),
+            ("Prem", 6),
+            ("成本", 6),
+            ("现价", 6),
+            ("PnL%", 7),
             ("状态", 4),
         ]
 
-        lines.append(table_header(columns))
-        lines.append(table_separator(columns))
+        lines.append(table_header(columns1))
+        lines.append(table_separator(columns1))
 
         for pos in positions:
-            # Calculate position-level Greeks (multiplied by quantity and contract_multiplier)
-            mult = pos.contract_multiplier or 100
+            # 数量显示（支持小数，如 1.5 contracts）
             qty = pos.quantity or 0
+            qty_str = f"{abs(qty):.1f}" if qty != int(qty) else f"{int(abs(qty))}"
 
-            delta_val = f"{(pos.delta or 0) * qty * mult:+.0f}" if pos.delta else "-"
-            gamma_val = f"{(pos.gamma or 0) * qty * mult:.0f}" if pos.gamma else "-"
-            theta_val = f"{(pos.theta or 0) * qty * mult:+.0f}" if pos.theta else "-"
-            vega_val = f"{(pos.vega or 0) * qty * mult:.0f}" if pos.vega else "-"
-            tgr_val = f"{pos.tgr:.2f}" if pos.tgr is not None else "-"
-            roc_val = f"{pos.roc * 100:.0f}%" if pos.roc is not None else "-"
-            prei_val = f"{pos.prei:.0f}" if pos.prei is not None else "-"
-            sas_val = f"{pos.sas:.0f}" if pos.sas is not None else "-"
+            # 权利金（每股，使用绝对值）
+            prem_str = f"{abs(pos.current_price):.2f}" if pos.current_price else "-"
 
-            # Determine overall status
+            # 成本价（使用绝对值）
+            cost_str = f"{abs(pos.entry_price):.2f}" if pos.entry_price else "-"
+
+            # 现价（每股，使用绝对值）
+            price_str = f"{abs(pos.current_price):.2f}" if pos.current_price else "-"
+
+            # PnL%
+            pnl_str = f"{pos.unrealized_pnl_pct:+.1%}" if pos.unrealized_pnl_pct else "-"
+
             level = self.checker.get_position_overall_level(pos.prei, pos.dte, pos.tgr)
             status_icon = alert_icon(level) if level else ""
 
-            values = [
-                pos.underlying or pos.symbol[:6],
-                (pos.option_type or "-")[:4].capitalize(),
-                f"{pos.strike:.0f}" if pos.strike else "-",
+            values = common_prefix(pos) + [
                 str(pos.dte) if pos.dte is not None else "-",
-                delta_val,
-                gamma_val,
-                theta_val,
-                vega_val,
-                tgr_val,
-                roc_val,
-                prei_val,
-                sas_val,
+                qty_str,
+                prem_str,
+                cost_str,
+                price_str,
+                pnl_str,
                 status_icon,
             ]
-
-            lines.append(table_row(values, columns))
+            lines.append(table_row(values, columns1))
 
         lines.append("└" + "─" * 89 + "┘")
+        lines.append("")
+
+        # ========== Table 2: Greeks ==========
+        lines.append("┌─── Greeks " + "─" * 78 + "┐")
+
+        columns2 = [
+            ("标的", 6),
+            ("类型", 4),
+            ("策略", 12),
+            ("行权价", 7),
+            ("Expiry", 8),
+            ("Delta", 6),
+            ("Gamma", 6),
+            ("Theta", 6),
+            ("Vega", 6),
+            ("HV", 6),
+            ("IV", 6),
+            ("IV/HV", 5),
+        ]
+
+        lines.append(table_header(columns2))
+        lines.append(table_separator(columns2))
+
+        for pos in positions:
+            delta_str = f"{pos.delta:.2f}" if pos.delta is not None else "-"
+            gamma_str = f"{pos.gamma:.2f}" if pos.gamma is not None else "-"
+            theta_str = f"{pos.theta:.2f}" if pos.theta is not None else "-"
+            vega_str = f"{pos.vega:.2f}" if pos.vega is not None else "-"
+            hv_str = f"{pos.hv*100:.1f}%" if pos.hv else "-"
+            iv_str = f"{pos.iv*100:.1f}%" if pos.iv else "-"
+            iv_hv = f"{pos.iv/pos.hv:.2f}" if pos.iv and pos.hv and pos.hv > 0 else "-"
+
+            values = common_prefix(pos) + [
+                delta_str,
+                gamma_str,
+                theta_str,
+                vega_str,
+                hv_str,
+                iv_str,
+                iv_hv,
+            ]
+            lines.append(table_row(values, columns2))
+
+        lines.append("└" + "─" * 89 + "┘")
+        lines.append("")
+
+        # ========== Table 3: Core Metrics ==========
+        lines.append("┌─── 核心指标 " + "─" * 76 + "┐")
+
+        columns3 = [
+            ("标的", 6),
+            ("类型", 4),
+            ("策略", 12),
+            ("行权价", 7),
+            ("Expiry", 8),
+            ("E[Ret]", 7),
+            ("MaxProf", 8),
+            ("MaxLoss", 8),
+            ("BE", 8),
+            ("WinPr", 6),
+        ]
+
+        lines.append(table_header(columns3))
+        lines.append(table_separator(columns3))
+
+        for pos in positions:
+            expected_ret = f"{pos.expected_return:.2f}" if pos.expected_return is not None else "-"
+            max_prof = f"{pos.max_profit:.2f}" if pos.max_profit is not None else "-"
+            max_loss_val = f"{pos.max_loss:.2f}" if pos.max_loss is not None else "-"
+            if pos.breakeven is not None:
+                if isinstance(pos.breakeven, list):
+                    be_str = ",".join([f"{b:.1f}" for b in pos.breakeven])
+                else:
+                    be_str = f"{pos.breakeven:.2f}"
+            else:
+                be_str = "-"
+            win_prob = f"{pos.win_probability:.0%}" if pos.win_probability is not None else "-"
+
+            values = common_prefix(pos) + [
+                expected_ret,
+                max_prof,
+                max_loss_val,
+                be_str,
+                win_prob,
+            ]
+            lines.append(table_row(values, columns3))
+
+        lines.append("└" + "─" * 89 + "┘")
+        lines.append("")
+
+        # ========== Table 4: Risk-Adjusted Metrics ==========
+        lines.append("┌─── 风险调整指标 " + "─" * 72 + "┐")
+
+        columns4 = [
+            ("标的", 6),
+            ("类型", 4),
+            ("策略", 12),
+            ("行权价", 7),
+            ("Expiry", 8),
+            ("PREI", 5),
+            ("SAS", 5),
+            ("TGR", 6),
+            ("ROC", 6),
+            ("E[ROC]", 6),
+            ("Sharpe", 6),
+            ("Kelly", 6),
+        ]
+
+        lines.append(table_header(columns4))
+        lines.append(table_separator(columns4))
+
+        for pos in positions:
+            prei_str = f"{pos.prei:.1f}" if pos.prei is not None else "-"
+            sas_str = f"{pos.sas:.1f}" if pos.sas is not None else "-"
+            tgr_str = f"{pos.tgr:.3f}" if pos.tgr is not None else "-"
+            roc_str = f"{pos.roc:.1%}" if pos.roc is not None else "-"
+            eroc_str = f"{pos.expected_roc:.1%}" if pos.expected_roc is not None else "-"
+            sharpe_str = f"{pos.sharpe:.3f}" if pos.sharpe is not None else "-"
+            kelly_str = f"{pos.kelly:.1%}" if pos.kelly is not None else "-"
+
+            values = common_prefix(pos) + [
+                prei_str,
+                sas_str,
+                tgr_str,
+                roc_str,
+                eroc_str,
+                sharpe_str,
+                kelly_str,
+            ]
+            lines.append(table_row(values, columns4))
+
+        lines.append("└" + "─" * 89 + "┘")
+        lines.append("")
+
+        # ========== Table 5: Capital & Margin ==========
+        lines.append("┌─── 资金与保证金 " + "─" * 72 + "┐")
+
+        columns5 = [
+            ("标的", 6),
+            ("类型", 4),
+            ("策略", 12),
+            ("行权价", 7),
+            ("Expiry", 8),
+            ("Margin", 9),
+            ("Cap@Risk", 10),
+            ("RetStd", 8),
+            ("Mar/Cap", 8),
+        ]
+
+        lines.append(table_header(columns5))
+        lines.append(table_separator(columns5))
+
+        for pos in positions:
+            margin_str = f"${pos.margin:.2f}" if pos.margin is not None else "-"
+            car_str = f"${pos.capital_at_risk:.2f}" if pos.capital_at_risk is not None else "-"
+            ret_std = f"${pos.return_std:.2f}" if pos.return_std is not None else "-"
+            if pos.margin is not None and pos.capital_at_risk and pos.capital_at_risk > 0:
+                margin_ratio = f"{pos.margin/pos.capital_at_risk:.1%}"
+            else:
+                margin_ratio = "-"
+
+            values = common_prefix(pos) + [
+                margin_str,
+                car_str,
+                ret_std,
+                margin_ratio,
+            ]
+            lines.append(table_row(values, columns5))
+
+        lines.append("└" + "─" * 89 + "┘")
+
         return lines
 
     def _render_stock_table(self, positions: list[PositionData], alerts: list[Alert]) -> list[str]:

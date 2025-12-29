@@ -16,6 +16,7 @@ from src.data.models.account import AccountPosition, AssetType, ConsolidatedPort
 from src.data.models.fundamental import Fundamental
 from src.data.models.stock import StockVolatility
 from src.data.models.technical import TechnicalData
+from src.data.providers.ibkr_provider import IBKRProvider
 from src.data.providers.unified_provider import UnifiedDataProvider
 from src.engine.position.fundamental.metrics import evaluate_fundamentals
 from src.engine.position.technical.metrics import calc_technical_score
@@ -41,15 +42,18 @@ class MonitoringDataBridge:
     def __init__(
         self,
         data_provider: UnifiedDataProvider | None = None,
+        ibkr_provider: IBKRProvider | None = None,
         cache_ttl_seconds: int = 300,
     ):
         """初始化数据转换器
 
         Args:
             data_provider: 统一数据提供者，用于获取补充数据
+            ibkr_provider: IBKR 提供者，用于获取 HV 数据计算 SAS
             cache_ttl_seconds: 缓存有效期（秒），默认 5 分钟
         """
         self._provider = data_provider
+        self._ibkr_provider = ibkr_provider
         self._cache_ttl = cache_ttl_seconds
 
         # 数据缓存（按 symbol 存储）
@@ -78,13 +82,13 @@ class MonitoringDataBridge:
         # Step 2: 批量预获取补充数据
         self._prefetch_data(symbols)
 
-        # Step 3: 转换每个持仓
+        # Step 3: 转换每个持仓（期权可能拆分为多个策略实例）
         result = []
         for pos in portfolio.positions:
             try:
-                position_data = self._convert_position(pos, portfolio.positions)
-                if position_data:
-                    result.append(position_data)
+                position_data_list = self._convert_position(pos, portfolio.positions)
+                if position_data_list:
+                    result.extend(position_data_list)
             except Exception as e:
                 logger.warning(f"Failed to convert position {pos.symbol}: {e}")
 
@@ -158,7 +162,7 @@ class MonitoringDataBridge:
         self,
         pos: AccountPosition,
         all_positions: list[AccountPosition],
-    ) -> PositionData | None:
+    ) -> list[PositionData]:
         """转换单个持仓
 
         Args:
@@ -166,32 +170,37 @@ class MonitoringDataBridge:
             all_positions: 所有持仓（用于策略分类）
 
         Returns:
-            转换后的 PositionData 或 None
+            转换后的 PositionData 列表（期权可能拆分为多个策略实例）
         """
         if pos.asset_type == AssetType.OPTION:
             return self._convert_option_position(pos, all_positions)
         elif pos.asset_type == AssetType.STOCK:
-            return self._convert_stock_position(pos)
+            stock_data = self._convert_stock_position(pos)
+            return [stock_data] if stock_data else []
         else:
             logger.debug(f"Skipping non-stock/option position: {pos.symbol}")
-            return None
+            return []
 
     def _convert_option_position(
         self,
         pos: AccountPosition,
         all_positions: list[AccountPosition],
-    ) -> PositionData:
+    ) -> list[PositionData]:
         """转换期权持仓
+
+        为每个策略实例创建单独的 PositionData。
+        例如 short call 可能拆分为 covered_call + naked_call。
 
         Args:
             pos: 期权持仓
             all_positions: 所有持仓
 
         Returns:
-            转换后的 PositionData
+            转换后的 PositionData 列表
         """
         # 基础字段
         dte = calc_dte_from_expiry(pos.expiry) if pos.expiry else None
+        underlying_symbol = pos.underlying or pos.symbol
 
         # 计算 moneyness
         moneyness = None
@@ -205,22 +214,140 @@ class MonitoringDataBridge:
                 abs(pos.quantity) * pos.contract_multiplier * pos.avg_cost
             )
 
-        position_data = PositionData(
+        # 计算 current_price (每股权利金)
+        current_price = 0.0
+        if pos.quantity != 0:
+            current_price = pos.market_value / (abs(pos.quantity) * pos.contract_multiplier)
+
+        # 创建策略实例（可能有多个，如 covered_call + naked_call）
+        try:
+            strategies = create_strategies_from_position(
+                position=pos,
+                all_positions=all_positions,
+                ibkr_provider=self._ibkr_provider,  # 传入 ibkr_provider 获取 HV 数据
+            )
+        except Exception as e:
+            logger.warning(f"Failed to create strategies for {pos.symbol}: {e}")
+            strategies = []
+
+        # 如果没有策略实例，返回基础 PositionData
+        if not strategies:
+            position_data = self._create_base_position_data(
+                pos, dte, moneyness, unrealized_pnl_pct, current_price
+            )
+            self._enrich_volatility(position_data, underlying_symbol)
+            self._enrich_technical(position_data, underlying_symbol)
+            self._enrich_fundamental(position_data, underlying_symbol)
+            return [position_data]
+
+        # 为每个策略实例创建 PositionData
+        result = []
+        for strategy_instance in strategies:
+            strategy = strategy_instance.strategy
+            ratio = strategy_instance.quantity_ratio
+            desc = strategy_instance.description
+
+            # 提取策略类型
+            strategy_type = desc.split("(")[0].strip()
+
+            # 创建 PositionData，数量按 ratio 计算
+            position_data = PositionData(
+                position_id=f"{pos.symbol}_{pos.strike}_{pos.expiry}_{strategy_type}",
+                symbol=pos.symbol,
+                asset_type="option",
+                quantity=ratio * pos.quantity,  # 按比例计算数量
+                entry_price=pos.avg_cost,
+                current_price=current_price,
+                market_value=pos.market_value * ratio,  # 按比例计算市值
+                unrealized_pnl=pos.unrealized_pnl * ratio,
+                unrealized_pnl_pct=unrealized_pnl_pct,
+                currency=pos.currency,
+                broker=pos.broker,
+                timestamp=pos.last_updated or datetime.now(),
+                # 期权专用字段
+                underlying=pos.underlying,
+                option_type=pos.option_type,
+                strike=pos.strike,
+                expiry=pos.expiry,
+                dte=dte,
+                contract_multiplier=pos.contract_multiplier,
+                moneyness=moneyness,
+                # Greeks (从 strategy.leg 获取，更准确)
+                delta=strategy.leg.delta if strategy.leg else pos.delta,
+                gamma=strategy.leg.gamma if strategy.leg else pos.gamma,
+                theta=strategy.leg.theta if strategy.leg else pos.theta,
+                vega=strategy.leg.vega if strategy.leg else pos.vega,
+                iv=pos.iv,
+                underlying_price=pos.underlying_price,
+                # 策略信息
+                strategy_type=strategy_type,
+                # HV from strategy params
+                hv=strategy.params.hv,
+            )
+
+            # 填充波动率数据
+            self._enrich_volatility(position_data, underlying_symbol)
+
+            # 填充技术面数据
+            self._enrich_technical(position_data, underlying_symbol)
+
+            # 填充基本面数据
+            self._enrich_fundamental(position_data, underlying_symbol)
+
+            # 填充策略指标
+            try:
+                metrics = strategy.calc_metrics()
+                position_data.prei = metrics.prei
+                position_data.tgr = metrics.tgr
+                position_data.sas = metrics.sas
+                position_data.roc = metrics.roc
+                position_data.expected_roc = metrics.expected_roc
+                position_data.sharpe = metrics.sharpe_ratio
+                position_data.kelly = metrics.kelly_fraction
+                position_data.win_probability = metrics.win_probability
+                position_data.expected_return = metrics.expected_return
+                position_data.max_profit = metrics.max_profit
+                position_data.max_loss = metrics.max_loss
+                position_data.breakeven = metrics.breakeven
+                position_data.return_std = metrics.return_std
+
+                # 资金相关指标
+                try:
+                    margin_per_contract = strategy.calc_margin_requirement()
+                    position_data.margin = margin_per_contract * ratio
+                    position_data.capital_at_risk = strategy._calc_capital_at_risk()
+                except Exception as margin_error:
+                    logger.debug(f"Could not calculate margin for {pos.symbol}: {margin_error}")
+
+            except Exception as e:
+                logger.warning(f"Failed to calc metrics for {pos.symbol} {strategy_type}: {e}")
+
+            result.append(position_data)
+
+        return result
+
+    def _create_base_position_data(
+        self,
+        pos: AccountPosition,
+        dte: int | None,
+        moneyness: float | None,
+        unrealized_pnl_pct: float,
+        current_price: float,
+    ) -> PositionData:
+        """创建基础 PositionData（无策略信息）"""
+        return PositionData(
             position_id=f"{pos.symbol}_{pos.strike}_{pos.expiry}",
             symbol=pos.symbol,
             asset_type="option",
             quantity=pos.quantity,
             entry_price=pos.avg_cost,
-            current_price=pos.market_value / (abs(pos.quantity) * pos.contract_multiplier)
-            if pos.quantity != 0
-            else 0,
+            current_price=current_price,
             market_value=pos.market_value,
             unrealized_pnl=pos.unrealized_pnl,
             unrealized_pnl_pct=unrealized_pnl_pct,
             currency=pos.currency,
             broker=pos.broker,
             timestamp=pos.last_updated or datetime.now(),
-            # 期权专用字段
             underlying=pos.underlying,
             option_type=pos.option_type,
             strike=pos.strike,
@@ -228,7 +355,6 @@ class MonitoringDataBridge:
             dte=dte,
             contract_multiplier=pos.contract_multiplier,
             moneyness=moneyness,
-            # Greeks
             delta=pos.delta,
             gamma=pos.gamma,
             theta=pos.theta,
@@ -236,23 +362,6 @@ class MonitoringDataBridge:
             iv=pos.iv,
             underlying_price=pos.underlying_price,
         )
-
-        # 获取 underlying symbol 用于查询缓存
-        underlying_symbol = pos.underlying or pos.symbol
-
-        # 填充波动率数据
-        self._enrich_volatility(position_data, underlying_symbol)
-
-        # 填充技术面数据
-        self._enrich_technical(position_data, underlying_symbol)
-
-        # 填充基本面数据（主要为了获取 beta）
-        self._enrich_fundamental(position_data, underlying_symbol)
-
-        # 填充策略指标
-        self._enrich_strategy_metrics(position_data, pos, all_positions)
-
-        return position_data
 
     def _convert_stock_position(self, pos: AccountPosition) -> PositionData:
         """转换股票持仓
@@ -377,61 +486,6 @@ class MonitoringDataBridge:
         # 从 FundamentalScore 提取字段
         pos.fundamental_score = fund_score.score
         pos.analyst_rating = fund_score.rating.value if fund_score.rating else None
-
-    def _enrich_strategy_metrics(
-        self,
-        pos: PositionData,
-        account_pos: AccountPosition,
-        all_positions: list[AccountPosition],
-    ) -> None:
-        """调用 strategy.calc_metrics() 填充策略指标
-
-        Args:
-            pos: 待填充的 PositionData
-            account_pos: 原始账户持仓
-            all_positions: 所有持仓
-        """
-        # 只处理期权
-        if account_pos.asset_type != AssetType.OPTION:
-            return
-
-        try:
-            # 创建策略实例
-            strategies = create_strategies_from_position(
-                position=account_pos,
-                all_positions=all_positions,
-                ibkr_provider=None,  # 不需要 provider，数据已在 account_pos 中
-            )
-
-            if not strategies:
-                return
-
-            # 取第一个策略（主策略）
-            strategy_instance = strategies[0]
-            strategy = strategy_instance.strategy
-
-            # 获取策略类型
-            pos.strategy_type = strategy.__class__.__name__.lower().replace(
-                "strategy", ""
-            )
-
-            # 调用 calc_metrics() 获取指标
-            metrics = strategy.calc_metrics()
-
-            # 从 StrategyMetrics 提取字段
-            pos.prei = metrics.prei
-            pos.tgr = metrics.tgr
-            pos.sas = metrics.sas
-            pos.roc = metrics.roc
-            pos.expected_roc = metrics.expected_roc
-            pos.sharpe = metrics.sharpe_ratio
-            pos.kelly = metrics.kelly_fraction
-            pos.win_probability = metrics.win_probability
-
-        except Exception as e:
-            logger.warning(
-                f"Failed to calculate strategy metrics for {pos.symbol}: {e}"
-            )
 
     def clear_cache(self) -> None:
         """清除所有缓存"""
