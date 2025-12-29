@@ -19,6 +19,7 @@ import click
 from src.business.monitoring.models import CapitalMetrics, PositionData
 from src.business.monitoring.pipeline import MonitoringPipeline
 from src.business.notification.dispatcher import MessageDispatcher
+from src.engine.account.metrics import calc_capital_metrics
 
 
 logger = logging.getLogger(__name__)
@@ -137,11 +138,7 @@ def monitor(
         elif positions:
             position_list = _load_positions(positions)
             capital_metrics = _load_capital(capital)
-        else:
-            # 默认使用示例数据
-            position_list = _load_positions(None)
-            capital_metrics = _load_capital(None)
-
+ 
         click.echo(f"📋 持仓数量: {len(position_list)}")
         click.echo()
 
@@ -253,8 +250,8 @@ def _load_from_account(
 
     click.echo(f"  转换后持仓: {len(position_list)} 个")
 
-    # 构造 CapitalMetrics
-    capital_metrics = _build_capital_metrics(portfolio)
+    # 调用 engine 层计算 CapitalMetrics
+    capital_metrics = calc_capital_metrics(portfolio)
 
     # 清理连接
     if ibkr:
@@ -269,35 +266,6 @@ def _load_from_account(
             pass
 
     return position_list, capital_metrics
-
-
-def _build_capital_metrics(portfolio) -> CapitalMetrics:
-    """从组合数据构造 CapitalMetrics"""
-    total_equity = portfolio.total_value_usd
-    total_pnl = portfolio.total_unrealized_pnl_usd
-
-    # 从 broker summaries 获取保证金信息
-    margin_used = 0.0
-    margin_available = 0.0
-    cash_balance = 0.0
-
-    for summary in portfolio.by_broker.values():
-        if summary.margin_used:
-            margin_used += summary.margin_used
-        if summary.margin_available:
-            margin_available += summary.margin_available
-        if summary.cash:
-            cash_balance += summary.cash
-
-    margin_usage = margin_used / (margin_used + margin_available) if (margin_used + margin_available) > 0 else 0
-
-    return CapitalMetrics(
-        total_equity=total_equity,
-        cash_balance=cash_balance,
-        maintenance_margin=margin_used,
-        margin_usage=margin_usage,
-        unrealized_pnl=total_pnl,
-    )
 
 
 def _load_positions(path: Optional[str]) -> list[PositionData]:
@@ -358,17 +326,17 @@ def _load_capital(path: Optional[str]) -> CapitalMetrics:
     # 返回示例数据
     return CapitalMetrics(
         total_equity=100000.0,
-        available_cash=50000.0,
-        margin_used=25000.0,
-        margin_available=75000.0,
+        cash_balance=50000.0,
+        maintenance_margin=25000.0,
+        margin_usage=0.25,
         unrealized_pnl=1500.0,
         realized_pnl=3000.0,
-        daily_pnl=200.0,
-        max_drawdown=0.05,
-        current_drawdown=0.02,
         sharpe_ratio=1.5,
-        kelly_fraction=0.15,
-        current_kelly_usage=0.10,
+        total_position_value=50000.0,
+        kelly_capacity=15000.0,
+        kelly_usage=0.67,  # 10000/15000
+        peak_equity=105000.0,
+        current_drawdown=0.048,  # (105000-100000)/105000
     )
 
 

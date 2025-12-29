@@ -5,6 +5,7 @@ This module provides calculations at the portfolio level:
 - Risk metrics (VaR, beta, concentration)
 - Return analysis (Sharpe, Sortino, drawdown, etc.)
 - Composite scores (PREI, SAS)
+- Unified metrics entry point (calc_portfolio_metrics)
 """
 
 from src.engine.portfolio.composite import calc_portfolio_prei, calc_portfolio_sas
@@ -33,6 +34,8 @@ from src.engine.portfolio.returns import (
     calc_var,
     calc_win_rate,
 )
+from src.engine.portfolio.metrics import calc_portfolio_metrics
+from src.engine.models.portfolio import PortfolioMetrics
 from src.engine.portfolio.risk_metrics import (
     calc_concentration_risk,
     calc_portfolio_beta,
@@ -41,6 +44,10 @@ from src.engine.portfolio.risk_metrics import (
 )
 
 __all__ = [
+    # Models
+    "PortfolioMetrics",
+    # Unified entry point
+    "calc_portfolio_metrics",
     # Greeks aggregation
     "calc_beta_weighted_delta",
     "calc_delta_dollars",

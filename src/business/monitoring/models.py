@@ -15,6 +15,8 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional
 
+from src.data.models.option import Greeks
+
 if TYPE_CHECKING:
     from src.business.monitoring.suggestions import PositionSuggestion
 
@@ -34,6 +36,7 @@ class AlertType(str, Enum):
     DELTA_EXPOSURE = "delta_exposure"  # Delta 风险敞口
     GAMMA_EXPOSURE = "gamma_exposure"  # Gamma 风险敞口
     VEGA_EXPOSURE = "vega_exposure"  # Vega 风险敞口
+    THETA_EXPOSURE = "theta_exposure"  # Theta 风险敞口
     TGR_LOW = "tgr_low"  # Theta/Gamma 比率过低
     CONCENTRATION = "concentration"  # 集中度过高
 
@@ -128,6 +131,9 @@ class PositionData:
     vega: Optional[float] = None
     iv: Optional[float] = None
 
+    # === Beta（用于 beta_weighted_delta 计算）===
+    beta: Optional[float] = None
+
     # === 标的价格（期权为 underlying 价格，股票为自身价格）===
     underlying_price: Optional[float] = None
 
@@ -175,59 +181,27 @@ class PositionData:
         """是否为股票持仓"""
         return self.asset_type == "stock"
 
+    @property
+    def greeks(self) -> Greeks:
+        """返回 Greeks 对象供 engine 层函数使用.
 
-@dataclass
-class PortfolioMetrics:
-    """组合级指标"""
-
-    # Beta 加权 Delta
-    beta_weighted_delta: Optional[float] = None
-
-    # 组合 Greeks
-    total_delta: Optional[float] = None
-    total_gamma: Optional[float] = None
-    total_theta: Optional[float] = None
-    total_vega: Optional[float] = None
-
-    # Theta/Gamma 比率
-    portfolio_tgr: Optional[float] = None
-
-    # 集中度
-    max_symbol_weight: Optional[float] = None
-    correlation_exposure: Optional[float] = None
-
-    # 时间戳
-    timestamp: datetime = field(default_factory=datetime.now)
+        使 PositionData 与 Position 接口兼容，可以直接传给
+        calc_portfolio_metrics 等 engine 层函数。
+        """
+        return Greeks(
+            delta=self.delta,
+            gamma=self.gamma,
+            theta=self.theta,
+            vega=self.vega,
+        )
 
 
-@dataclass
-class CapitalMetrics:
-    """资金级指标"""
+# Re-export from engine layer (Decision #0: calculation models belong in engine)
+from src.engine.models.capital import CapitalMetrics
+from src.engine.models.portfolio import PortfolioMetrics
 
-    # 账户权益
-    total_equity: Optional[float] = None
-    cash_balance: Optional[float] = None
-
-    # 保证金
-    maintenance_margin: Optional[float] = None
-    margin_usage: Optional[float] = None
-
-    # 收益指标
-    realized_pnl: Optional[float] = None
-    unrealized_pnl: Optional[float] = None
-    sharpe_ratio: Optional[float] = None
-
-    # Kelly 使用率
-    total_position_value: Optional[float] = None
-    kelly_capacity: Optional[float] = None
-    kelly_usage: Optional[float] = None
-
-    # 回撤
-    peak_equity: Optional[float] = None
-    current_drawdown: Optional[float] = None
-
-    # 时间戳
-    timestamp: datetime = field(default_factory=datetime.now)
+# Make re-exports available for backward compatibility
+__all_metrics__ = ["PortfolioMetrics", "CapitalMetrics"]
 
 
 @dataclass

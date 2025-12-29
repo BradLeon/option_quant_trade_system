@@ -5,7 +5,7 @@ Determines AlertLevel for various metrics based on configuration thresholds.
 
 from typing import Optional
 
-from src.business.config.monitoring_config import MonitoringConfig
+from src.business.config.monitoring_config import MonitoringConfig, ThresholdRange
 from src.business.monitoring.models import AlertLevel
 
 
@@ -13,7 +13,8 @@ class ThresholdChecker:
     """Threshold checker - determines AlertLevel for metrics.
 
     Uses monitoring configuration to check if metric values fall
-    within green/yellow/red ranges.
+    within green/yellow/red ranges. Uses a generic _check_range method
+    for consistent threshold checking across all metrics.
     """
 
     def __init__(self, config: Optional[MonitoringConfig] = None):
@@ -23,6 +24,37 @@ class ThresholdChecker:
             config: Monitoring configuration, uses defaults if None
         """
         self.config = config or MonitoringConfig.load()
+
+    def _check_range(self, value: float, threshold: ThresholdRange) -> AlertLevel:
+        """Generic threshold range checker.
+
+        Logic:
+        1. Check RED thresholds first (value exceeds red_above or below red_below)
+        2. Check GREEN range (value within green range)
+        3. Otherwise YELLOW (value outside green but not in red)
+
+        Args:
+            value: Current metric value
+            threshold: ThresholdRange configuration
+
+        Returns:
+            AlertLevel based on thresholds
+        """
+        # Check red thresholds first (highest priority)
+        if threshold.red_above is not None and value > threshold.red_above:
+            return AlertLevel.RED
+        if threshold.red_below is not None and value < threshold.red_below:
+            return AlertLevel.RED
+
+        # Check green range - if value is within green range, it's safe
+        if threshold.green:
+            low, high = threshold.green
+            # Handle infinity properly
+            if low <= value <= high or (high == float("inf") and value >= low):
+                return AlertLevel.GREEN
+
+        # Not in red, not in green -> yellow
+        return AlertLevel.YELLOW
 
     # ==================== Portfolio Level ====================
 
@@ -37,23 +69,7 @@ class ThresholdChecker:
         """
         if value is None:
             return AlertLevel.GREEN
-
-        threshold = self.config.portfolio.beta_weighted_delta
-
-        if threshold.red_above and value > threshold.red_above:
-            return AlertLevel.RED
-        if threshold.red_below and value < threshold.red_below:
-            return AlertLevel.RED
-        if threshold.yellow:
-            low, high = threshold.yellow
-            if value < low or value > high:
-                return AlertLevel.YELLOW
-        if threshold.green:
-            low, high = threshold.green
-            if low <= value <= high:
-                return AlertLevel.GREEN
-
-        return AlertLevel.GREEN
+        return self._check_range(value, self.config.portfolio.beta_weighted_delta)
 
     def check_theta(self, value: Optional[float]) -> AlertLevel:
         """Check portfolio theta threshold.
@@ -69,15 +85,7 @@ class ThresholdChecker:
         """
         if value is None:
             return AlertLevel.GREEN
-
-        # For theta, positive is good (selling premium)
-        if value >= 0:
-            return AlertLevel.GREEN
-        # Moderate negative theta
-        if value >= -100:
-            return AlertLevel.YELLOW
-        # Large negative theta
-        return AlertLevel.RED
+        return self._check_range(value, self.config.portfolio.portfolio_theta)
 
     def check_vega(self, value: Optional[float]) -> AlertLevel:
         """Check portfolio vega threshold.
@@ -90,23 +98,7 @@ class ThresholdChecker:
         """
         if value is None:
             return AlertLevel.GREEN
-
-        threshold = self.config.portfolio.portfolio_vega
-
-        if threshold.red_above and value > threshold.red_above:
-            return AlertLevel.RED
-        if threshold.red_below and value < threshold.red_below:
-            return AlertLevel.RED
-        if threshold.yellow:
-            low, high = threshold.yellow
-            if value < low or value > high:
-                return AlertLevel.YELLOW
-        if threshold.green:
-            low, high = threshold.green
-            if low <= value <= high:
-                return AlertLevel.GREEN
-
-        return AlertLevel.GREEN
+        return self._check_range(value, self.config.portfolio.portfolio_vega)
 
     def check_gamma(self, value: Optional[float]) -> AlertLevel:
         """Check portfolio gamma threshold.
@@ -121,21 +113,7 @@ class ThresholdChecker:
         """
         if value is None:
             return AlertLevel.GREEN
-
-        threshold = self.config.portfolio.portfolio_gamma
-
-        if threshold.red_below and value < threshold.red_below:
-            return AlertLevel.RED
-        if threshold.yellow:
-            low, high = threshold.yellow
-            if value < low:
-                return AlertLevel.YELLOW
-        if threshold.green:
-            low, high = threshold.green
-            if low <= value <= high:
-                return AlertLevel.GREEN
-
-        return AlertLevel.GREEN
+        return self._check_range(value, self.config.portfolio.portfolio_gamma)
 
     def check_tgr(self, value: Optional[float]) -> AlertLevel:
         """Check Theta/Gamma Ratio threshold.
@@ -150,15 +128,7 @@ class ThresholdChecker:
         """
         if value is None:
             return AlertLevel.GREEN
-
-        thresholds = self.config.portfolio
-
-        if value >= thresholds.tgr_green_above:
-            return AlertLevel.GREEN
-        if value < thresholds.tgr_red_below:
-            return AlertLevel.RED
-        # Between red and green is yellow
-        return AlertLevel.YELLOW
+        return self._check_range(value, self.config.portfolio.portfolio_tgr)
 
     def check_concentration(self, value: Optional[float]) -> AlertLevel:
         """Check concentration (HHI) threshold.
@@ -175,18 +145,7 @@ class ThresholdChecker:
         """
         if value is None:
             return AlertLevel.GREEN
-
-        # Use max_concentration threshold
-        max_conc = self.config.portfolio.max_concentration
-
-        # HHI > 0.5 means effectively < 2 positions
-        if value > 0.5:
-            return AlertLevel.RED
-        # HHI > 0.25 means effectively < 4 positions
-        if value > max_conc or value > 0.25:
-            return AlertLevel.YELLOW
-
-        return AlertLevel.GREEN
+        return self._check_range(value, self.config.portfolio.concentration_hhi)
 
     # ==================== Capital Level ====================
 

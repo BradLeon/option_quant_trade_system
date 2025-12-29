@@ -6,20 +6,23 @@ Capital Monitor - 资金级监控器
 - Kelly 使用率
 - 保证金使用率
 - 回撤
+
+设计原则：
+- 只做阈值检查，不做计算（遵循 Decision #0）
+- 所有指标由 engine/account 层计算
+- 接收预计算的 CapitalMetrics，只做规则判断
 """
 
 import logging
-from datetime import datetime
-from typing import Optional
 
-from src.business.config.monitoring_config import CapitalThresholds, MonitoringConfig
+from src.business.config.monitoring_config import MonitoringConfig
 from src.business.monitoring.models import (
     Alert,
     AlertLevel,
     AlertType,
-    CapitalMetrics,
     MonitorStatus,
 )
+from src.engine.models.capital import CapitalMetrics
 
 logger = logging.getLogger(__name__)
 
@@ -254,63 +257,3 @@ class CapitalMonitor:
             return MonitorStatus.YELLOW
         else:
             return MonitorStatus.GREEN
-
-
-def calc_capital_metrics(
-    total_equity: float,
-    cash_balance: float,
-    maintenance_margin: float,
-    realized_pnl: float,
-    unrealized_pnl: float,
-    sharpe_ratio: float | None = None,
-    total_position_value: float | None = None,
-    kelly_capacity: float | None = None,
-    peak_equity: float | None = None,
-) -> CapitalMetrics:
-    """计算资金指标的便捷函数
-
-    Args:
-        total_equity: 总权益
-        cash_balance: 现金余额
-        maintenance_margin: 维持保证金
-        realized_pnl: 已实现盈亏
-        unrealized_pnl: 未实现盈亏
-        sharpe_ratio: Sharpe 比率（可选）
-        total_position_value: 总持仓价值（可选）
-        kelly_capacity: Kelly 仓位容量（可选）
-        peak_equity: 峰值权益（可选）
-
-    Returns:
-        CapitalMetrics
-    """
-    # 计算保证金使用率
-    margin_usage = None
-    if total_equity > 0:
-        margin_usage = maintenance_margin / total_equity
-
-    # 计算 Kelly 使用率
-    kelly_usage = None
-    if kelly_capacity and kelly_capacity > 0 and total_position_value:
-        kelly_usage = total_position_value / kelly_capacity
-
-    # 计算回撤
-    current_drawdown = None
-    if peak_equity and peak_equity > 0:
-        current_drawdown = (peak_equity - total_equity) / peak_equity
-        current_drawdown = max(0, current_drawdown)  # 确保非负
-
-    return CapitalMetrics(
-        total_equity=total_equity,
-        cash_balance=cash_balance,
-        maintenance_margin=maintenance_margin,
-        margin_usage=margin_usage,
-        realized_pnl=realized_pnl,
-        unrealized_pnl=unrealized_pnl,
-        sharpe_ratio=sharpe_ratio,
-        total_position_value=total_position_value,
-        kelly_capacity=kelly_capacity,
-        kelly_usage=kelly_usage,
-        peak_equity=peak_equity,
-        current_drawdown=current_drawdown,
-        timestamp=datetime.now(),
-    )

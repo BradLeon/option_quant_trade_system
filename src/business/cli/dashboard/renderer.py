@@ -136,7 +136,7 @@ class DashboardRenderer:
 
         # Define metrics to display
         items = [
-            ("Delta", metrics.beta_weighted_delta, -300, 300, self.checker.check_delta),
+            ("Beta weighted Delta", metrics.beta_weighted_delta, -300, 300, self.checker.check_delta),
             ("Theta", metrics.total_theta, -200, 200, self.checker.check_theta),
             ("Vega", metrics.total_vega, -1500, 1500, self.checker.check_vega),
             ("Gamma", metrics.total_gamma, -50, 0, self.checker.check_gamma),

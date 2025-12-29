@@ -5,10 +5,13 @@ This module provides calculations at the account/fund level:
 - Position sizing (Kelly criterion)
 - Capital management (ROC)
 - Market sentiment (VIX, Trend, PCR)
+- Unified capital metrics entry point (calc_capital_metrics)
 """
 
 from src.engine.account.capital import calc_roc
 from src.engine.account.margin import calc_margin_utilization
+from src.engine.account.metrics import calc_capital_metrics
+from src.engine.models.capital import CapitalMetrics
 from src.engine.account.position_sizing import (
     calc_fractional_kelly,
     calc_half_kelly,
@@ -36,6 +39,10 @@ from src.engine.account.sentiment import (
 )
 
 __all__ = [
+    # Models
+    "CapitalMetrics",
+    # Unified entry point
+    "calc_capital_metrics",
     # Margin
     "calc_margin_utilization",
     # Position sizing

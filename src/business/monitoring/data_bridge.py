@@ -120,6 +120,8 @@ class MonitoringDataBridge:
             logger.debug("No data provider configured, skipping prefetch")
             return
 
+        logger.debug(f"_prefetch_data: Fetching data for symbols: {symbols}")
+
         for symbol in symbols:
             # Volatility data
             if symbol not in self._volatility_cache:
@@ -146,6 +148,9 @@ class MonitoringDataBridge:
                     fund = self._provider.get_fundamental(symbol)
                     if fund:
                         self._fundamental_cache[symbol] = fund
+                        logger.debug(f"_prefetch_data: Got fundamental for {symbol}, beta={fund.beta}")
+                    else:
+                        logger.debug(f"_prefetch_data: No fundamental returned for {symbol}")
                 except Exception as e:
                     logger.warning(f"Failed to get fundamental for {symbol}: {e}")
 
@@ -241,6 +246,9 @@ class MonitoringDataBridge:
         # 填充技术面数据
         self._enrich_technical(position_data, underlying_symbol)
 
+        # 填充基本面数据（主要为了获取 beta）
+        self._enrich_fundamental(position_data, underlying_symbol)
+
         # 填充策略指标
         self._enrich_strategy_metrics(position_data, pos, all_positions)
 
@@ -260,22 +268,33 @@ class MonitoringDataBridge:
         if pos.avg_cost and pos.avg_cost != 0:
             unrealized_pnl_pct = pos.unrealized_pnl / (pos.quantity * pos.avg_cost)
 
+        # 计算 current_price (每股价格)
+        current_price = 0.0
+        if pos.quantity != 0:
+            current_price = abs(pos.market_value / pos.quantity)
+
         position_data = PositionData(
             position_id=f"{pos.symbol}_stock",
             symbol=pos.symbol,
             asset_type="stock",
             quantity=pos.quantity,
             entry_price=pos.avg_cost,
-            current_price=pos.market_value / pos.quantity if pos.quantity != 0 else 0,
+            current_price=current_price,
             market_value=pos.market_value,
             unrealized_pnl=pos.unrealized_pnl,
             unrealized_pnl_pct=unrealized_pnl_pct,
             currency=pos.currency,
             broker=pos.broker,
             timestamp=pos.last_updated or datetime.now(),
-            # 股票的 delta 等于持仓数量
-            delta=pos.quantity,
-            underlying_price=pos.market_value / pos.quantity if pos.quantity != 0 else 0,
+            # 使用 AccountPosition 的值，与验证脚本保持一致
+            delta=pos.delta,
+            gamma=pos.gamma,
+            theta=pos.theta,
+            vega=pos.vega,
+            # 直接使用 IBKR 已计算好的 underlying_price，不要重新计算
+            underlying_price=pos.underlying_price,
+            # 使用 AccountPosition 的 contract_multiplier（股票默认为1）
+            contract_multiplier=pos.contract_multiplier,
         )
 
         # 填充波动率数据
@@ -345,13 +364,17 @@ class MonitoringDataBridge:
         """
         fund = self._fundamental_cache.get(symbol)
         if not fund:
+            logger.debug(f"_enrich_fundamental: No fundamental data cached for {symbol}")
             return
 
         # 调用统一出口算子
         fund_score = evaluate_fundamentals(fund)
 
-        # 从 FundamentalScore 提取字段
+        # 从 Fundamental 提取字段
         pos.pe_ratio = fund.pe_ratio
+        pos.beta = fund.beta  # 用于 beta_weighted_delta 计算
+        logger.debug(f"_enrich_fundamental: {symbol} beta={fund.beta}")
+        # 从 FundamentalScore 提取字段
         pos.fundamental_score = fund_score.score
         pos.analyst_rating = fund_score.rating.value if fund_score.rating else None
 

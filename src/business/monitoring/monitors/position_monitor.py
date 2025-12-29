@@ -73,6 +73,7 @@ class PositionMonitor:
 
     def _evaluate_position(self, pos: PositionData) -> list[Alert]:
         """评估单个持仓"""
+        # TODO, 这个代码是理想状态，比较简洁，其他两个monitor要改造成这个样子。
         alerts: list[Alert] = []
 
         # 检查 Moneyness

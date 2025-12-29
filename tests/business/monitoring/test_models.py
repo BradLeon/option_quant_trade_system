@@ -115,11 +115,13 @@ class TestPositionData:
             strike=180.0,
             expiry="2025-01-17",
             underlying_price=185.0,
+            # moneyness is now pre-calculated by DataBridge, not computed property
+            moneyness=0.0278,  # (S-K)/K = (185-180)/180
         )
-        # (S-K)/K = (185-180)/180 = 0.0278
         assert pos.moneyness == pytest.approx(0.0278, rel=0.01)
 
     def test_iv_hv_ratio_property(self):
+        """Test that iv_hv_ratio is a pre-filled field (by DataBridge)"""
         pos = PositionData(
             position_id="pos-001",
             symbol="AAPL250117P180",
@@ -132,8 +134,9 @@ class TestPositionData:
             expiry="2025-01-17",
             iv=0.30,
             hv=0.25,
+            # iv_hv_ratio is now pre-calculated by DataBridge
+            iv_hv_ratio=1.2,  # IV/HV = 0.30/0.25
         )
-        # IV/HV = 0.30/0.25 = 1.2
         assert pos.iv_hv_ratio == pytest.approx(1.2, rel=0.01)
 
 
@@ -167,11 +170,12 @@ class TestPortfolioMetrics:
             total_gamma=0.08,
             total_theta=0.25,
             total_vega=-0.50,
-            max_symbol_weight=0.35,
+            concentration_hhi=0.35,  # Changed from max_symbol_weight
             portfolio_tgr=1.2,
         )
         assert pm.beta_weighted_delta == 0.15
         assert pm.portfolio_tgr == 1.2
+        assert pm.concentration_hhi == 0.35
 
 
 class TestMonitorResult:

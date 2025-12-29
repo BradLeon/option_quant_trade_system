@@ -29,6 +29,7 @@ from src.business.monitoring.monitors.capital_monitor import CapitalMonitor
 from src.business.monitoring.monitors.portfolio_monitor import PortfolioMonitor
 from src.business.monitoring.monitors.position_monitor import PositionMonitor
 from src.business.monitoring.suggestions import SuggestionGenerator
+from src.engine.portfolio.metrics import calc_portfolio_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,6 @@ class MonitoringPipeline:
         self,
         positions: list[PositionData],
         capital_metrics: Optional[CapitalMetrics] = None,
-        spy_beta_map: Optional[dict[str, float]] = None,
         vix: Optional[float] = None,
         market_sentiment: Optional[dict] = None,
     ) -> MonitorResult:
@@ -96,10 +96,35 @@ class MonitoringPipeline:
         # 1. Portfolio 级监控
         if positions:
             logger.info("Step 1: 执行组合级监控...")
-            portfolio_alerts, portfolio_metrics = self.portfolio_monitor.evaluate(
-                positions,
-                spy_beta_map,
-            )
+
+            # DEBUG: 打印每个持仓的关键字段
+            logger.debug("=" * 60)
+            logger.debug("Position Details for calc_portfolio_metrics:")
+            for pos in positions:
+                asset_type = "OPT" if pos.is_option else "STK"
+                logger.debug(
+                    f"  {pos.symbol[:25]:<25} {asset_type} qty={pos.quantity:>6.0f} "
+                    f"delta={pos.delta} gamma={pos.gamma} theta={pos.theta} vega={pos.vega} "
+                    f"mult={pos.contract_multiplier} und_price={pos.underlying_price} beta={pos.beta}"
+                )
+            logger.debug("=" * 60)
+
+            # 调用 engine 层计算组合指标
+            # PositionData 已具备 greeks 和 beta 属性，可直接传入
+            portfolio_metrics = calc_portfolio_metrics(positions)  # type: ignore[arg-type]
+
+            # DEBUG: 打印计算结果
+            logger.debug(f"calc_portfolio_metrics result:")
+            logger.debug(f"  total_delta={portfolio_metrics.total_delta}")
+            logger.debug(f"  beta_weighted_delta={portfolio_metrics.beta_weighted_delta}")
+            logger.debug(f"  total_gamma={portfolio_metrics.total_gamma}")
+            logger.debug(f"  total_theta={portfolio_metrics.total_theta}")
+            logger.debug(f"  total_vega={portfolio_metrics.total_vega}")
+            logger.debug(f"  portfolio_tgr={portfolio_metrics.portfolio_tgr}")
+            logger.debug(f"  concentration_hhi={portfolio_metrics.concentration_hhi}")
+
+            # 将计算好的指标传给 monitor 做阈值检查
+            portfolio_alerts = self.portfolio_monitor.evaluate(portfolio_metrics)
             all_alerts.extend(portfolio_alerts)
             logger.info(f"组合级预警: {len(portfolio_alerts)} 个")
 
@@ -175,18 +200,18 @@ class MonitoringPipeline:
     def run_portfolio_only(
         self,
         positions: list[PositionData],
-        spy_beta_map: Optional[dict[str, float]] = None,
     ) -> tuple[list[Alert], PortfolioMetrics]:
         """仅执行组合级监控
 
         Args:
             positions: 持仓数据列表
-            spy_beta_map: Beta 映射表
 
         Returns:
             (预警列表, 组合指标)
         """
-        return self.portfolio_monitor.evaluate(positions, spy_beta_map)
+        portfolio_metrics = calc_portfolio_metrics(positions)  # type: ignore[arg-type]
+        alerts = self.portfolio_monitor.evaluate(portfolio_metrics)
+        return alerts, portfolio_metrics
 
     def run_position_only(
         self,

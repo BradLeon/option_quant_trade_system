@@ -43,6 +43,7 @@ from src.engine.portfolio.greeks_agg import (
     calc_portfolio_theta,
     calc_portfolio_vega,
     calc_delta_dollars,
+    calc_beta_weighted_delta,
     summarize_portfolio_greeks,
 )
 from src.engine.portfolio.risk_metrics import (
@@ -170,6 +171,7 @@ def print_portfolio_greeks(positions: list[Position]) -> None:
     total_gamma = calc_portfolio_gamma(positions)
     total_theta = calc_portfolio_theta(positions)
     total_vega = calc_portfolio_vega(positions)
+    
 
     print(f"\n{'Metric':<25} {'Value':>15} {'Description'}")
     print("-" * 70)
@@ -189,6 +191,36 @@ def print_portfolio_greeks(positions: list[Position]) -> None:
     print(f"{'Gamma Dollars':<25} ${total_gamma:>14,.2f} {'Delta$ change per 1% move (=portfolio_gamma)'}")
     print(f"{'Theta (USD)':<25} ${total_theta:>14,.2f} {'Daily time decay (USD)'}")
     print(f"{'Vega (USD)':<25} ${total_vega:>14,.2f} {'$ change per 1% IV move'}")
+
+    # Beta-Weighted Delta
+    bwd = calc_beta_weighted_delta(positions)
+    print(f"\n{'Advanced Metrics':<25} {'Value':>15} {'Description'}")
+    print("-" * 70)
+    if bwd is not None:
+        print(f"{'Beta-Weighted Delta':<25} {bwd:>15.2f} {'SPY-equivalent shares'}")
+    else:
+        print(f"{'Beta-Weighted Delta':<25} {'N/A':>15} {'Missing beta or SPY price'}")
+
+    # Portfolio TGR
+    tgr = calc_portfolio_tgr(positions)
+    if tgr is not None:
+        interpretation = "Good" if tgr > 0.5 else "Low" if tgr > 0.15 else "Poor"
+        print(f"{'Portfolio TGR':<25} {tgr:>15.4f} {'Theta/Gamma ratio (' + interpretation + ')'}")
+    else:
+        print(f"{'Portfolio TGR':<25} {'N/A':>15} {'Insufficient gamma data'}")
+
+    # Concentration Risk (HHI)
+    hhi = calc_concentration_risk(positions)
+    if hhi is not None:
+        if hhi < 0.15:
+            interpretation = "Well diversified"
+        elif hhi < 0.25:
+            interpretation = "Moderate"
+        else:
+            interpretation = "Concentrated"
+        print(f"{'Concentration HHI':<25} {hhi:>15.4f} {interpretation}")
+    else:
+        print(f"{'Concentration HHI':<25} {'N/A':>15} {'Insufficient data'}")
 
     # Summary using summarize function
     print("\n[Greeks Summary via summarize_portfolio_greeks()]")

@@ -1,6 +1,6 @@
 # 持仓监控阈值配置
 
-# 组合级监控阈值
+# 组合级监控阈值（统一使用 ThresholdRange 格式）
 portfolio_level:
   beta_weighted_delta:
     green: [-100, 100]            # 正常区间
@@ -8,9 +8,24 @@ portfolio_level:
     red_above: 300                # 风险上限
     red_below: -300               # 风险下限
     hysteresis: 20                # 迟滞值，防止状态抖动
+    alert_type: DELTA_EXPOSURE
+    red_above_message: "Beta 加权 Delta 过高: {value:.0f} > {threshold}"
+    red_below_message: "Beta 加权 Delta 过低: {value:.0f} < {threshold}"
+    yellow_message: "Beta 加权 Delta 偏离中性: {value:.0f}"
+    red_above_action: "减少多头 Delta 暴露或对冲"
+    red_below_action: "减少空头 Delta 暴露或对冲"
+    yellow_action: "关注 Delta 暴露变化"
 
   portfolio_theta:
-    min_positive: 0               # 净卖方应为正值
+    green: [0, .inf]              # Theta 正值为好（卖方策略）
+    yellow: [-50, 0]
+    red_below: -100
+    hysteresis: 10
+    alert_type: THETA_EXPOSURE
+    red_below_message: "组合 Theta 为负: {value:.0f}，时间衰减不利"
+    yellow_message: "组合 Theta 偏低: {value:.0f}"
+    red_below_action: "减少买方头寸或增加卖方头寸"
+    yellow_action: "关注时间衰减效率"
 
   portfolio_vega:
     green: [-500, 500]
@@ -18,20 +33,54 @@ portfolio_level:
     red_above: 1500
     red_below: -1500
     hysteresis: 100
+    alert_type: VEGA_EXPOSURE
+    red_above_message: "组合 Vega 暴露过高: {value:.0f} > {threshold}"
+    red_below_message: "组合 Vega 暴露过低: {value:.0f} < {threshold}"
+    yellow_message: "组合 Vega 暴露偏大: {value:.0f}"
+    red_above_action: "减少 Vega 暴露，考虑平仓部分头寸"
+    red_below_action: "Vega 空头过大，波动率上升风险高"
+    yellow_action: "关注波动率风险"
 
   portfolio_gamma:
     green: [-30, 0]               # 卖方 Gamma 为负
-    yellow: [-50, 0]
+    yellow: [-50, -30]
     red_below: -50
     hysteresis: 5
+    alert_type: GAMMA_EXPOSURE
+    red_below_message: "组合 Gamma 空头过大: {value:.0f} < {threshold}"
+    yellow_message: "组合 Gamma 空头偏大: {value:.0f}"
+    red_below_action: "Gamma 空头风险高，大幅波动时亏损加速"
+    yellow_action: "关注 Gamma 风险"
 
-  tgr:                            # Theta/Gamma 比率
-    green_above: 0.15             # 健康
-    yellow_range: [0.05, 0.15]    # 关注
+  portfolio_tgr:                  # Theta/Gamma 比率
+    green: [0.15, .inf]           # 健康
+    yellow: [0.05, 0.15]          # 关注
     red_below: 0.05               # 风险
+    hysteresis: 0.01
+    alert_type: TGR_LOW
+    red_below_message: "组合 TGR 过低: {value:.3f} < {threshold}"
+    yellow_message: "组合 TGR 偏低: {value:.3f}"
+    red_below_action: "时间衰减效率不足，考虑调整持仓"
+    yellow_action: "关注时间衰减效率"
 
+  concentration_hhi:              # 集中度 (Herfindahl-Hirschman Index)
+    green: [0, 0.25]              # 分散良好
+    yellow: [0.25, 0.5]           # 偏集中
+    red_above: 0.5                # 高集中度
+    hysteresis: 0.05
+    alert_type: CONCENTRATION
+    red_above_message: "持仓集中度过高 (HHI={value:.2f} > {threshold})"
+    yellow_message: "持仓集中度偏高 (HHI={value:.2f})"
+    red_above_action: "分散持仓，降低单一标的风险"
+    yellow_action: "关注集中度变化"
+
+  # 保留旧字段用于向后兼容（deprecated）
+  tgr:
+    green_above: 0.15
+    yellow_range: [0.05, 0.15]
+    red_below: 0.05
   correlation:
-    max_concentration: 1.5        # 相关性加权 Delta / 简单 Delta 上限
+    max_concentration: 0.5
 
 # 持仓级监控阈值
 position_level:

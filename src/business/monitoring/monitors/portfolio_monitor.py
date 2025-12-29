@@ -3,25 +3,29 @@ Portfolio Monitor - 组合级监控器
 
 监控组合级风险指标：
 - Beta 加权 Delta
+- 组合 Theta 暴露
 - 组合 Vega 暴露
 - 组合 Gamma 暴露
 - Theta/Gamma 比率 (TGR)
-- 集中度风险
+- 集中度风险 (HHI)
+
+设计原则：
+- 只做阈值检查，不做计算（遵循 Decision #0）
+- 所有指标由 engine/portfolio 层计算
+- 接收预计算的 PortfolioMetrics，只做规则判断
+- 使用通用 _check_threshold 函数，消息和建议从配置中读取
 """
 
 import logging
-from datetime import datetime
-from typing import Optional
 
-from src.business.config.monitoring_config import MonitoringConfig, PortfolioThresholds
+from src.business.config.monitoring_config import MonitoringConfig, ThresholdRange
 from src.business.monitoring.models import (
     Alert,
     AlertLevel,
     AlertType,
     MonitorStatus,
-    PortfolioMetrics,
-    PositionData,
 )
+from src.engine.models.portfolio import PortfolioMetrics
 
 logger = logging.getLogger(__name__)
 
@@ -31,10 +35,11 @@ class PortfolioMonitor:
 
     监控组合层面的风险指标：
     1. Beta 加权 Delta - 市场风险敞口
-    2. 组合 Vega - 波动率风险
-    3. 组合 Gamma - 凸性风险
-    4. TGR - 时间衰减效率
-    5. 集中度 - 单一标的风险
+    2. 组合 Theta - 时间衰减收益
+    3. 组合 Vega - 波动率风险
+    4. 组合 Gamma - 凸性风险
+    5. TGR - 时间衰减效率
+    6. 集中度 (HHI) - 单一标的风险
     """
 
     def __init__(self, config: MonitoringConfig) -> None:
@@ -46,303 +51,136 @@ class PortfolioMonitor:
         self.config = config
         self.thresholds = config.portfolio
 
-    def evaluate(
-        self,
-        positions: list[PositionData],
-        spy_beta_map: Optional[dict[str, float]] = None,
-    ) -> tuple[list[Alert], PortfolioMetrics]:
+    def evaluate(self, metrics: PortfolioMetrics) -> list[Alert]:
         """评估组合风险
 
+        只做阈值检查，不做计算。所有指标由 engine 层预计算。
+        使用通用 _check_threshold 函数，消息和建议从配置中读取。
+
         Args:
-            positions: 持仓数据列表
-            spy_beta_map: 标的对 SPY 的 Beta 映射表
+            metrics: 由 engine/portfolio 层预计算的组合指标
 
         Returns:
-            (预警列表, 组合指标)
+            预警列表
         """
         alerts: list[Alert] = []
 
-        if not positions:
-            return alerts, PortfolioMetrics()
-
-        # 计算组合指标
-        metrics = self._calc_portfolio_metrics(positions, spy_beta_map)
-
         # 检查 Beta 加权 Delta
-        alerts.extend(self._check_beta_weighted_delta(metrics))
+        alerts.extend(self._check_threshold(
+            value=metrics.beta_weighted_delta,
+            threshold=self.thresholds.beta_weighted_delta,
+            metric_name="beta_weighted_delta",
+        ))
+
+        # 检查组合 Theta
+        alerts.extend(self._check_threshold(
+            value=metrics.total_theta,
+            threshold=self.thresholds.portfolio_theta,
+            metric_name="portfolio_theta",
+        ))
 
         # 检查组合 Vega
-        alerts.extend(self._check_portfolio_vega(metrics))
+        alerts.extend(self._check_threshold(
+            value=metrics.total_vega,
+            threshold=self.thresholds.portfolio_vega,
+            metric_name="portfolio_vega",
+        ))
 
         # 检查组合 Gamma
-        alerts.extend(self._check_portfolio_gamma(metrics))
+        alerts.extend(self._check_threshold(
+            value=metrics.total_gamma,
+            threshold=self.thresholds.portfolio_gamma,
+            metric_name="portfolio_gamma",
+        ))
 
         # 检查 TGR
-        alerts.extend(self._check_portfolio_tgr(metrics))
+        alerts.extend(self._check_threshold(
+            value=metrics.portfolio_tgr,
+            threshold=self.thresholds.portfolio_tgr,
+            metric_name="portfolio_tgr",
+        ))
 
-        # 检查集中度
-        alerts.extend(self._check_concentration(positions, metrics))
+        # 检查集中度 (HHI)
+        alerts.extend(self._check_threshold(
+            value=metrics.concentration_hhi,
+            threshold=self.thresholds.concentration_hhi,
+            metric_name="concentration_hhi",
+        ))
 
-        return alerts, metrics
+        return alerts
 
-    def _calc_portfolio_metrics(
+    def _check_threshold(
         self,
-        positions: list[PositionData],
-        spy_beta_map: Optional[dict[str, float]],
-    ) -> PortfolioMetrics:
-        """计算组合指标"""
-        total_delta = 0.0
-        total_gamma = 0.0
-        total_theta = 0.0
-        total_vega = 0.0
-        beta_weighted_delta = 0.0
-
-        for pos in positions:
-            qty = pos.quantity
-            multiplier = 100  # 期权合约乘数
-
-            if pos.delta is not None:
-                delta_exposure = pos.delta * qty * multiplier
-                total_delta += delta_exposure
-
-                # Beta 加权 Delta
-                beta = 1.0
-                if spy_beta_map and pos.underlying in spy_beta_map:
-                    beta = spy_beta_map[pos.underlying]
-                beta_weighted_delta += delta_exposure * beta
-
-            if pos.gamma is not None:
-                total_gamma += pos.gamma * qty * multiplier
-
-            if pos.theta is not None:
-                total_theta += pos.theta * qty * multiplier
-
-            if pos.vega is not None:
-                total_vega += pos.vega * qty * multiplier
-
-        # 计算组合 TGR
-        portfolio_tgr = None
-        if total_gamma != 0:
-            portfolio_tgr = abs(total_theta) / abs(total_gamma)
-
-        # 计算最大集中度
-        symbol_exposure: dict[str, float] = {}
-        for pos in positions:
-            underlying = pos.underlying
-            if pos.delta is not None:
-                exposure = abs(pos.delta * pos.quantity * 100)
-                symbol_exposure[underlying] = symbol_exposure.get(underlying, 0) + exposure
-
-        max_weight = 0.0
-        if symbol_exposure and total_delta != 0:
-            max_exposure = max(symbol_exposure.values())
-            max_weight = max_exposure / abs(total_delta) if total_delta != 0 else 0
-
-        return PortfolioMetrics(
-            beta_weighted_delta=beta_weighted_delta,
-            total_delta=total_delta,
-            total_gamma=total_gamma,
-            total_theta=total_theta,
-            total_vega=total_vega,
-            portfolio_tgr=portfolio_tgr,
-            max_symbol_weight=max_weight,
-            timestamp=datetime.now(),
-        )
-
-    def _check_beta_weighted_delta(
-        self,
-        metrics: PortfolioMetrics,
+        value: float | None,
+        threshold: ThresholdRange,
+        metric_name: str,
     ) -> list[Alert]:
-        """检查 Beta 加权 Delta"""
-        alerts: list[Alert] = []
-        value = metrics.beta_weighted_delta
+        """通用阈值检查函数
 
+        根据 ThresholdRange 配置检查值是否超出阈值，
+        消息和建议操作从配置中读取。
+
+        Args:
+            value: 当前指标值
+            threshold: 阈值配置（含消息模板）
+            metric_name: 指标名称（用于日志）
+
+        Returns:
+            预警列表
+        """
         if value is None:
-            return alerts
+            return []
 
-        threshold = self.thresholds.beta_weighted_delta
+        alerts: list[Alert] = []
 
-        if threshold.red_above and value > threshold.red_above:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.DELTA_EXPOSURE,
-                    level=AlertLevel.RED,
-                    message=f"Beta 加权 Delta 过高: {value:.0f} > {threshold.red_above}",
-                    current_value=value,
-                    threshold_value=threshold.red_above,
-                    suggested_action="减少多头 Delta 暴露或对冲",
-                )
-            )
-        elif threshold.red_below and value < threshold.red_below:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.DELTA_EXPOSURE,
-                    level=AlertLevel.RED,
-                    message=f"Beta 加权 Delta 过低: {value:.0f} < {threshold.red_below}",
-                    current_value=value,
-                    threshold_value=threshold.red_below,
-                    suggested_action="减少空头 Delta 暴露或对冲",
-                )
-            )
-        elif threshold.yellow:
+        # 获取 AlertType
+        try:
+            alert_type = AlertType[threshold.alert_type] if threshold.alert_type else AlertType.DELTA_EXPOSURE
+        except KeyError:
+            logger.warning(f"Unknown alert_type: {threshold.alert_type}, using DELTA_EXPOSURE")
+            alert_type = AlertType.DELTA_EXPOSURE
+
+        # 检查红色上限
+        if threshold.red_above is not None and value > threshold.red_above:
+            message = threshold.red_above_message.format(value=value, threshold=threshold.red_above) \
+                if threshold.red_above_message else f"{metric_name} 过高: {value:.2f} > {threshold.red_above}"
+            alerts.append(Alert(
+                alert_type=alert_type,
+                level=AlertLevel.RED,
+                message=message,
+                current_value=value,
+                threshold_value=threshold.red_above,
+                suggested_action=threshold.red_above_action or None,
+            ))
+            return alerts  # RED 优先，不再检查其他
+
+        # 检查红色下限
+        if threshold.red_below is not None and value < threshold.red_below:
+            message = threshold.red_below_message.format(value=value, threshold=threshold.red_below) \
+                if threshold.red_below_message else f"{metric_name} 过低: {value:.2f} < {threshold.red_below}"
+            alerts.append(Alert(
+                alert_type=alert_type,
+                level=AlertLevel.RED,
+                message=message,
+                current_value=value,
+                threshold_value=threshold.red_below,
+                suggested_action=threshold.red_below_action or None,
+            ))
+            return alerts  # RED 优先，不再检查其他
+
+        # 检查黄色范围
+        if threshold.yellow:
             yellow_low, yellow_high = threshold.yellow
             if value < yellow_low or value > yellow_high:
-                alerts.append(
-                    Alert(
-                        alert_type=AlertType.DELTA_EXPOSURE,
-                        level=AlertLevel.YELLOW,
-                        message=f"Beta 加权 Delta 偏离中性: {value:.0f}",
-                        current_value=value,
-                        suggested_action="关注 Delta 暴露变化",
-                    )
-                )
-
-        return alerts
-
-    def _check_portfolio_vega(
-        self,
-        metrics: PortfolioMetrics,
-    ) -> list[Alert]:
-        """检查组合 Vega"""
-        alerts: list[Alert] = []
-        value = metrics.total_vega
-
-        if value is None:
-            return alerts
-
-        threshold = self.thresholds.portfolio_vega
-
-        if threshold.red_above and value > threshold.red_above:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.VEGA_EXPOSURE,
-                    level=AlertLevel.RED,
-                    message=f"组合 Vega 暴露过高: {value:.0f} > {threshold.red_above}",
-                    current_value=value,
-                    threshold_value=threshold.red_above,
-                    suggested_action="减少 Vega 暴露，考虑平仓部分头寸",
-                )
-            )
-        elif threshold.red_below and value < threshold.red_below:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.VEGA_EXPOSURE,
-                    level=AlertLevel.RED,
-                    message=f"组合 Vega 暴露过低: {value:.0f} < {threshold.red_below}",
-                    current_value=value,
-                    threshold_value=threshold.red_below,
-                    suggested_action="Vega 空头过大，波动率上升风险高",
-                )
-            )
-
-        return alerts
-
-    def _check_portfolio_gamma(
-        self,
-        metrics: PortfolioMetrics,
-    ) -> list[Alert]:
-        """检查组合 Gamma"""
-        alerts: list[Alert] = []
-        value = metrics.total_gamma
-
-        if value is None:
-            return alerts
-
-        threshold = self.thresholds.portfolio_gamma
-
-        if threshold.red_below and value < threshold.red_below:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.GAMMA_EXPOSURE,
-                    level=AlertLevel.RED,
-                    message=f"组合 Gamma 空头过大: {value:.0f} < {threshold.red_below}",
-                    current_value=value,
-                    threshold_value=threshold.red_below,
-                    suggested_action="Gamma 空头风险高，大幅波动时亏损加速",
-                )
-            )
-        elif threshold.yellow:
-            yellow_low, yellow_high = threshold.yellow
-            if value < yellow_low:
-                alerts.append(
-                    Alert(
-                        alert_type=AlertType.GAMMA_EXPOSURE,
-                        level=AlertLevel.YELLOW,
-                        message=f"组合 Gamma 空头偏大: {value:.0f}",
-                        current_value=value,
-                        suggested_action="关注 Gamma 风险",
-                    )
-                )
-
-        return alerts
-
-    def _check_portfolio_tgr(
-        self,
-        metrics: PortfolioMetrics,
-    ) -> list[Alert]:
-        """检查组合 TGR"""
-        alerts: list[Alert] = []
-        value = metrics.portfolio_tgr
-
-        if value is None:
-            return alerts
-
-        if value < self.thresholds.tgr_red_below:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.TGR_LOW,
-                    level=AlertLevel.RED,
-                    message=f"组合 TGR 过低: {value:.3f} < {self.thresholds.tgr_red_below}",
-                    current_value=value,
-                    threshold_value=self.thresholds.tgr_red_below,
-                    suggested_action="时间衰减效率不足，考虑调整持仓",
-                )
-            )
-        elif value < self.thresholds.tgr_yellow_range[1]:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.TGR_LOW,
+                message = threshold.yellow_message.format(value=value) \
+                    if threshold.yellow_message else f"{metric_name} 偏离正常范围: {value:.2f}"
+                alerts.append(Alert(
+                    alert_type=alert_type,
                     level=AlertLevel.YELLOW,
-                    message=f"组合 TGR 偏低: {value:.3f}",
+                    message=message,
                     current_value=value,
-                    suggested_action="关注时间衰减效率",
-                )
-            )
-        elif value >= self.thresholds.tgr_green_above:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.TGR_LOW,
-                    level=AlertLevel.GREEN,
-                    message=f"组合 TGR 良好: {value:.3f}",
-                    current_value=value,
-                    suggested_action="时间衰减效率良好",
-                )
-            )
-
-        return alerts
-
-    def _check_concentration(
-        self,
-        positions: list[PositionData],
-        metrics: PortfolioMetrics,
-    ) -> list[Alert]:
-        """检查集中度"""
-        alerts: list[Alert] = []
-
-        if metrics.max_symbol_weight is None:
-            return alerts
-
-        if metrics.max_symbol_weight > self.thresholds.max_concentration:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.CONCENTRATION,
-                    level=AlertLevel.YELLOW,
-                    message=f"单一标的集中度过高: {metrics.max_symbol_weight:.1%}",
-                    current_value=metrics.max_symbol_weight,
-                    threshold_value=self.thresholds.max_concentration,
-                    suggested_action="分散持仓，降低单一标的风险",
-                )
-            )
+                    suggested_action=threshold.yellow_action or None,
+                ))
 
         return alerts
 

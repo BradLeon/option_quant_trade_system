@@ -52,8 +52,8 @@ class TestMonitorModels:
             strike=180.0,
             expiry="2025-01-17",
             underlying_price=200.0,  # 远离 strike
+            moneyness=0.111,  # (S-K)/K = (200-180)/180, pre-calculated by DataBridge
         )
-        # (S-K)/K = (200-180)/180 = 0.111
         assert pos.moneyness > 0  # OTM put
 
     def test_position_moneyness_itm(self):
@@ -69,8 +69,8 @@ class TestMonitorModels:
             strike=180.0,
             expiry="2025-01-17",
             underlying_price=170.0,  # 低于 strike
+            moneyness=-0.0556,  # (S-K)/K = (170-180)/180, pre-calculated by DataBridge
         )
-        # (S-K)/K = (170-180)/180 = -0.0556
         assert pos.moneyness < 0  # ITM put
 
     def test_create_capital_metrics(self):
