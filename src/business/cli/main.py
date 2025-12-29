@@ -9,6 +9,7 @@ import click
 from src.business.cli.commands.screen import screen
 from src.business.cli.commands.monitor import monitor
 from src.business.cli.commands.notify import notify
+from src.business.cli.commands.dashboard import dashboard
 
 
 @click.group()
@@ -25,6 +26,7 @@ def cli() -> None:
 cli.add_command(screen)
 cli.add_command(monitor)
 cli.add_command(notify)
+cli.add_command(dashboard)
 
 
 if __name__ == "__main__":

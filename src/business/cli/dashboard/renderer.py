@@ -1,0 +1,465 @@
+"""Dashboard renderer for CLI.
+
+Renders the monitoring dashboard with multiple panels:
+- Portfolio Health (Greeks, TGR, HHI)
+- Capital Management (Sharpe, Kelly, Margin, Drawdown)
+- Risk Heatmap (PREI/SAS by symbol)
+- Todo List (Suggestions)
+- Option Positions Table
+- Stock Positions Table
+"""
+
+from datetime import datetime
+from typing import Optional
+
+from src.business.config.monitoring_config import MonitoringConfig
+from src.business.monitoring.models import (
+    Alert,
+    AlertLevel,
+    CapitalMetrics,
+    MonitorResult,
+    PortfolioMetrics,
+    PositionData,
+)
+from src.business.monitoring.suggestions import PositionSuggestion, UrgencyLevel
+from src.business.cli.dashboard.components import (
+    alert_icon,
+    box_bottom,
+    box_line,
+    box_title,
+    format_pct,
+    progress_bar,
+    side_by_side,
+    table_header,
+    table_row,
+    table_separator,
+    urgency_icon,
+)
+from src.business.cli.dashboard.threshold_checker import ThresholdChecker
+
+
+class DashboardRenderer:
+    """Dashboard renderer for terminal output."""
+
+    def __init__(self, config: Optional[MonitoringConfig] = None):
+        """Initialize renderer.
+
+        Args:
+            config: Monitoring configuration for thresholds
+        """
+        self.config = config or MonitoringConfig.load()
+        self.checker = ThresholdChecker(self.config)
+
+    def render(self, result: MonitorResult) -> str:
+        """Render complete dashboard.
+
+        Args:
+            result: MonitorResult from monitoring pipeline
+
+        Returns:
+            Formatted dashboard string
+        """
+        lines = []
+
+        # Title
+        title = "实时监控仪表盘"
+        timestamp = result.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+        lines.append(f"{'═' * 90}")
+        lines.append(f"  {title}  |  {timestamp}  |  状态: {alert_icon(self._status_to_level(result.status))}")
+        lines.append(f"{'═' * 90}")
+        lines.append("")
+
+        # Row 1: Portfolio Health + Capital Management (side by side)
+        portfolio_panel = self._render_portfolio_health(result.portfolio_metrics)
+        capital_panel = self._render_capital_panel(result.capital_metrics)
+        combined = side_by_side(portfolio_panel, capital_panel, gap=4)
+        lines.extend(combined)
+        lines.append("")
+
+        # Row 2: Risk Heatmap + Todo List (side by side)
+        option_positions = [p for p in result.positions if p.is_option]
+        heatmap_panel = self._render_risk_heatmap(option_positions)
+        todo_panel = self._render_todo_panel(result.suggestions)
+        combined = side_by_side(heatmap_panel, todo_panel, gap=4)
+        lines.extend(combined)
+        lines.append("")
+
+        # Row 3: Option Positions Table
+        if option_positions:
+            lines.extend(self._render_option_table(option_positions, result.alerts))
+            lines.append("")
+
+        # Row 4: Stock Positions Table
+        stock_positions = [p for p in result.positions if p.is_stock]
+        if stock_positions:
+            lines.extend(self._render_stock_table(stock_positions, result.alerts))
+            lines.append("")
+
+        # Footer summary
+        lines.append(f"{'─' * 90}")
+        lines.append(
+            f"  总持仓: {result.total_positions} | "
+            f"风险持仓: {result.positions_at_risk} | "
+            f"机会持仓: {result.positions_opportunity} | "
+            f"预警: 🔴{len(result.red_alerts)} 🟡{len(result.yellow_alerts)} 🟢{len(result.green_alerts)}"
+        )
+        lines.append(f"{'═' * 90}")
+
+        return "\n".join(lines)
+
+    def _status_to_level(self, status) -> AlertLevel:
+        """Convert MonitorStatus to AlertLevel."""
+        from src.business.monitoring.models import MonitorStatus
+        mapping = {
+            MonitorStatus.RED: AlertLevel.RED,
+            MonitorStatus.YELLOW: AlertLevel.YELLOW,
+            MonitorStatus.GREEN: AlertLevel.GREEN,
+        }
+        return mapping.get(status, AlertLevel.GREEN)
+
+    def _render_portfolio_health(self, metrics: Optional[PortfolioMetrics]) -> list[str]:
+        """Render Portfolio Health panel.
+
+        Args:
+            metrics: PortfolioMetrics from monitoring result
+
+        Returns:
+            List of panel lines
+        """
+        width = 42
+        lines = [box_title("Portfolio健康度", width)]
+
+        if metrics is None:
+            lines.append(box_line("无数据", width))
+            lines.append(box_bottom(width))
+            return lines
+
+        # Define metrics to display
+        items = [
+            ("Delta", metrics.beta_weighted_delta, -300, 300, self.checker.check_delta),
+            ("Theta", metrics.total_theta, -200, 200, self.checker.check_theta),
+            ("Vega", metrics.total_vega, -1500, 1500, self.checker.check_vega),
+            ("Gamma", metrics.total_gamma, -50, 0, self.checker.check_gamma),
+            ("TGR", metrics.portfolio_tgr, 0, 0.3, self.checker.check_tgr),
+            ("HHI", metrics.concentration_hhi, 0, 1, self.checker.check_concentration),
+        ]
+
+        for name, value, min_v, max_v, check_fn in items:
+            if value is not None:
+                if name in ("TGR", "HHI"):
+                    val_str = f"{value:.2f}"
+                else:
+                    val_str = f"{value:+.0f}"
+                bar = progress_bar(abs(value), 0, max(abs(min_v), abs(max_v)), 10)
+                level = check_fn(value)
+                icon = alert_icon(level)
+                content = f"{name:6}: {val_str:>6} {bar} {icon}"
+            else:
+                content = f"{name:6}:      - [──────────] ⚪"
+            lines.append(box_line(content, width))
+
+        lines.append(box_bottom(width))
+        return lines
+
+    def _render_capital_panel(self, metrics: Optional[CapitalMetrics]) -> list[str]:
+        """Render Capital Management panel.
+
+        Args:
+            metrics: CapitalMetrics from monitoring result
+
+        Returns:
+            List of panel lines
+        """
+        width = 42
+        lines = [box_title("资金管理", width)]
+
+        if metrics is None:
+            lines.append(box_line("无数据", width))
+            lines.append(box_bottom(width))
+            return lines
+
+        # Sharpe Ratio
+        if metrics.sharpe_ratio is not None:
+            level = self.checker.check_sharpe(metrics.sharpe_ratio)
+            content = f"Sharpe Ratio: {metrics.sharpe_ratio:>6.2f}  {alert_icon(level)}"
+        else:
+            content = "Sharpe Ratio:      -"
+        lines.append(box_line(content, width))
+
+        # Kelly Optimal (just display, calculated externally)
+        if metrics.kelly_capacity is not None:
+            content = f"Kelly Optimal: {metrics.kelly_capacity:>5.1%}"
+        else:
+            content = "Kelly Optimal:      -"
+        lines.append(box_line(content, width))
+
+        # Kelly Usage
+        if metrics.kelly_usage is not None:
+            level = self.checker.check_kelly_usage(metrics.kelly_usage)
+            content = f"Current Usage: {metrics.kelly_usage:>5.1%}  {alert_icon(level)}"
+        else:
+            content = "Current Usage:      -"
+        lines.append(box_line(content, width))
+
+        # Margin Usage
+        if metrics.margin_usage is not None:
+            level = self.checker.check_margin_usage(metrics.margin_usage)
+            content = f"Margin Usage: {metrics.margin_usage:>6.1%}  {alert_icon(level)}"
+        else:
+            content = "Margin Usage:      -"
+        lines.append(box_line(content, width))
+
+        # Drawdown
+        if metrics.current_drawdown is not None:
+            level = self.checker.check_drawdown(metrics.current_drawdown)
+            content = f"Drawdown: {metrics.current_drawdown:>10.1%}  {alert_icon(level)}"
+        else:
+            content = "Drawdown:          -"
+        lines.append(box_line(content, width))
+
+        lines.append(box_bottom(width))
+        return lines
+
+    def _render_risk_heatmap(self, positions: list[PositionData]) -> list[str]:
+        """Render Risk Heatmap panel.
+
+        Shows PREI and SAS scores by symbol with alert indicators.
+
+        Args:
+            positions: List of option positions
+
+        Returns:
+            List of panel lines
+        """
+        width = 42
+        lines = [box_title("风险热力图", width)]
+
+        if not positions:
+            lines.append(box_line("无期权持仓", width))
+            lines.append(box_bottom(width))
+            return lines
+
+        # Get unique symbols
+        symbols = []
+        for p in positions:
+            sym = p.underlying or p.symbol
+            if sym not in symbols:
+                symbols.append(sym)
+
+        # Limit to 6 symbols for display
+        symbols = symbols[:6]
+
+        # Header row with symbols
+        header = "      " + "".join(f"{s:>6}" for s in symbols)
+        lines.append(box_line(header, width))
+
+        # PREI row
+        prei_vals = []
+        for sym in symbols:
+            pos = next((p for p in positions if (p.underlying or p.symbol) == sym), None)
+            if pos and pos.prei is not None:
+                level = self.checker.check_prei(pos.prei)
+                icon = alert_icon(level) if level == AlertLevel.RED else ""
+                prei_vals.append(f"{pos.prei:>4.0f}{icon}")
+            else:
+                prei_vals.append("   -")
+        prei_line = "PREI  " + "".join(f"{v:>6}" for v in prei_vals)
+        lines.append(box_line(prei_line, width))
+
+        # SAS row
+        sas_vals = []
+        for sym in symbols:
+            pos = next((p for p in positions if (p.underlying or p.symbol) == sym), None)
+            if pos and pos.sas is not None:
+                level = self.checker.check_sas(pos.sas)
+                icon = alert_icon(level) if level == AlertLevel.GREEN else ""
+                sas_vals.append(f"{pos.sas:>4.0f}{icon}")
+            else:
+                sas_vals.append("   -")
+        sas_line = "SAS   " + "".join(f"{v:>6}" for v in sas_vals)
+        lines.append(box_line(sas_line, width))
+
+        lines.append(box_bottom(width))
+        return lines
+
+    def _render_todo_panel(self, suggestions: list[PositionSuggestion]) -> list[str]:
+        """Render Today's Todo panel.
+
+        Shows top suggestions sorted by urgency.
+
+        Args:
+            suggestions: List of position suggestions
+
+        Returns:
+            List of panel lines
+        """
+        width = 42
+        lines = [box_title("今日待办", width)]
+
+        if not suggestions:
+            lines.append(box_line("暂无待办事项", width))
+            lines.append(box_bottom(width))
+            return lines
+
+        # Sort by urgency
+        urgency_order = {UrgencyLevel.IMMEDIATE: 0, UrgencyLevel.SOON: 1, UrgencyLevel.MONITOR: 2}
+        sorted_suggestions = sorted(suggestions, key=lambda s: urgency_order.get(s.urgency, 3))
+
+        # Show top 5 items
+        for s in sorted_suggestions[:5]:
+            icon = urgency_icon(s.urgency.value)
+            # Truncate reason if too long
+            reason = s.reason[:28] if len(s.reason) > 28 else s.reason
+            content = f"{icon} [{s.symbol}] {reason}"
+            lines.append(box_line(content, width))
+
+        # Pad to minimum height
+        while len(lines) < 6:
+            lines.append(box_line("", width))
+
+        lines.append(box_bottom(width))
+        return lines
+
+    def _render_option_table(self, positions: list[PositionData], alerts: list[Alert]) -> list[str]:
+        """Render Option Positions table.
+
+        Args:
+            positions: List of option positions
+            alerts: List of alerts to check for position status
+
+        Returns:
+            List of table lines
+        """
+        lines = []
+        lines.append("┌─── 期权持仓明细 " + "─" * 72 + "┐")
+
+        # Define columns: (name, width)
+        columns = [
+            ("标的", 6),
+            ("类型", 4),
+            ("行权价", 6),
+            ("DTE", 4),
+            ("Delta", 6),
+            ("Gamma", 5),
+            ("Theta", 6),
+            ("Vega", 5),
+            ("TGR", 5),
+            ("ROC", 5),
+            ("PREI", 5),
+            ("SAS", 4),
+            ("状态", 4),
+        ]
+
+        lines.append(table_header(columns))
+        lines.append(table_separator(columns))
+
+        for pos in positions:
+            # Calculate position-level Greeks (multiplied by quantity and contract_multiplier)
+            mult = pos.contract_multiplier or 100
+            qty = pos.quantity or 0
+
+            delta_val = f"{(pos.delta or 0) * qty * mult:+.0f}" if pos.delta else "-"
+            gamma_val = f"{(pos.gamma or 0) * qty * mult:.0f}" if pos.gamma else "-"
+            theta_val = f"{(pos.theta or 0) * qty * mult:+.0f}" if pos.theta else "-"
+            vega_val = f"{(pos.vega or 0) * qty * mult:.0f}" if pos.vega else "-"
+            tgr_val = f"{pos.tgr:.2f}" if pos.tgr is not None else "-"
+            roc_val = f"{pos.roc * 100:.0f}%" if pos.roc is not None else "-"
+            prei_val = f"{pos.prei:.0f}" if pos.prei is not None else "-"
+            sas_val = f"{pos.sas:.0f}" if pos.sas is not None else "-"
+
+            # Determine overall status
+            level = self.checker.get_position_overall_level(pos.prei, pos.dte, pos.tgr)
+            status_icon = alert_icon(level) if level else ""
+
+            values = [
+                pos.underlying or pos.symbol[:6],
+                (pos.option_type or "-")[:4].capitalize(),
+                f"{pos.strike:.0f}" if pos.strike else "-",
+                str(pos.dte) if pos.dte is not None else "-",
+                delta_val,
+                gamma_val,
+                theta_val,
+                vega_val,
+                tgr_val,
+                roc_val,
+                prei_val,
+                sas_val,
+                status_icon,
+            ]
+
+            lines.append(table_row(values, columns))
+
+        lines.append("└" + "─" * 89 + "┘")
+        return lines
+
+    def _render_stock_table(self, positions: list[PositionData], alerts: list[Alert]) -> list[str]:
+        """Render Stock Positions table.
+
+        Args:
+            positions: List of stock positions
+            alerts: List of alerts to check for position status
+
+        Returns:
+            List of table lines
+        """
+        lines = []
+        lines.append("┌─── 股票持仓明细 " + "─" * 72 + "┐")
+
+        # Define columns: (name, width)
+        columns = [
+            ("标的", 6),
+            ("数量", 6),
+            ("成本", 7),
+            ("现价", 7),
+            ("盈亏%", 6),
+            ("Delta", 6),
+            ("RSI", 4),
+            ("趋势", 4),
+            ("支撑", 7),
+            ("阻力", 7),
+            ("基本面", 6),
+            ("状态", 4),
+        ]
+
+        lines.append(table_header(columns))
+        lines.append(table_separator(columns))
+
+        for pos in positions:
+            pnl_pct = f"{pos.unrealized_pnl_pct * 100:+.1f}%" if pos.unrealized_pnl_pct else "-"
+            delta_val = f"{pos.quantity:.0f}" if pos.quantity else "-"
+            rsi_val = f"{pos.rsi:.0f}" if pos.rsi is not None else "-"
+            trend_val = (pos.trend_signal or "-")[:4]
+            support_val = f"{pos.support:.1f}" if pos.support else "-"
+            resist_val = f"{pos.resistance:.1f}" if pos.resistance else "-"
+            fund_val = f"{pos.fundamental_score:.1f}" if pos.fundamental_score is not None else "-"
+
+            # Simple status based on P&L
+            if pos.unrealized_pnl_pct is not None:
+                if pos.unrealized_pnl_pct > 0.05:
+                    status_icon = alert_icon(AlertLevel.GREEN)
+                elif pos.unrealized_pnl_pct < -0.05:
+                    status_icon = alert_icon(AlertLevel.RED)
+                else:
+                    status_icon = ""
+            else:
+                status_icon = ""
+
+            values = [
+                pos.symbol[:6],
+                f"{pos.quantity:.0f}" if pos.quantity else "-",
+                f"{pos.entry_price:.1f}" if pos.entry_price else "-",
+                f"{pos.current_price:.1f}" if pos.current_price else "-",
+                pnl_pct,
+                delta_val,
+                rsi_val,
+                trend_val,
+                support_val,
+                resist_val,
+                fund_val,
+                status_icon,
+            ]
+
+            lines.append(table_row(values, columns))
+
+        lines.append("└" + "─" * 89 + "┘")
+        return lines
