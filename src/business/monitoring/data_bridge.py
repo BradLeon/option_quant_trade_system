@@ -202,10 +202,20 @@ class MonitoringDataBridge:
         dte = calc_dte_from_expiry(pos.expiry) if pos.expiry else None
         underlying_symbol = pos.underlying or pos.symbol
 
-        # 计算 moneyness
+        # 计算 moneyness (旧公式，保留兼容)
         moneyness = None
         if pos.underlying_price and pos.strike:
             moneyness = (pos.underlying_price - pos.strike) / pos.strike
+
+        # 计算 otm_pct (新统一公式)
+        # Put: OTM% = (S-K)/S (正值表示 OTM)
+        # Call: OTM% = (K-S)/S (正值表示 OTM)
+        otm_pct = None
+        if pos.underlying_price and pos.strike and pos.underlying_price > 0:
+            if pos.option_type == "put":
+                otm_pct = (pos.underlying_price - pos.strike) / pos.underlying_price
+            elif pos.option_type == "call":
+                otm_pct = (pos.strike - pos.underlying_price) / pos.underlying_price
 
         # 计算 PnL%
         unrealized_pnl_pct = 0.0
@@ -233,7 +243,7 @@ class MonitoringDataBridge:
         # 如果没有策略实例，返回基础 PositionData
         if not strategies:
             position_data = self._create_base_position_data(
-                pos, dte, moneyness, unrealized_pnl_pct, current_price
+                pos, dte, moneyness, otm_pct, unrealized_pnl_pct, current_price
             )
             self._enrich_volatility(position_data, underlying_symbol)
             self._enrich_technical(position_data, underlying_symbol)
@@ -273,6 +283,7 @@ class MonitoringDataBridge:
                 dte=dte,
                 contract_multiplier=pos.contract_multiplier,
                 moneyness=moneyness,
+                otm_pct=otm_pct,  # 新增: 统一 OTM% 公式
                 # Greeks (从 strategy.leg 获取，更准确)
                 delta=strategy.leg.delta if strategy.leg else pos.delta,
                 gamma=strategy.leg.gamma if strategy.leg else pos.gamma,
@@ -320,6 +331,11 @@ class MonitoringDataBridge:
                     margin_per_contract = strategy.calc_margin_requirement()
                     position_data.margin = margin_per_contract * ratio
                     position_data.capital_at_risk = strategy._calc_capital_at_risk()
+
+                    # 计算 gamma_risk_pct: |Gamma| / Margin
+                    # 只有当 margin > 0 时才计算
+                    if position_data.margin and position_data.margin > 0 and position_data.gamma:
+                        position_data.gamma_risk_pct = abs(position_data.gamma) / position_data.margin
                 except Exception as margin_error:
                     logger.debug(f"Could not calculate margin for {pos.symbol}: {margin_error}")
 
@@ -335,6 +351,7 @@ class MonitoringDataBridge:
         pos: AccountPosition,
         dte: int | None,
         moneyness: float | None,
+        otm_pct: float | None,
         unrealized_pnl_pct: float,
         current_price: float,
     ) -> PositionData:
@@ -359,6 +376,7 @@ class MonitoringDataBridge:
             dte=dte,
             contract_multiplier=pos.contract_multiplier,
             moneyness=moneyness,
+            otm_pct=otm_pct,  # 新增: 统一 OTM% 公式
             delta=pos.delta,
             gamma=pos.gamma,
             theta=pos.theta,

@@ -235,108 +235,153 @@ class ThresholdChecker:
         """Check Sharpe Ratio threshold.
 
         Higher Sharpe is better.
+        Uses unified ThresholdRange configuration.
 
         Args:
             value: Sharpe ratio value
 
         Returns:
-            AlertLevel
+            AlertLevel based on thresholds
         """
         if value is None:
             return AlertLevel.GREEN
-
-        thresholds = self.config.capital
-
-        if value >= thresholds.sharpe_green_above:
-            return AlertLevel.GREEN
-        if value < thresholds.sharpe_red_below:
-            return AlertLevel.RED
-
-        return AlertLevel.YELLOW
+        return self._check_range(value, self.config.capital.sharpe)
 
     def check_kelly_usage(self, value: Optional[float]) -> AlertLevel:
         """Check Kelly usage threshold.
 
         Optimal Kelly usage is 0.5-1.0.
-        Below 0.5 is opportunity (green with different meaning).
-        Above 1.0 is over-leveraged (red).
+        Uses unified ThresholdRange configuration.
 
         Args:
             value: Kelly usage ratio
 
         Returns:
-            AlertLevel
+            AlertLevel based on thresholds
         """
         if value is None:
             return AlertLevel.GREEN
-
-        thresholds = self.config.capital
-
-        if value > thresholds.kelly_usage_red_above:
-            return AlertLevel.RED
-        if value < thresholds.kelly_usage_opportunity_below:
-            # Below optimal range - opportunity to add
-            return AlertLevel.GREEN
-        green_low, green_high = thresholds.kelly_usage_green_range
-        if green_low <= value <= green_high:
-            return AlertLevel.GREEN
-
-        return AlertLevel.YELLOW
+        return self._check_range(value, self.config.capital.kelly_usage)
 
     def check_margin_usage(self, value: Optional[float]) -> AlertLevel:
         """Check margin usage threshold.
 
         Lower margin usage is safer.
+        Uses unified ThresholdRange configuration.
 
         Args:
             value: Margin usage ratio (0-1)
 
         Returns:
-            AlertLevel
+            AlertLevel based on thresholds
         """
         if value is None:
             return AlertLevel.GREEN
-
-        thresholds = self.config.capital
-
-        if value > thresholds.margin_red_above:
-            return AlertLevel.RED
-        if value > thresholds.margin_warning_above:
-            return AlertLevel.YELLOW
-        if value < thresholds.margin_green_below:
-            return AlertLevel.GREEN
-
-        return AlertLevel.YELLOW
+        return self._check_range(value, self.config.capital.margin_usage)
 
     def check_drawdown(self, value: Optional[float]) -> AlertLevel:
         """Check drawdown threshold.
 
         Lower drawdown is better.
+        Uses unified ThresholdRange configuration.
 
         Args:
             value: Current drawdown ratio (0-1)
+
+        Returns:
+            AlertLevel based on thresholds
+        """
+        if value is None:
+            return AlertLevel.GREEN
+        return self._check_range(value, self.config.capital.drawdown)
+
+    # ==================== Position Level ====================
+
+    def check_otm_pct(self, value: Optional[float]) -> AlertLevel:
+        """Check OTM% (Out of The Money Percentage) threshold.
+
+        Unified formula: Put=(S-K)/S, Call=(K-S)/S
+        Higher OTM% is safer for short options.
+        ≥10% green, <5% red.
+
+        Args:
+            value: OTM percentage as decimal
 
         Returns:
             AlertLevel
         """
         if value is None:
             return AlertLevel.GREEN
+        return self._check_range(value, self.config.position.otm_pct)
 
-        thresholds = self.config.capital
+    def check_gamma_risk_pct(self, value: Optional[float]) -> AlertLevel:
+        """Check Gamma Risk% (Gamma/Margin) threshold.
 
-        if value > thresholds.max_drawdown_red_pct:
-            return AlertLevel.RED
-        if value > thresholds.max_drawdown_warning_pct:
-            return AlertLevel.YELLOW
+        Measures gamma risk relative to margin requirement.
+        ≤0.5% green, >1% red.
 
-        return AlertLevel.GREEN
+        Args:
+            value: Gamma/Margin ratio as decimal
 
-    # ==================== Position Level ====================
+        Returns:
+            AlertLevel
+        """
+        if value is None:
+            return AlertLevel.GREEN
+        return self._check_range(value, self.config.position.gamma_risk_pct)
+
+    def check_expected_roc(self, value: Optional[float]) -> AlertLevel:
+        """Check Expected ROC threshold.
+
+        Expected return on capital based on probability analysis.
+        ≥10% green, <0% red.
+
+        Args:
+            value: Expected ROC as decimal
+
+        Returns:
+            AlertLevel
+        """
+        if value is None:
+            return AlertLevel.GREEN
+        return self._check_range(value, self.config.position.expected_roc)
+
+    def check_win_probability(self, value: Optional[float]) -> AlertLevel:
+        """Check Win Probability threshold.
+
+        Probability of the option expiring worthless (for short positions).
+        ≥70% green, <55% red.
+
+        Args:
+            value: Win probability as decimal (0-1)
+
+        Returns:
+            AlertLevel
+        """
+        if value is None:
+            return AlertLevel.GREEN
+        return self._check_range(value, self.config.position.win_probability)
+
+    def check_position_pnl(self, value: Optional[float]) -> AlertLevel:
+        """Check position P&L% threshold.
+
+        ≥50% green (take profit), <0% red (stop loss).
+
+        Args:
+            value: Unrealized P&L percentage as decimal
+
+        Returns:
+            AlertLevel
+        """
+        if value is None:
+            return AlertLevel.GREEN
+        return self._check_range(value, self.config.position.pnl)
 
     def check_prei(self, value: Optional[float]) -> AlertLevel:
         """Check PREI (Position Risk Exposure Index) threshold.
 
         Lower PREI is better (less risk per unit return).
+        Uses unified ThresholdRange configuration.
 
         Args:
             value: PREI value
@@ -346,20 +391,13 @@ class ThresholdChecker:
         """
         if value is None:
             return AlertLevel.GREEN
-
-        thresholds = self.config.position
-
-        if value > thresholds.prei_red_above:
-            return AlertLevel.RED
-        if value < thresholds.prei_green_below:
-            return AlertLevel.GREEN
-
-        return AlertLevel.YELLOW
+        return self._check_range(value, self.config.position.prei)
 
     def check_sas(self, value: Optional[float]) -> AlertLevel:
         """Check SAS (Strategy Assessment Score) threshold.
 
         Higher SAS is better.
+        Uses unified ThresholdRange configuration.
 
         Args:
             value: SAS score
@@ -369,20 +407,12 @@ class ThresholdChecker:
         """
         if value is None:
             return AlertLevel.GREEN
-
-        # SAS scoring: higher is better
-        # Green > 80, Yellow 60-80, Red < 60
-        if value >= 80:
-            return AlertLevel.GREEN
-        if value < 60:
-            return AlertLevel.RED
-
-        return AlertLevel.YELLOW
+        return self._check_range(value, self.config.position.sas)
 
     def check_position_tgr(self, value: Optional[float]) -> AlertLevel:
         """Check position-level TGR threshold.
 
-        Uses same thresholds as portfolio TGR.
+        Uses position-level ThresholdRange configuration.
 
         Args:
             value: Position TGR value
@@ -390,12 +420,15 @@ class ThresholdChecker:
         Returns:
             AlertLevel
         """
-        return self.check_tgr(value)
+        if value is None:
+            return AlertLevel.GREEN
+        return self._check_range(value, self.config.position.tgr)
 
     def check_dte(self, value: Optional[int]) -> AlertLevel:
         """Check DTE (Days to Expiration) threshold.
 
         Lower DTE means closer to expiration, higher risk.
+        Uses unified ThresholdRange configuration.
 
         Args:
             value: Days to expiration
@@ -405,20 +438,13 @@ class ThresholdChecker:
         """
         if value is None:
             return AlertLevel.GREEN
-
-        thresholds = self.config.position
-
-        if value <= thresholds.dte_urgent_days:
-            return AlertLevel.RED
-        if value <= thresholds.dte_warning_days:
-            return AlertLevel.YELLOW
-
-        return AlertLevel.GREEN
+        return self._check_range(float(value), self.config.position.dte)
 
     def check_roc(self, value: Optional[float]) -> AlertLevel:
         """Check ROC (Return on Capital) threshold.
 
         Higher ROC is better.
+        Uses unified ThresholdRange configuration.
 
         Args:
             value: ROC as decimal (0.28 = 28%)
@@ -428,38 +454,96 @@ class ThresholdChecker:
         """
         if value is None:
             return AlertLevel.GREEN
+        return self._check_range(value, self.config.position.roc)
 
-        # ROC > 30% is excellent
-        if value >= 0.30:
+    def check_position_delta(self, value: Optional[float]) -> AlertLevel:
+        """Check position-level delta threshold.
+
+        Uses position-level ThresholdRange configuration.
+
+        Args:
+            value: Position delta value (absolute)
+
+        Returns:
+            AlertLevel
+        """
+        if value is None:
             return AlertLevel.GREEN
-        # ROC < 10% is concerning
-        if value < 0.10:
-            return AlertLevel.RED
+        return self._check_range(abs(value), self.config.position.delta)
 
-        return AlertLevel.YELLOW
+    def check_position_gamma(self, value: Optional[float]) -> AlertLevel:
+        """Check position-level gamma threshold.
+
+        Uses position-level ThresholdRange configuration.
+
+        Args:
+            value: Position gamma value (absolute)
+
+        Returns:
+            AlertLevel
+        """
+        if value is None:
+            return AlertLevel.GREEN
+        return self._check_range(abs(value), self.config.position.gamma)
+
+    def check_position_iv_hv(self, value: Optional[float]) -> AlertLevel:
+        """Check position-level IV/HV ratio threshold.
+
+        Uses position-level ThresholdRange configuration.
+
+        Args:
+            value: IV/HV ratio
+
+        Returns:
+            AlertLevel
+        """
+        if value is None:
+            return AlertLevel.GREEN
+        return self._check_range(value, self.config.position.iv_hv)
 
     def get_position_overall_level(
         self,
-        prei: Optional[float],
-        dte: Optional[int],
-        tgr: Optional[float],
+        prei: Optional[float] = None,
+        dte: Optional[int] = None,
+        tgr: Optional[float] = None,
+        otm_pct: Optional[float] = None,
+        delta: Optional[float] = None,
+        expected_roc: Optional[float] = None,
+        win_probability: Optional[float] = None,
     ) -> Optional[AlertLevel]:
         """Determine overall alert level for a position.
 
         Returns the most severe alert level among key metrics.
         Returns None if no alerts (all green).
 
+        Checks the most critical metrics:
+        - OTM% (core risk indicator)
+        - |Delta| (directional risk)
+        - DTE (time to expiration)
+        - Expected ROC (expected return)
+        - Win Probability (probability of profit)
+        - PREI (risk exposure)
+        - TGR (theta/gamma efficiency)
+
         Args:
             prei: PREI value
             dte: Days to expiration
             tgr: Position TGR
+            otm_pct: OTM percentage
+            delta: Position delta (absolute value will be used)
+            expected_roc: Expected ROC
+            win_probability: Win probability
 
         Returns:
             Most severe AlertLevel, or None if all green
         """
         levels = [
-            self.check_prei(prei),
+            self.check_otm_pct(otm_pct),
+            self.check_position_delta(delta),
             self.check_dte(dte),
+            self.check_expected_roc(expected_roc),
+            self.check_win_probability(win_probability),
+            self.check_prei(prei),
             self.check_position_tgr(tgr),
         ]
 

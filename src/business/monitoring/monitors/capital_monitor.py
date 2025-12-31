@@ -11,11 +11,12 @@ Capital Monitor - 资金级监控器
 - 只做阈值检查，不做计算（遵循 Decision #0）
 - 所有指标由 engine/account 层计算
 - 接收预计算的 CapitalMetrics，只做规则判断
+- 使用通用 _check_threshold() 函数，消息和建议从配置中读取
 """
 
 import logging
 
-from src.business.config.monitoring_config import MonitoringConfig
+from src.business.config.monitoring_config import MonitoringConfig, ThresholdRange
 from src.business.monitoring.models import (
     Alert,
     AlertLevel,
@@ -35,6 +36,8 @@ class CapitalMonitor:
     2. Kelly 使用率 - 仓位是否合理
     3. 保证金使用率 - 杠杆风险
     4. 回撤 - 最大回撤控制
+
+    使用通用 _check_threshold() 方法，消息和建议从配置读取。
     """
 
     def __init__(self, config: MonitoringConfig) -> None:
@@ -52,6 +55,9 @@ class CapitalMonitor:
     ) -> list[Alert]:
         """评估资金风险
 
+        使用通用 _check_threshold() 方法进行阈值检查，
+        消息和建议从 ThresholdRange 配置读取。
+
         Args:
             metrics: 资金指标
 
@@ -61,191 +67,120 @@ class CapitalMonitor:
         alerts: list[Alert] = []
 
         # 检查 Sharpe Ratio
-        alerts.extend(self._check_sharpe_ratio(metrics))
+        alerts.extend(self._check_threshold(
+            value=metrics.sharpe_ratio,
+            threshold=self.thresholds.sharpe,
+            metric_name="sharpe_ratio",
+        ))
 
         # 检查 Kelly 使用率
-        alerts.extend(self._check_kelly_usage(metrics))
+        alerts.extend(self._check_threshold(
+            value=metrics.kelly_usage,
+            threshold=self.thresholds.kelly_usage,
+            metric_name="kelly_usage",
+        ))
 
         # 检查保证金使用率
-        alerts.extend(self._check_margin_usage(metrics))
+        alerts.extend(self._check_threshold(
+            value=metrics.margin_usage,
+            threshold=self.thresholds.margin_usage,
+            metric_name="margin_usage",
+        ))
 
         # 检查回撤
-        alerts.extend(self._check_drawdown(metrics))
+        alerts.extend(self._check_threshold(
+            value=metrics.current_drawdown,
+            threshold=self.thresholds.drawdown,
+            metric_name="drawdown",
+        ))
 
         return alerts
 
-    def _check_sharpe_ratio(
+    def _check_threshold(
         self,
-        metrics: CapitalMetrics,
+        value: float | None,
+        threshold: ThresholdRange,
+        metric_name: str,
     ) -> list[Alert]:
-        """检查 Sharpe Ratio"""
+        """通用阈值检查函数
+
+        根据 ThresholdRange 配置检查值是否超出阈值，
+        消息和建议操作从配置中读取。
+
+        Args:
+            value: 当前指标值
+            threshold: 阈值配置（含消息模板）
+            metric_name: 指标名称（用于日志）
+
+        Returns:
+            预警列表
+        """
+        if value is None:
+            return []
+
         alerts: list[Alert] = []
-        sharpe = metrics.sharpe_ratio
 
-        if sharpe is None:
-            return alerts
+        # 获取 AlertType
+        try:
+            alert_type = AlertType[threshold.alert_type] if threshold.alert_type else AlertType.DELTA_EXPOSURE
+        except KeyError:
+            logger.warning(f"Unknown alert_type: {threshold.alert_type}, using DELTA_EXPOSURE")
+            alert_type = AlertType.DELTA_EXPOSURE
 
-        if sharpe < self.thresholds.sharpe_red_below:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.SHARPE_LOW,
-                    level=AlertLevel.RED,
-                    message=f"Sharpe Ratio 过低: {sharpe:.2f} < {self.thresholds.sharpe_red_below}",
-                    current_value=sharpe,
-                    threshold_value=self.thresholds.sharpe_red_below,
-                    suggested_action="风险调整收益不佳，检视策略执行",
-                )
-            )
-        elif sharpe < self.thresholds.sharpe_yellow_range[1]:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.SHARPE_LOW,
-                    level=AlertLevel.YELLOW,
-                    message=f"Sharpe Ratio 偏低: {sharpe:.2f}",
-                    current_value=sharpe,
-                    suggested_action="关注风险调整收益",
-                )
-            )
-        elif sharpe >= self.thresholds.sharpe_green_above:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.SHARPE_LOW,
+        # 检查红色上限
+        if threshold.red_above is not None and value > threshold.red_above:
+            message = threshold.red_above_message.format(value=value, threshold=threshold.red_above) \
+                if threshold.red_above_message else f"{metric_name} 过高: {value:.2f} > {threshold.red_above}"
+            alerts.append(Alert(
+                alert_type=alert_type,
+                level=AlertLevel.RED,
+                message=message,
+                current_value=value,
+                threshold_value=threshold.red_above,
+                suggested_action=threshold.red_above_action or None,
+            ))
+            return alerts  # RED 优先，不再检查其他
+
+        # 检查红色下限
+        if threshold.red_below is not None and value < threshold.red_below:
+            message = threshold.red_below_message.format(value=value, threshold=threshold.red_below) \
+                if threshold.red_below_message else f"{metric_name} 过低: {value:.2f} < {threshold.red_below}"
+            alerts.append(Alert(
+                alert_type=alert_type,
+                level=AlertLevel.RED,
+                message=message,
+                current_value=value,
+                threshold_value=threshold.red_below,
+                suggested_action=threshold.red_below_action or None,
+            ))
+            return alerts  # RED 优先，不再检查其他
+
+        # 检查绿色范围 - 如果在绿色范围内，产生 GREEN Alert
+        if threshold.green:
+            green_low, green_high = threshold.green
+            in_green = green_low <= value <= green_high or (green_high == float("inf") and value >= green_low)
+            if in_green:
+                message = threshold.green_message.format(value=value) \
+                    if threshold.green_message else f"{metric_name} 正常: {value:.2f}"
+                alerts.append(Alert(
+                    alert_type=alert_type,
                     level=AlertLevel.GREEN,
-                    message=f"Sharpe Ratio 良好: {sharpe:.2f}",
-                    current_value=sharpe,
-                    suggested_action="风险调整收益良好",
-                )
-            )
+                    message=message,
+                    current_value=value,
+                    suggested_action=threshold.green_action or None,
+                ))
+                return alerts
 
-        return alerts
-
-    def _check_kelly_usage(
-        self,
-        metrics: CapitalMetrics,
-    ) -> list[Alert]:
-        """检查 Kelly 使用率"""
-        alerts: list[Alert] = []
-        kelly_usage = metrics.kelly_usage
-
-        if kelly_usage is None:
-            return alerts
-
-        if kelly_usage > self.thresholds.kelly_usage_red_above:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.KELLY_USAGE,
-                    level=AlertLevel.RED,
-                    message=f"Kelly 使用率过高: {kelly_usage:.1%} > {self.thresholds.kelly_usage_red_above:.0%}",
-                    current_value=kelly_usage,
-                    threshold_value=self.thresholds.kelly_usage_red_above,
-                    suggested_action="仓位过重，考虑减仓",
-                )
-            )
-        elif kelly_usage < self.thresholds.kelly_usage_opportunity_below:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.KELLY_USAGE,
-                    level=AlertLevel.GREEN,
-                    message=f"Kelly 使用率偏低: {kelly_usage:.1%}，有加仓空间",
-                    current_value=kelly_usage,
-                    threshold_value=self.thresholds.kelly_usage_opportunity_below,
-                    suggested_action="仓位较轻，可寻找新机会",
-                )
-            )
-        else:
-            green_low, green_high = self.thresholds.kelly_usage_green_range
-            if green_low <= kelly_usage <= green_high:
-                alerts.append(
-                    Alert(
-                        alert_type=AlertType.KELLY_USAGE,
-                        level=AlertLevel.GREEN,
-                        message=f"Kelly 使用率适中: {kelly_usage:.1%}",
-                        current_value=kelly_usage,
-                        suggested_action="仓位合理",
-                    )
-                )
-
-        return alerts
-
-    def _check_margin_usage(
-        self,
-        metrics: CapitalMetrics,
-    ) -> list[Alert]:
-        """检查保证金使用率"""
-        alerts: list[Alert] = []
-        margin_usage = metrics.margin_usage
-
-        if margin_usage is None:
-            return alerts
-
-        if margin_usage > self.thresholds.margin_red_above:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.MARGIN_WARNING,
-                    level=AlertLevel.RED,
-                    message=f"保证金使用率过高: {margin_usage:.1%} > {self.thresholds.margin_red_above:.0%}",
-                    current_value=margin_usage,
-                    threshold_value=self.thresholds.margin_red_above,
-                    suggested_action="保证金使用率过高，有追保风险，立即减仓",
-                )
-            )
-        elif margin_usage > self.thresholds.margin_warning_above:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.MARGIN_WARNING,
-                    level=AlertLevel.YELLOW,
-                    message=f"保证金使用率偏高: {margin_usage:.1%}",
-                    current_value=margin_usage,
-                    threshold_value=self.thresholds.margin_warning_above,
-                    suggested_action="保证金使用率接近警戒线，谨慎加仓",
-                )
-            )
-        elif margin_usage < self.thresholds.margin_green_below:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.MARGIN_WARNING,
-                    level=AlertLevel.GREEN,
-                    message=f"保证金使用率健康: {margin_usage:.1%}",
-                    current_value=margin_usage,
-                    suggested_action="保证金使用率良好",
-                )
-            )
-
-        return alerts
-
-    def _check_drawdown(
-        self,
-        metrics: CapitalMetrics,
-    ) -> list[Alert]:
-        """检查回撤"""
-        alerts: list[Alert] = []
-        drawdown = metrics.current_drawdown
-
-        if drawdown is None:
-            return alerts
-
-        if drawdown > self.thresholds.max_drawdown_red_pct:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.DRAWDOWN,
-                    level=AlertLevel.RED,
-                    message=f"回撤过大: {drawdown:.1%} > {self.thresholds.max_drawdown_red_pct:.0%}",
-                    current_value=drawdown,
-                    threshold_value=self.thresholds.max_drawdown_red_pct,
-                    suggested_action="回撤超限，执行风险控制，考虑减仓或暂停交易",
-                )
-            )
-        elif drawdown > self.thresholds.max_drawdown_warning_pct:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.DRAWDOWN,
-                    level=AlertLevel.YELLOW,
-                    message=f"回撤接近警戒线: {drawdown:.1%}",
-                    current_value=drawdown,
-                    threshold_value=self.thresholds.max_drawdown_warning_pct,
-                    suggested_action="关注回撤变化，准备执行风控",
-                )
-            )
+        # 不在红色范围，也不在绿色范围 -> 黄色预警
+        message = threshold.yellow_message.format(value=value) \
+            if threshold.yellow_message else f"{metric_name} 偏离正常范围: {value:.2f}"
+        alerts.append(Alert(
+            alert_type=alert_type,
+            level=AlertLevel.YELLOW,
+            message=message,
+            current_value=value,
+            suggested_action=threshold.yellow_action or None,
+        ))
 
         return alerts
 

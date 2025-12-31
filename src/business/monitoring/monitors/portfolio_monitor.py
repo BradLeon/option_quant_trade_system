@@ -183,19 +183,32 @@ class PortfolioMonitor:
             ))
             return alerts  # RED 优先，不再检查其他
 
-        # 检查黄色范围
-        if threshold.yellow:
-            yellow_low, yellow_high = threshold.yellow
-            if value < yellow_low or value > yellow_high:
-                message = threshold.yellow_message.format(value=value) \
-                    if threshold.yellow_message else f"{metric_name} 偏离正常范围: {value:.2f}"
+        # 检查绿色范围 - 如果在绿色范围内，产生 GREEN Alert
+        if threshold.green:
+            green_low, green_high = threshold.green
+            in_green = green_low <= value <= green_high or (green_high == float("inf") and value >= green_low)
+            if in_green:
+                message = threshold.green_message.format(value=value) \
+                    if threshold.green_message else f"{metric_name} 正常: {value:.2f}"
                 alerts.append(Alert(
                     alert_type=alert_type,
-                    level=AlertLevel.YELLOW,
+                    level=AlertLevel.GREEN,
                     message=message,
                     current_value=value,
-                    suggested_action=threshold.yellow_action or None,
+                    suggested_action=threshold.green_action or None,
                 ))
+                return alerts
+
+        # 不在红色范围，也不在绿色范围 -> 黄色预警
+        message = threshold.yellow_message.format(value=value) \
+            if threshold.yellow_message else f"{metric_name} 偏离正常范围: {value:.2f}"
+        alerts.append(Alert(
+            alert_type=alert_type,
+            level=AlertLevel.YELLOW,
+            message=message,
+            current_value=value,
+            suggested_action=threshold.yellow_action or None,
+        ))
 
         return alerts
 

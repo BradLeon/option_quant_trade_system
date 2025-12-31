@@ -1,9 +1,16 @@
 """
 Monitoring Configuration - 监控配置管理
 
-加载和管理持仓监控系统的配置参数
+加载和管理持仓监控系统的配置参数。
+
+所有阈值统一使用 ThresholdRange 格式，支持：
+- 配置化消息模板（{value}, {threshold} 占位符）
+- 配置化建议操作
+- 防抖机制（hysteresis）
 
 ## Portfolio 级阈值配置参考
+
+### 绝对值指标
 
 | 指标                | 绿色（正常）  | 黄色（关注）   | 红色（风险）      | 说明                  | RED 建议操作                          |
 |---------------------|---------------|----------------|-------------------|-----------------------|---------------------------------------|
@@ -14,23 +21,95 @@ Monitoring Configuration - 监控配置管理
 | TGR                 | ≥0.15         | (0.05, 0.15)   | <0.05             | Theta/Gamma 效率      | 时间衰减效率不足，考虑调整持仓        |
 | HHI                 | <0.25         | (0.25, 0.5)    | >0.5              | 集中度指数            | 分散持仓，降低单一标的风险            |
 
-## Position 级阈值配置参考
+### NLV 归一化百分比指标
 
-| 指标       | 绿色（正常） | 黄色（关注）  | 红色（风险） | 说明              |
-|------------|--------------|---------------|--------------|-------------------|
-| Moneyness  | >0.05        | (0, 0.05)     | <0 (ITM)     | (S-K)/K 虚值程度  |
-| PREI       | <40          | (40, 75)      | >75          | 风险暴露指数      |
-| DTE        | >7           | (3, 7)        | ≤3           | 到期天数          |
-| P&L        | -            | -             | <-200%       | 止损线            |
+| 指标           | 绿色（正常）    | 黄色（关注）      | 红色（风险）       | 说明                  | RED 建议操作                              |
+|----------------|-----------------|-------------------|--------------------|-----------------------|-------------------------------------------|
+| BWD%           | ±20%            | ±20%~50%          | >50% 或 <-50%      | 方向性杠杆            | Delta 对冲：交易 SPY/QQQ 期货或 ETF       |
+| Gamma%         | > -0.1%         | -0.1% ~ -0.3%     | < -0.5%            | 凸性/崩盘风险         | 买入近月深虚值 Put 或平掉临期 ATM 头寸    |
+| Vega%          | ±0.3%           | ±0.3%~0.6%        | < -0.5%            | 波动率风险（做空）    | 买入 VIX Call 或 SPY Put                  |
+| Theta%         | 0.05%~0.15%     | 0.15%~0.25%       | >0.30% 或 <0%      | 日时间衰减率          | 平仓部分 Short 头寸（过高意味 Gamma 过大）|
+| IV/HV Quality  | >1.0            | 0.8~1.2           | <0.8               | 持仓定价质量          | 停止做空，仅允许 Debit 策略               |
+
+## Position 级阈值配置参考（12个指标）
+
+| 指标            | 绿色（正常）  | 黄色（关注）  | 红色（风险）  | 说明                    | RED 建议操作                              |
+|-----------------|---------------|---------------|---------------|-------------------------|-------------------------------------------|
+| OTM%            | ≥10%          | 5%~10%        | <5%           | 虚值百分比（统一公式）  | 立即 Roll 到下个月或更远行权价            |
+| |Delta|         | ≤0.20         | 0.20~0.40     | >0.50         | 方向性风险（绝对值）    | 必须行动：对冲正股或平仓                  |
+| DTE             | ≥14 天        | 7~14 天       | <7 天         | 到期天数                | 强制平仓或展期，绝不持有进入最后一周      |
+| P&L%            | ≥50%          | 0%~50%        | <0%           | 持仓盈亏                | 无条件止损，不要抗单                      |
+| Gamma Risk%     | ≤0.5%         | 0.5%~1%       | >1%           | Gamma/Margin 百分比     | 减仓或平仓，降低 Gamma 风险敞口           |
+| TGR             | ≥0.15         | 0.08~0.15     | <0.08         | Theta/Gamma 效率        | 平仓，换到更高效的合约                    |
+| IV/HV           | ≥1.2          | 0.8~1.2       | <0.8          | 期权定价质量            | 如盈利可提前止盈，避免继续卖出            |
+| ROC             | ≥20%          | 10%~20%       | <10%          | 资金使用效率            | 考虑平仓，寻找更高效策略                  |
+| Expected ROC    | ≥10%          | 0%~10%        | <0%           | 预期资本回报率          | 立即平仓，策略已失效                      |
+| Win Prob        | ≥70%          | 55%~70%       | <55%          | 胜率                    | 考虑平仓，寻找更高效策略                  |
+| PREI            | <40           | 40~60         | >60           | 风险暴露指数            | 风险暴露过高，考虑减仓或对冲              |
+| SAS             | ≥70           | 50~70         | <50           | 策略吸引力分数          | 考虑平仓或调整策略                        |
 
 ## Capital 级阈值配置参考
 
-| 指标         | 绿色（正常） | 黄色（关注）  | 红色（风险） | 说明           |
-|--------------|--------------|---------------|--------------|----------------|
-| Sharpe Ratio | ≥1.5         | (1.0, 1.5)    | <1.0         | 风险调整收益   |
-| Kelly Usage  | (0.5, 1.0)   | <0.5 或 >1.0  | >1.0         | 仓位/最优仓位  |
-| Margin Usage | <0.6         | (0.6, 0.8)    | >0.9         | 保证金使用率   |
-| Drawdown     | <0.10        | (0.10, 0.15)  | >0.15        | 回撤比例       |
+| 指标         | 绿色（正常） | 黄色（关注）  | 红色（风险） | 说明              | RED 建议操作                      |
+|--------------|--------------|---------------|--------------|-------------------|-----------------------------------|
+| Sharpe Ratio | ≥1.5         | 1.0~1.5       | <1.0         | 风险调整收益      | 检视策略执行，优化风险收益比      |
+| Kelly Usage  | 50%~100%     | 30%~50%       | >100%        | 仓位/最优仓位     | 仓位过重，考虑减仓                |
+| Margin Usage | <60%         | 60%~80%       | >90%         | 保证金使用率      | 立即减仓，降低保证金占用          |
+| Drawdown     | <10%         | 10%~15%       | >15%         | 回撤比例          | 执行风险控制，考虑减仓或暂停交易  |
+
+TODO：
+这是为您量身定制的 **Capital 级核心量化风控体系**。这四个指标构成了账户风控的“四大支柱”：生存空间、流动性缓冲、总敞口规模、极端抗压能力。
+
+### 🛡️ Capital 级核心风控配置表
+
+| 维度 | 指标 | 绿色 (安全) | 黄色 (警戒) | 红色 (高危) | 说明 (意义与公式) | 红色时操作 (Action) |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **生存** | **Margin Utilization**<br>(保证金使用率) | **< 40%** | **40% ~ 70%** | **> 70%** | **意义**：账户距离被券商强平的距离。这是最硬的生存底线。<br>**公式**：`Current Maint Margin / Net Liquidation Value (NLV)` | **强制去杠杆 (De-leverage)**：<br>立即按“保证金/Theta”效率从低到高排序，平掉效率最低或亏损最大的头寸，直至回到黄色区间。 |
+| **流动性** | **Cash Ratio**<br>(现金留存率) | **> 30%** | **10% ~ 30%** | **< 10%** | **意义**：应对期权被指派(Assignment)、移仓亏损或紧急对冲的“干火药”。<br>**公式**：`Net Cash Balance / NLV` | **停止开仓 & 变现**：<br>1. 禁止开设任何消耗现金的新仓位。<br>2. 平掉部分盈利的 Long 头寸或股票，补充现金储备。 |
+| **敞口** | **Gross Leverage**<br>(总名义杠杆) | **< 2.0x** | **2.0x ~ 4.0x** | **> 4.0x** | **意义**：衡量总资产规模。期权按名义本金计算，防止“赚小钱担大风险”。<br>**公式**：`(Σ|Stock Value| + Σ|Option Notional|) / NLV`<br>*注：Option Notional = Strike × Multiplier × Qty* | **缩减规模 (Scale Down)**：<br>账户“虚胖”，抗风险能力差。<br>需按比例缩减所有策略的仓位规模，降低整体风险暴露。 |
+| **稳健** | **Stress Test Loss**<br>(压力测试风险) | **< 10%** | **10% ~ 20%** | **> 20%** | **意义**：预测在黑天鹅事件下的净值回撤。防止平时赚小钱，一波回到解放前。<br>**公式**：`(Curr_NLV - Sim_NLV) / Curr_NLV`<br>*场景：假设 Spot -15% 且 IV +40%* | **切断尾部 (Cut Tails)**：<br>1. 买入深虚值 Put (VIX Call) 进行尾部保护。<br>2. 平掉 Short Gamma 最大的头寸（通常是临期平值期权）。 |
+
+---
+
+### 💡 深度解读：为什么这四个是“黄金组合”？
+
+1.  **Margin Utilization (防爆仓)**：
+    *   这是**现在**会不会死。如果超过 70%，哪怕市场只是正常波动一下，你都可能被强平。
+
+2.  **Cash Ratio (防卡死)**：
+    *   这是**操作**灵不灵活。如果没现金了，哪怕看到绝佳的补救机会（比如低位补仓或买保险），你也动弹不得。对于卖 Put 策略，现金是接货的底气。
+
+3.  **Gross Leverage (防虚胖)**：
+    *   这是**规模**控没控制住。很多交易员死于 margin 很低（因为卖深虚值），但名义杠杆高达 10 倍。一旦黑天鹅来临，虚值变实值，10 倍杠杆瞬间击穿账户。
+
+4.  **Stress Test Loss (防未来)**：
+    *   这是**未来**会不会死。前三个指标看的都是当前静态数据，只有压力测试是看“如果发生灾难会怎样”。如果压力测试显示会亏 50%，说明你的持仓结构在极端行情下极其脆弱（通常是因为由 Short Vega/Short Gamma 堆积）。
+
+Gross Leverage (总名义杠杆)。
+
+Gross Leverage = (|Long Exposure| + |Short Exposure|) / NAV
+
+Long Exposure  = 股票多头市值 + Σ(正Delta期权的 Delta Notional)
+Short Exposure = |股票空头市值| + Σ|负Delta期权的 Delta Notional|
+
+Delta Notional = |Delta| × 标的价 × 合约乘数 × 合约数
+Option Notional: 期权的名义价值。例如 1 张 0700.HK 的 Call，行权价 400，名义价值是 
+400×100=40000
+意义： 如果你账户有 10 万，你卖了名义价值 100 万的 Put（哪怕保证金够），你的杠杆也是 10 倍。一旦出事，就是 10 倍速的毁灭。控制总杠杆就是控制总风险。
+
+
+新增的核心指标：Stress Test Loss (压力测试)
+背景： 对于 Options + Stocks 组合，最大的风险不是线性的（Delta），而是非线性的（Gamma + Vega）。
+场景： 现在的 Margin 可能很低（绿色），但如果明天大盘跌 10%，波动率翻倍，你的 Margin 可能会瞬间膨胀 5 倍导致爆仓。
+算法：
+设定一个极端场景（例如：SPY -10% AND IV +40%），代入 B-S 模型重算所有期权价格，得出预估净值。
+Stress Loss % = |Stress P&L| / NAV
+Stress P&L = Delta损失 + Gamma损失 + Vega损失
+
+其中：
+- Delta损失 = BW_Delta × SPY$ × 10%
+- Gamma损失 = 0.5 × |Gamma| × (SPY$ × 10%)²
+- Vega损失  = |Vega| × 40  (当 Short Vega 时)
 """
 
 from dataclasses import dataclass, field
@@ -39,8 +118,6 @@ from typing import Any
 
 import yaml
 
-
-# TODO, 好好检查这里的阈值的合理性。
 
 @dataclass
 class ThresholdRange:
@@ -56,9 +133,11 @@ class ThresholdRange:
         red_above_message: 超上限消息模板（支持 {value}, {threshold}）
         red_below_message: 超下限消息模板
         yellow_message: 黄色预警消息模板
+        green_message: 绿色正常消息模板
         red_above_action: 超上限建议操作
         red_below_action: 超下限建议操作
         yellow_action: 黄色预警建议操作
+        green_action: 绿色正常建议操作
     """
 
     # 阈值定义
@@ -73,76 +152,22 @@ class ThresholdRange:
     red_above_message: str = ""
     red_below_message: str = ""
     yellow_message: str = ""
+    green_message: str = ""  # 绿色正常消息
     red_above_action: str = ""
     red_below_action: str = ""
     yellow_action: str = ""
+    green_action: str = ""  # 绿色正常建议
 
 
 @dataclass
 class PortfolioThresholds:
-    """组合级阈值 - 统一使用 ThresholdRange"""
+    """组合级阈值 - 统一使用 ThresholdRange
 
-    beta_weighted_delta: ThresholdRange = field(
-        default_factory=lambda: ThresholdRange(
-            green=(-100, 100),
-            yellow=(-200, 200),
-            red_above=300,
-            red_below=-300,
-            hysteresis=20,
-            alert_type="DELTA_EXPOSURE",
-            red_above_message="Beta 加权 Delta 过高: {value:.0f} > {threshold}",
-            red_below_message="Beta 加权 Delta 过低: {value:.0f} < {threshold}",
-            yellow_message="Beta 加权 Delta 偏离中性: {value:.0f}",
-            red_above_action="减少多头 Delta 暴露或对冲",
-            red_below_action="减少空头 Delta 暴露或对冲",
-            yellow_action="关注 Delta 暴露变化",
-        )
-    )
+    使用 NLV 归一化百分比指标，实现账户大小无关的风险评估。
+    已移除旧的绝对值指标（beta_weighted_delta, portfolio_theta, portfolio_vega, portfolio_gamma）。
+    """
 
-    portfolio_theta: ThresholdRange = field(
-        default_factory=lambda: ThresholdRange(
-            green=(0, float("inf")),
-            yellow=(-50, 0),
-            red_below=-100,
-            hysteresis=10,
-            alert_type="THETA_EXPOSURE",
-            red_below_message="组合 Theta 为负: {value:.0f}，时间衰减不利",
-            yellow_message="组合 Theta 偏低: {value:.0f}",
-            red_below_action="减少买方头寸或增加卖方头寸",
-            yellow_action="关注时间衰减效率",
-        )
-    )
-
-    portfolio_vega: ThresholdRange = field(
-        default_factory=lambda: ThresholdRange(
-            green=(-500, 500),
-            yellow=(-1000, 1000),
-            red_above=1500,
-            red_below=-1500,
-            hysteresis=100,
-            alert_type="VEGA_EXPOSURE",
-            red_above_message="组合 Vega 暴露过高: {value:.0f} > {threshold}",
-            red_below_message="组合 Vega 暴露过低: {value:.0f} < {threshold}",
-            yellow_message="组合 Vega 暴露偏大: {value:.0f}",
-            red_above_action="减少 Vega 暴露，考虑平仓部分头寸",
-            red_below_action="Vega 空头过大，波动率上升风险高",
-            yellow_action="关注波动率风险",
-        )
-    )
-
-    portfolio_gamma: ThresholdRange = field(
-        default_factory=lambda: ThresholdRange(
-            green=(-30, 0),
-            yellow=(-50, -30),
-            red_below=-50,
-            hysteresis=5,
-            alert_type="GAMMA_EXPOSURE",
-            red_below_message="组合 Gamma 空头过大: {value:.0f} < {threshold}",
-            yellow_message="组合 Gamma 空头偏大: {value:.0f}",
-            red_below_action="Gamma 空头风险高，大幅波动时亏损加速",
-            yellow_action="关注 Gamma 风险",
-        )
-    )
+    # === 比率指标（已经是归一化的）===
 
     portfolio_tgr: ThresholdRange = field(
         default_factory=lambda: ThresholdRange(
@@ -253,60 +278,315 @@ class PortfolioThresholds:
         )
     )
 
-    # 保留旧字段用于向后兼容（deprecated）
-    tgr_green_above: float = 0.15
-    tgr_yellow_range: tuple[float, float] = (0.05, 0.15)
-    tgr_red_below: float = 0.05
-    max_concentration: float = 0.5
-
 
 @dataclass
 class PositionThresholds:
-    """持仓级阈值"""
+    """持仓级阈值 - 统一使用 ThresholdRange
 
+    基于实战经验优化的阈值设计：
+    - OTM%: 统一公式 Put=(S-K)/S, Call=(K-S)/S
+    - |Delta|: 使用绝对值，更早预警
+    - DTE: 绿色提高到14天，避免 Short Gamma 进入最后一周
+    - Gamma Risk%: 相对 Margin 的百分比
+    """
+
+    # OTM% (虚值百分比) - 新公式: Put=(S-K)/S, Call=(K-S)/S
+    otm_pct: ThresholdRange = field(
+        default_factory=lambda: ThresholdRange(
+            green=(0.10, float("inf")),    # OTM ≥ 10%
+            yellow=(0.05, 0.10),           # 5% ~ 10%
+            red_below=0.05,                # OTM < 5%
+            hysteresis=0.01,
+            alert_type="OTM_PCT",
+            red_below_message="OTM% 过低: {value:.1%}，接近 ATM 或 ITM",
+            yellow_message="OTM% 偏低: {value:.1%}",
+            red_below_action="立即 Roll 到下个月或更远行权价，或直接平仓",
+            yellow_action="准备调整，关注标的走势",
+        )
+    )
+
+    # |Delta| (方向性风险) - 使用绝对值
+    delta: ThresholdRange = field(
+        default_factory=lambda: ThresholdRange(
+            green=(0, 0.20),               # |Delta| ≤ 0.20
+            yellow=(0.20, 0.40),           # 0.20 ~ 0.40
+            red_above=0.50,                # |Delta| > 0.50
+            hysteresis=0.03,
+            alert_type="DELTA_CHANGE",
+            red_above_message="|Delta| 过大: {value:.2f}，方向性风险高",
+            yellow_message="|Delta| 偏大: {value:.2f}",
+            red_above_action="必须行动：对冲正股或平仓，不要等到 0.7",
+            yellow_action="关注方向性风险，准备对冲",
+        )
+    )
+
+    # DTE (Days to Expiration) - 绿色提高到14天
+    dte: ThresholdRange = field(
+        default_factory=lambda: ThresholdRange(
+            green=(14, float("inf")),      # DTE ≥ 14 天
+            yellow=(7, 14),                # 7 ~ 14 天
+            red_below=7,                   # DTE < 7 天
+            hysteresis=1,
+            alert_type="DTE_WARNING",
+            red_below_message="DTE < 7 天: {value:.0f} 天，Short Gamma 风险极高",
+            yellow_message="DTE 进入两周内: {value:.0f} 天",
+            red_below_action="强制平仓或展期，绝不持有 Short Gamma 进入最后一周",
+            yellow_action="准备展期或平仓计划",
+        )
+    )
+
+    # P&L% (持仓未实现收益率)
+    pnl: ThresholdRange = field(
+        default_factory=lambda: ThresholdRange(
+            green=(0.50, float("inf")),    # 盈利 ≥ 50%
+            yellow=(0.0, 0.50),            # 0% ~ 50%
+            red_below=0.0,                 # 亏损 < 0%
+            hysteresis=0.05,
+            alert_type="PNL_TARGET",
+            red_below_message="持仓亏损: {value:.1%}",
+            yellow_message="持仓盈利: {value:.1%}",
+            red_below_action="无条件止损，不要抗单",
+            yellow_action="关注盈亏变化",
+        )
+    )
+
+    # Gamma Risk% (Gamma 风险百分比) - 相对 Margin
+    gamma_risk_pct: ThresholdRange = field(
+        default_factory=lambda: ThresholdRange(
+            green=(0, 0.005),              # Gamma/Margin ≤ 0.5%
+            yellow=(0.005, 0.01),          # 0.5% ~ 1%
+            red_above=0.01,                # Gamma/Margin > 1%
+            hysteresis=0.001,
+            alert_type="GAMMA_RISK_PCT",
+            red_above_message="Gamma Risk% 过高: {value:.2%}，相对 Margin 风险大",
+            yellow_message="Gamma Risk% 偏高: {value:.2%}",
+            red_above_action="减仓或平仓，降低 Gamma 风险敞口",
+            yellow_action="关注 Gamma 风险变化",
+        )
+    )
+
+    # TGR (Theta/Gamma Ratio) - Position 级使用 POSITION_TGR，与 Portfolio 级 TGR_LOW 区分
+    tgr: ThresholdRange = field(
+        default_factory=lambda: ThresholdRange(
+            green=(0.15, float("inf")),    # TGR ≥ 0.15
+            yellow=(0.08, 0.15),           # 0.08 ~ 0.15
+            red_below=0.08,                # TGR < 0.08
+            hysteresis=0.01,
+            alert_type="POSITION_TGR",     # Position 级使用单独的 AlertType
+            red_below_message="TGR 过低: {value:.3f}，风险收益比极低",
+            yellow_message="TGR 偏低: {value:.3f}",
+            red_below_action="平仓，换到更高效的合约",
+            yellow_action="关注时间衰减效率",
+        )
+    )
+
+    # IV/HV Ratio (Position 级使用 POSITION_IV_HV，与 Portfolio 级 IV_HV_QUALITY 区分)
+    iv_hv: ThresholdRange = field(
+        default_factory=lambda: ThresholdRange(
+            green=(1.2, float("inf")),     # IV/HV ≥ 1.2
+            yellow=(0.8, 1.2),             # 0.8 ~ 1.2 (注意: 1.1 在 yellow)
+            red_below=0.8,                 # IV/HV < 0.8
+            hysteresis=0.05,
+            alert_type="POSITION_IV_HV",   # Position 级使用单独的 AlertType
+            red_below_message="IV/HV 过低: {value:.2f}，期权被低估",
+            yellow_message="IV/HV 偏低: {value:.2f}",
+            red_below_action="如盈利可提前止盈，避免继续卖出",
+            yellow_action="关注期权定价",
+        )
+    )
+
+    # ROC (Return on Capital) - 降低绿色门槛
+    roc: ThresholdRange = field(
+        default_factory=lambda: ThresholdRange(
+            green=(0.20, float("inf")),    # ROC ≥ 20%
+            yellow=(0.10, 0.20),           # 10% ~ 20%
+            red_below=0.10,                # ROC < 10%
+            hysteresis=0.02,
+            alert_type="ROC_LOW",
+            red_below_message="ROC 过低: {value:.1%}，资金效率差",
+            yellow_message="ROC 偏低: {value:.1%}",
+            red_below_action="考虑平仓，寻找更高效策略",
+            yellow_action="关注资金使用效率",
+        )
+    )
+
+    # Expected ROC (预期资本回报率) - 新增关键指标
+    expected_roc: ThresholdRange = field(
+        default_factory=lambda: ThresholdRange(
+            green=(0.10, float("inf")),    # Expected ROC ≥ 10%
+            yellow=(0.0, 0.10),            # 0% ~ 10%
+            red_below=0.0,                 # Expected ROC < 0%
+            hysteresis=0.02,
+            alert_type="EXPECTED_ROC_LOW",
+            red_below_message="Expected ROC 为负: {value:.1%}，预期亏损",
+            yellow_message="Expected ROC 偏低: {value:.1%}",
+            red_below_action="立即平仓，策略已失效",
+            yellow_action="关注预期收益变化",
+        )
+    )
+
+    # Win Probability (胜率) - 新增关键指标
+    win_probability: ThresholdRange = field(
+        default_factory=lambda: ThresholdRange(
+            green=(0.70, float("inf")),    # Win Prob ≥ 70%
+            yellow=(0.55, 0.70),           # 55% ~ 70%
+            red_below=0.55,                # Win Prob < 55%
+            hysteresis=0.03,
+            alert_type="WIN_PROB_LOW",
+            red_below_message="胜率过低: {value:.0%}，策略优势不足",
+            yellow_message="胜率偏低: {value:.0%}",
+            red_below_action="考虑平仓，寻找更高效策略",
+            yellow_action="关注胜率变化",
+        )
+    )
+
+    # PREI (Position Risk Exposure Index) - 红色阈值调整
+    prei: ThresholdRange = field(
+        default_factory=lambda: ThresholdRange(
+            green=(0, 40),                 # PREI < 40
+            yellow=(40, 60),               # 40 ~ 60
+            red_above=60,                  # PREI > 60
+            hysteresis=5,
+            alert_type="PREI_HIGH",
+            red_above_message="PREI 过高: {value:.1f}，风险暴露超标",
+            yellow_message="PREI 偏高: {value:.1f}",
+            red_above_action="风险暴露过高，考虑减仓或对冲",
+            yellow_action="关注风险暴露变化",
+        )
+    )
+
+    # SAS (Strategy Attractiveness Score) - 阈值调整
+    sas: ThresholdRange = field(
+        default_factory=lambda: ThresholdRange(
+            green=(70, float("inf")),      # SAS ≥ 70
+            yellow=(50, 70),               # 50 ~ 70
+            red_below=50,                  # SAS < 50
+            hysteresis=5,
+            alert_type="SAS_SCORE",
+            red_below_message="SAS 过低: {value:.0f}，策略吸引力不足",
+            yellow_message="SAS 偏低: {value:.0f}",
+            red_below_action="考虑平仓或调整策略",
+            yellow_action="关注策略表现",
+        )
+    )
+
+    # === 保留旧字段用于向后兼容（deprecated）===
+    # Moneyness (旧字段，改用 otm_pct)
+    moneyness: ThresholdRange = field(
+        default_factory=lambda: ThresholdRange(
+            green=(0.10, float("inf")),
+            yellow=(0.05, 0.10),
+            red_below=0.05,
+            alert_type="MONEYNESS",
+        )
+    )
+
+    # Gamma (旧字段，改用 gamma_risk_pct)
+    gamma: ThresholdRange = field(
+        default_factory=lambda: ThresholdRange(
+            green=(0, 0.03),
+            yellow=(0.03, 0.05),
+            red_above=0.05,
+            alert_type="GAMMA_RISK",
+        )
+    )
+
+    # 保留旧字段用于向后兼容（deprecated）
     moneyness_green_above: float = 0.05
     moneyness_yellow_range: tuple[float, float] = (0.0, 0.05)
     moneyness_red_below: float = 0.0
-
     delta_red_above: float = 0.5
     delta_change_warning: float = 0.1
-
     gamma_green_below: float = 0.03
     gamma_yellow_range: tuple[float, float] = (0.03, 0.05)
     gamma_red_above: float = 0.05
     gamma_near_expiry_multiplier: float = 1.5
-
     iv_hv_favorable_above: float = 1.5
     iv_hv_unfavorable_below: float = 0.8
-
     prei_green_below: float = 40.0
     prei_yellow_range: tuple[float, float] = (40.0, 75.0)
     prei_red_above: float = 75.0
-
     dte_warning_days: int = 7
     dte_urgent_days: int = 3
-
     take_profit_pct: float = 0.50
     stop_loss_pct: float = -2.00
 
 
 @dataclass
 class CapitalThresholds:
-    """资金级阈值"""
+    """资金级阈值 - 统一使用 ThresholdRange"""
 
+    # Sharpe Ratio
+    sharpe: ThresholdRange = field(
+        default_factory=lambda: ThresholdRange(
+            green=(1.5, float("inf")),
+            yellow=(1.0, 1.5),
+            red_below=1.0,
+            hysteresis=0.1,
+            alert_type="SHARPE_LOW",
+            red_below_message="Sharpe Ratio 过低: {value:.2f} < {threshold}，风险调整收益不佳",
+            yellow_message="Sharpe Ratio 偏低: {value:.2f}",
+            red_below_action="检视策略执行，优化风险收益比",
+            yellow_action="关注风险调整收益",
+        )
+    )
+
+    # Kelly Usage
+    kelly_usage: ThresholdRange = field(
+        default_factory=lambda: ThresholdRange(
+            green=(0.5, 1.0),
+            yellow=(0.3, 0.5),  # 偏低，有加仓空间
+            red_above=1.0,  # 过载
+            hysteresis=0.05,
+            alert_type="KELLY_USAGE",
+            red_above_message="Kelly 使用率过高: {value:.1%} > {threshold:.0%}，仓位过重",
+            yellow_message="Kelly 使用率偏低: {value:.1%}，有加仓空间",
+            red_above_action="仓位过重，考虑减仓",
+            yellow_action="可寻找新机会",
+        )
+    )
+
+    # Margin Usage
+    margin_usage: ThresholdRange = field(
+        default_factory=lambda: ThresholdRange(
+            green=(0, 0.6),
+            yellow=(0.6, 0.8),
+            red_above=0.9,
+            hysteresis=0.02,
+            alert_type="MARGIN_WARNING",
+            red_above_message="保证金使用率过高: {value:.1%} > {threshold:.0%}，有追保风险",
+            yellow_message="保证金使用率偏高: {value:.1%}",
+            red_above_action="立即减仓，降低保证金占用",
+            yellow_action="谨慎加仓，关注保证金水平",
+        )
+    )
+
+    # Drawdown
+    drawdown: ThresholdRange = field(
+        default_factory=lambda: ThresholdRange(
+            green=(0, 0.10),
+            yellow=(0.10, 0.15),
+            red_above=0.15,
+            hysteresis=0.01,
+            alert_type="DRAWDOWN",
+            red_above_message="回撤过大: {value:.1%} > {threshold:.0%}，超过风控阈值",
+            yellow_message="回撤接近警戒线: {value:.1%}",
+            red_above_action="执行风险控制，考虑减仓或暂停交易",
+            yellow_action="关注回撤变化，准备执行风控",
+        )
+    )
+
+    # 保留旧字段用于向后兼容（deprecated）
     sharpe_green_above: float = 1.5
     sharpe_yellow_range: tuple[float, float] = (1.0, 1.5)
     sharpe_red_below: float = 1.0
-
     kelly_usage_green_range: tuple[float, float] = (0.5, 1.0)
     kelly_usage_opportunity_below: float = 0.5
     kelly_usage_red_above: float = 1.0
-
     margin_green_below: float = 0.6
     margin_yellow_range: tuple[float, float] = (0.6, 0.8)
     margin_warning_above: float = 0.8
     margin_red_above: float = 0.9
-
     max_drawdown_warning_pct: float = 0.10
     max_drawdown_red_pct: float = 0.15
 
@@ -394,30 +674,6 @@ class MonitoringConfig:
             pl = data["portfolio_level"]
 
             # 使用统一的 ThresholdRange 解析
-            if "beta_weighted_delta" in pl:
-                config.portfolio.beta_weighted_delta = cls._parse_threshold_range(
-                    pl["beta_weighted_delta"],
-                    PortfolioThresholds().beta_weighted_delta,
-                )
-
-            if "portfolio_theta" in pl:
-                config.portfolio.portfolio_theta = cls._parse_threshold_range(
-                    pl["portfolio_theta"],
-                    PortfolioThresholds().portfolio_theta,
-                )
-
-            if "portfolio_vega" in pl:
-                config.portfolio.portfolio_vega = cls._parse_threshold_range(
-                    pl["portfolio_vega"],
-                    PortfolioThresholds().portfolio_vega,
-                )
-
-            if "portfolio_gamma" in pl:
-                config.portfolio.portfolio_gamma = cls._parse_threshold_range(
-                    pl["portfolio_gamma"],
-                    PortfolioThresholds().portfolio_gamma,
-                )
-
             if "portfolio_tgr" in pl:
                 config.portfolio.portfolio_tgr = cls._parse_threshold_range(
                     pl["portfolio_tgr"],
@@ -428,21 +684,6 @@ class MonitoringConfig:
                 config.portfolio.concentration_hhi = cls._parse_threshold_range(
                     pl["concentration_hhi"],
                     PortfolioThresholds().concentration_hhi,
-                )
-
-            # 向后兼容：旧格式 TGR
-            if "tgr" in pl:
-                tgr = pl["tgr"]
-                config.portfolio.tgr_green_above = tgr.get("green_above", 0.15)
-                config.portfolio.tgr_yellow_range = tuple(
-                    tgr.get("yellow_range", [0.05, 0.15])
-                )
-                config.portfolio.tgr_red_below = tgr.get("red_below", 0.05)
-
-            # 向后兼容：旧格式 concentration
-            if "correlation" in pl:
-                config.portfolio.max_concentration = pl["correlation"].get(
-                    "max_concentration", 0.5
                 )
 
         if "position_level" in data:

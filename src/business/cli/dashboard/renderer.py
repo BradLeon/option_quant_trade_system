@@ -369,6 +369,8 @@ class DashboardRenderer:
             ("行权价", 7),
             ("Expiry", 8),
             ("DTE", 4),
+            ("正股", 7),  # underlying_price (新增)
+            ("OTM%", 5),
             ("Qty", 4),
             ("Prem", 6),
             ("成本", 6),
@@ -385,10 +387,16 @@ class DashboardRenderer:
             qty = pos.quantity or 0
             qty_str = f"{abs(qty):.1f}" if qty != int(qty) else f"{int(abs(qty))}"
 
-            # 权利金（每股，使用绝对值）
+            # 正股现价 (underlying_price)
+            underlying_str = f"{pos.underlying_price:.2f}" if pos.underlying_price else "-"
+
+            # OTM% 显示
+            otm_str = f"{pos.otm_pct:.0%}" if pos.otm_pct is not None else "-"
+
+            # 权利金（当前价格，每股）
             prem_str = f"{abs(pos.current_price):.2f}" if pos.current_price else "-"
 
-            # 成本价（使用绝对值）
+            # 成本价（入场价格，每股）
             cost_str = f"{abs(pos.entry_price):.2f}" if pos.entry_price else "-"
 
             # 现价（每股，使用绝对值）
@@ -397,11 +405,21 @@ class DashboardRenderer:
             # PnL%
             pnl_str = f"{pos.unrealized_pnl_pct:+.1%}" if pos.unrealized_pnl_pct else "-"
 
-            level = self.checker.get_position_overall_level(pos.prei, pos.dte, pos.tgr)
+            level = self.checker.get_position_overall_level(
+                prei=pos.prei,
+                dte=pos.dte,
+                tgr=pos.tgr,
+                otm_pct=pos.otm_pct,
+                delta=abs(pos.delta) if pos.delta else None,
+                expected_roc=pos.expected_roc,
+                win_probability=pos.win_probability,
+            )
             status_icon = alert_icon(level) if level else ""
 
             values = common_prefix(pos) + [
                 str(pos.dte) if pos.dte is not None else "-",
+                underlying_str,  # 正股现价 (新增)
+                otm_str,
                 qty_str,
                 prem_str,
                 cost_str,

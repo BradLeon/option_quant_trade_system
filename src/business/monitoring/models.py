@@ -42,14 +42,24 @@ class AlertType(str, Enum):
     IV_HV_QUALITY = "iv_hv_quality"  # 持仓质量（Vega加权IV/HV）
 
     # Position 级
-    MONEYNESS = "moneyness"  # 虚值程度
+    MONEYNESS = "moneyness"  # 虚值程度（旧）
+    OTM_PCT = "otm_pct"  # OTM 百分比（新）
     DELTA_CHANGE = "delta_change"  # Delta 变化
     GAMMA_NEAR_EXPIRY = "gamma_near_expiry"  # 临近到期 Gamma 风险
+    GAMMA_RISK = "gamma_risk"  # Gamma 风险（通用）
+    GAMMA_RISK_PCT = "gamma_risk_pct"  # Gamma 风险百分比（相对 Margin）
+    POSITION_IV_HV = "position_iv_hv"  # 持仓级 IV/HV 比率
+    POSITION_TGR = "position_tgr"  # 持仓级 TGR
     IV_HV_CHANGE = "iv_hv_change"  # IV/HV 变化
     PREI_HIGH = "prei_high"  # PREI 过高
     DTE_WARNING = "dte_warning"  # 临近到期
     PROFIT_TARGET = "profit_target"  # 达到止盈
     STOP_LOSS = "stop_loss"  # 达到止损
+    PNL_TARGET = "pnl_target"  # 盈亏目标（通用）
+    SAS_SCORE = "sas_score"  # SAS 策略吸引力分数
+    ROC_LOW = "roc_low"  # ROC 过低
+    EXPECTED_ROC_LOW = "expected_roc_low"  # Expected ROC 过低
+    WIN_PROB_LOW = "win_prob_low"  # Win Probability 过低
 
     # Capital 级
     SHARPE_LOW = "sharpe_low"  # Sharpe 过低
@@ -82,6 +92,7 @@ class Alert:
     # 当前值和阈值
     current_value: Optional[float] = None
     threshold_value: Optional[float] = None
+    threshold_range: Optional[str] = None  # 正常范围描述，如 "≥10%" 或 "5%~10%"
 
     # 建议操作
     suggested_action: Optional[str] = None
@@ -123,7 +134,8 @@ class PositionData:
     expiry: Optional[str] = None  # YYYYMMDD
     dte: Optional[int] = None
     contract_multiplier: int = 1
-    moneyness: Optional[float] = None  # 由 DataBridge 计算: (S-K)/K
+    moneyness: Optional[float] = None  # 由 DataBridge 计算: (S-K)/K（旧字段，保留兼容）
+    otm_pct: Optional[float] = None  # OTM 百分比: Put=(S-K)/S, Call=(K-S)/S
 
     # === Greeks（期权必须，股票 delta=quantity）===
     delta: Optional[float] = None
@@ -188,6 +200,7 @@ class PositionData:
     # === 资金相关指标 ===
     margin: Optional[float] = None  # 保证金需求
     capital_at_risk: Optional[float] = None  # 风险资本
+    gamma_risk_pct: Optional[float] = None  # Gamma 风险百分比: |Gamma| / Margin
 
     # === 便捷属性（仅做类型判断，无计算逻辑）===
     @property

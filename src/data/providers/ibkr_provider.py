@@ -1424,7 +1424,13 @@ class IBKRProvider(DataProvider, AccountProvider):
                         results[i].market_value = port_item.marketValue
                         results[i].unrealized_pnl = port_item.unrealizedPNL
                         # Use averageCost from portfolio (more reliable than Position.avgCost)
-                        results[i].avg_cost = port_item.averageCost
+                        # IBKR's averageCost for OPTIONS is per-contract (price × multiplier)
+                        # Normalize to per-share price for consistent calculation across brokers
+                        # NOTE: Only apply to OPTIONS, Stock avg_cost is already per-share
+                        if results[i].asset_type == AssetType.OPTION and results[i].contract_multiplier > 0:
+                            results[i].avg_cost = port_item.averageCost / results[i].contract_multiplier
+                        else:
+                            results[i].avg_cost = port_item.averageCost
 
                         # For stocks, underlying_price = market_value / quantity
                         if results[i].asset_type == AssetType.STOCK and results[i].quantity != 0:

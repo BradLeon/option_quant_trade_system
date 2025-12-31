@@ -1,21 +1,33 @@
 """
 Position Monitor - 持仓级监控器
 
-监控单个持仓的风险指标：
-- Moneyness (虚值程度)
-- Delta 变化
-- Gamma 临近到期风险
-- IV/HV 变化
-- PREI (持仓风险暴露指数)
-- DTE 到期预警
-- 盈亏止盈止损
+监控单个持仓的 12 个风险指标（基于实战经验优化）：
+
+| 指标            | 绿色（正常）  | 黄色（关注）  | 红色（风险）  | 说明                    |
+|-----------------|---------------|---------------|---------------|-------------------------|
+| OTM%            | ≥10%          | 5%~10%        | <5%           | 虚值百分比（统一公式）  |
+| |Delta|         | ≤0.20         | 0.20~0.40     | >0.50         | 方向性风险（绝对值）    |
+| DTE             | ≥14 天        | 7~14 天       | <7 天         | 到期天数                |
+| P&L%            | ≥50%          | 0%~50%        | <0%           | 持仓盈亏                |
+| Gamma Risk%     | ≤0.5%         | 0.5%~1%       | >1%           | Gamma/Margin 百分比     |
+| TGR             | ≥0.15         | 0.08~0.15     | <0.08         | Theta/Gamma 效率        |
+| IV/HV           | ≥1.2          | 0.8~1.2       | <0.8          | 期权定价质量            |
+| ROC             | ≥20%          | 10%~20%       | <10%          | 资金使用效率            |
+| Expected ROC    | ≥10%          | 0%~10%        | <0%           | 预期资本回报率          |
+| Win Prob        | ≥70%          | 55%~70%       | <55%          | 胜率                    |
+| PREI            | <40           | 40~60         | >60           | 风险暴露指数            |
+| SAS             | ≥70           | 50~70         | <50           | 策略吸引力分数          |
+
+设计原则：
+- 只做阈值检查，不做计算（遵循 Decision #0）
+- 使用通用 _check_threshold() 函数，消息和建议从配置中读取
+- OTM% 使用统一公式: Put=(S-K)/S, Call=(K-S)/S，无需 Put/Call 区分
+- P&L 特殊处理：止盈为 GREEN alert（机会），止损为 RED alert
 """
 
 import logging
-from datetime import datetime
-from typing import Optional
 
-from src.business.config.monitoring_config import MonitoringConfig, PositionThresholds
+from src.business.config.monitoring_config import MonitoringConfig, ThresholdRange
 from src.business.monitoring.models import (
     Alert,
     AlertLevel,
@@ -30,14 +42,21 @@ logger = logging.getLogger(__name__)
 class PositionMonitor:
     """持仓级监控器
 
-    监控单个持仓的风险指标：
-    1. Moneyness - 虚值程度，靠近平值风险增加
-    2. Delta 变化 - Delta 快速变化预警
-    3. Gamma 临近到期 - 到期前 Gamma 风险放大
-    4. IV/HV 变化 - 波动率环境变化
-    5. PREI - 综合风险暴露指数
-    6. DTE - 到期日预警
-    7. 盈亏 - 止盈止损检查
+    监控单个持仓的 12 个风险指标：
+    1. OTM% - 虚值百分比（统一公式，替代旧 Moneyness）
+    2. |Delta| - 方向性风险（绝对值）
+    3. DTE - 到期日预警（绿色提高到14天）
+    4. P&L% - 止盈止损检查
+    5. Gamma Risk% - Gamma/Margin 百分比
+    6. TGR - 时间衰减效率
+    7. IV/HV - 波动率环境变化
+    8. ROC - 资金使用效率
+    9. Expected ROC - 预期资本回报率
+    10. Win Probability - 胜率
+    11. PREI - 综合风险暴露指数
+    12. SAS - 策略吸引力
+
+    使用通用 _check_threshold() 方法，消息和建议从配置读取。
     """
 
     def __init__(self, config: MonitoringConfig) -> None:
@@ -48,9 +67,6 @@ class PositionMonitor:
         """
         self.config = config
         self.thresholds = config.position
-
-        # 用于跟踪 Delta 变化
-        self._prev_deltas: dict[str, float] = {}
 
     def evaluate(
         self,
@@ -72,412 +88,359 @@ class PositionMonitor:
         return alerts
 
     def _evaluate_position(self, pos: PositionData) -> list[Alert]:
-        """评估单个持仓"""
-        # TODO, 这个代码是理想状态，比较简洁，其他两个monitor要改造成这个样子。
+        """评估单个持仓（仅期权）
+
+        使用通用 _check_threshold() 方法进行阈值检查，
+        消息和建议从 ThresholdRange 配置读取。
+
+        注意：Stock 类型持仓不在此监控器范围内，直接跳过。
+
+        检查 12 个指标，按重要性排序：
+        1. OTM% - 虚值百分比（核心风险指标）
+        2. |Delta| - 方向性风险
+        3. DTE - 到期日预警
+        4. P&L% - 止盈止损（特殊逻辑）
+        5. Gamma Risk% - Gamma/Margin 百分比
+        6. TGR - 时间衰减效率
+        7. IV/HV - 波动率环境
+        8. ROC - 资金使用效率
+        9. Expected ROC - 预期资本回报率
+        10. Win Probability - 胜率
+        11. PREI - 综合风险暴露指数
+        12. SAS - 策略吸引力
+        """
+        # 跳过 Stock 类型持仓，PositionMonitor 只监控期权
+        if pos.is_stock:
+            return []
+
         alerts: list[Alert] = []
 
-        # 检查 Moneyness
-        alerts.extend(self._check_moneyness(pos))
+        # 1. 检查 OTM%（统一公式，无需 Put/Call 区分）
+        alerts.extend(self._check_threshold(
+            value=pos.otm_pct,
+            threshold=self.thresholds.otm_pct,
+            metric_name="otm_pct",
+            position=pos,
+        ))
 
-        # 检查 Delta 变化
-        alerts.extend(self._check_delta_change(pos))
+        # 2. 检查 |Delta|（使用绝对值）
+        alerts.extend(self._check_threshold(
+            value=abs(pos.delta) if pos.delta is not None else None,
+            threshold=self.thresholds.delta,
+            metric_name="delta",
+            position=pos,
+        ))
 
-        # 检查 Gamma 临近到期
-        alerts.extend(self._check_gamma_near_expiry(pos))
+        # 3. 检查 DTE
+        alerts.extend(self._check_threshold(
+            value=pos.dte,
+            threshold=self.thresholds.dte,
+            metric_name="dte",
+            position=pos,
+        ))
 
-        # 检查 IV/HV
-        alerts.extend(self._check_iv_hv(pos))
-
-        # 检查 PREI
-        alerts.extend(self._check_prei(pos))
-
-        # 检查 DTE
-        alerts.extend(self._check_dte(pos))
-
-        # 检查盈亏
+        # 4. 检查 P&L%（特殊逻辑：止盈为 GREEN，止损为 RED）
         alerts.extend(self._check_pnl(pos))
 
-        # 检查 SAS (策略吸引力)
-        alerts.extend(self._check_sas(pos))
+        # 5. 检查 Gamma Risk%（Gamma/Margin 百分比）
+        alerts.extend(self._check_threshold(
+            value=pos.gamma_risk_pct,
+            threshold=self.thresholds.gamma_risk_pct,
+            metric_name="gamma_risk_pct",
+            position=pos,
+        ))
 
-        # 检查 TGR (Position Level)
-        alerts.extend(self._check_tgr(pos))
+        # 6. 检查 TGR
+        alerts.extend(self._check_threshold(
+            value=pos.tgr,
+            threshold=self.thresholds.tgr,
+            metric_name="tgr",
+            position=pos,
+        ))
+
+        # 7. 检查 IV/HV
+        alerts.extend(self._check_threshold(
+            value=pos.iv_hv_ratio,
+            threshold=self.thresholds.iv_hv,
+            metric_name="iv_hv",
+            position=pos,
+        ))
+
+        # 8. 检查 ROC
+        alerts.extend(self._check_threshold(
+            value=pos.roc,
+            threshold=self.thresholds.roc,
+            metric_name="roc",
+            position=pos,
+        ))
+
+        # 9. 检查 Expected ROC
+        alerts.extend(self._check_threshold(
+            value=pos.expected_roc,
+            threshold=self.thresholds.expected_roc,
+            metric_name="expected_roc",
+            position=pos,
+        ))
+
+        # 10. 检查 Win Probability
+        alerts.extend(self._check_threshold(
+            value=pos.win_probability,
+            threshold=self.thresholds.win_probability,
+            metric_name="win_probability",
+            position=pos,
+        ))
+
+        # 11. 检查 PREI
+        alerts.extend(self._check_threshold(
+            value=pos.prei,
+            threshold=self.thresholds.prei,
+            metric_name="prei",
+            position=pos,
+        ))
+
+        # 12. 检查 SAS
+        alerts.extend(self._check_threshold(
+            value=pos.sas,
+            threshold=self.thresholds.sas,
+            metric_name="sas",
+            position=pos,
+        ))
 
         return alerts
 
-    def _check_moneyness(self, pos: PositionData) -> list[Alert]:
-        """检查虚值程度"""
-        alerts: list[Alert] = []
-        moneyness = pos.moneyness
+    def _format_threshold_range(self, threshold: ThresholdRange, is_pct: bool = False) -> str:
+        """格式化阈值范围字符串
 
-        if moneyness is None:
-            return alerts
+        Args:
+            threshold: 阈值配置
+            is_pct: 是否为百分比格式
 
-        # 对于卖 Put，moneyness > 0 表示 OTM (安全)
-        # 对于卖 Call，moneyness < 0 表示 OTM (安全)
-        is_put = pos.option_type == "put"
+        Returns:
+            格式化的范围字符串，如 "≥10%" 或 "40~60"
+        """
+        if not threshold.green:
+            return ""
 
-        if is_put:
-            # Sell Put: S > K 为 OTM，moneyness > 0
-            if moneyness < self.thresholds.moneyness_red_below:
-                alerts.append(
-                    Alert(
-                        alert_type=AlertType.MONEYNESS,
-                        level=AlertLevel.RED,
-                        message=f"持仓 {pos.symbol} 已变为 ITM (Moneyness={moneyness:.2%})",
-                        symbol=pos.symbol,
-                        position_id=pos.position_id,
-                        current_value=moneyness,
-                        threshold_value=self.thresholds.moneyness_red_below,
-                        suggested_action="考虑止损或展期",
-                    )
-                )
-            elif moneyness < self.thresholds.moneyness_yellow_range[1]:
-                alerts.append(
-                    Alert(
-                        alert_type=AlertType.MONEYNESS,
-                        level=AlertLevel.YELLOW,
-                        message=f"持仓 {pos.symbol} 接近平值 (Moneyness={moneyness:.2%})",
-                        symbol=pos.symbol,
-                        position_id=pos.position_id,
-                        current_value=moneyness,
-                        suggested_action="密切关注标的走势",
-                    )
-                )
+        green_low, green_high = threshold.green
+        fmt = lambda v: f"{v:.0%}" if is_pct else (f"{v:.0f}" if v == int(v) else f"{v:.2f}")
+
+        if green_high == float("inf"):
+            return f"≥{fmt(green_low)}"
+        elif green_low == float("-inf") or green_low == 0:
+            return f"≤{fmt(green_high)}"
         else:
-            # Sell Call: S < K 为 OTM，moneyness < 0
-            if moneyness > -self.thresholds.moneyness_red_below:
-                alerts.append(
-                    Alert(
-                        alert_type=AlertType.MONEYNESS,
-                        level=AlertLevel.RED,
-                        message=f"持仓 {pos.symbol} 已变为 ITM (Moneyness={moneyness:.2%})",
-                        symbol=pos.symbol,
-                        position_id=pos.position_id,
-                        current_value=moneyness,
-                        suggested_action="考虑止损或展期",
-                    )
-                )
+            return f"{fmt(green_low)}~{fmt(green_high)}"
 
-        return alerts
+    def _check_threshold(
+        self,
+        value: float | int | None,
+        threshold: ThresholdRange,
+        metric_name: str,
+        position: PositionData,
+    ) -> list[Alert]:
+        """通用阈值检查函数
 
-    def _check_delta_change(self, pos: PositionData) -> list[Alert]:
-        """检查 Delta 变化"""
+        根据 ThresholdRange 配置检查值是否超出阈值，
+        消息和建议操作从配置中读取。
+
+        Args:
+            value: 当前指标值
+            threshold: 阈值配置（含消息模板）
+            metric_name: 指标名称（用于日志）
+            position: 持仓数据（用于填充 symbol, position_id）
+
+        Returns:
+            预警列表
+        """
+        if value is None:
+            return []
+
         alerts: list[Alert] = []
-        delta = pos.delta
 
-        if delta is None:
-            return alerts
+        # 获取 AlertType
+        try:
+            alert_type = AlertType[threshold.alert_type] if threshold.alert_type else AlertType.PREI_HIGH
+        except KeyError:
+            logger.warning(f"Unknown alert_type: {threshold.alert_type}, using PREI_HIGH")
+            alert_type = AlertType.PREI_HIGH
 
-        # 检查 Delta 绝对值是否过高
-        if abs(delta) > self.thresholds.delta_red_above:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.DELTA_CHANGE,
-                    level=AlertLevel.RED,
-                    message=f"持仓 {pos.symbol} Delta 过高: {delta:.2f}",
-                    symbol=pos.symbol,
-                    position_id=pos.position_id,
-                    current_value=delta,
-                    threshold_value=self.thresholds.delta_red_above,
-                    suggested_action="Delta 接近 1，期权类似标的，考虑平仓",
-                )
+        # 判断是否为百分比格式（用于阈值范围显示）
+        is_pct = metric_name in ("otm_pct", "pnl", "roc", "expected_roc", "win_probability", "gamma_risk_pct")
+
+        # 格式化阈值范围
+        threshold_range = self._format_threshold_range(threshold, is_pct)
+
+        # 检查红色上限
+        if threshold.red_above is not None and value > threshold.red_above:
+            message = self._format_message(
+                threshold.red_above_message,
+                value, threshold.red_above, position, metric_name
             )
+            alerts.append(Alert(
+                alert_type=alert_type,
+                level=AlertLevel.RED,
+                message=message,
+                symbol=position.symbol,
+                position_id=position.position_id,
+                current_value=float(value),
+                threshold_value=threshold.red_above,
+                threshold_range=threshold_range,
+                suggested_action=threshold.red_above_action or None,
+            ))
+            return alerts  # RED 优先，不再检查其他
 
-        # 检查 Delta 变化幅度
-        prev_delta = self._prev_deltas.get(pos.position_id)
-        if prev_delta is not None:
-            delta_change = abs(delta - prev_delta)
-            if delta_change > self.thresholds.delta_change_warning:
-                alerts.append(
-                    Alert(
-                        alert_type=AlertType.DELTA_CHANGE,
-                        level=AlertLevel.YELLOW,
-                        message=f"持仓 {pos.symbol} Delta 变化较大: {delta_change:.2f}",
-                        symbol=pos.symbol,
-                        position_id=pos.position_id,
-                        current_value=delta_change,
-                        threshold_value=self.thresholds.delta_change_warning,
-                        details={"prev_delta": prev_delta, "current_delta": delta},
-                        suggested_action="关注 Delta 变化趋势",
-                    )
-                )
-
-        # 更新历史 Delta
-        self._prev_deltas[pos.position_id] = delta
-
-        return alerts
-
-    def _check_gamma_near_expiry(self, pos: PositionData) -> list[Alert]:
-        """检查临近到期的 Gamma 风险"""
-        alerts: list[Alert] = []
-        gamma = pos.gamma
-        dte = pos.dte
-
-        if gamma is None or dte is None:
-            return alerts
-
-        # 临近到期时，Gamma 风险放大
-        gamma_abs = abs(gamma)
-        effective_threshold = self.thresholds.gamma_red_above
-
-        if dte <= self.thresholds.dte_urgent_days:
-            # 临近到期，降低 Gamma 阈值
-            effective_threshold *= (1 / self.thresholds.gamma_near_expiry_multiplier)
-
-        if gamma_abs > effective_threshold:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.GAMMA_NEAR_EXPIRY,
-                    level=AlertLevel.RED if dte <= 3 else AlertLevel.YELLOW,
-                    message=f"持仓 {pos.symbol} Gamma 风险高: {gamma:.4f} (DTE={dte})",
-                    symbol=pos.symbol,
-                    position_id=pos.position_id,
-                    current_value=gamma_abs,
-                    threshold_value=effective_threshold,
-                    details={"dte": dte},
-                    suggested_action="临近到期 Gamma 放大，考虑平仓或展期",
-                )
+        # 检查红色下限
+        if threshold.red_below is not None and value < threshold.red_below:
+            message = self._format_message(
+                threshold.red_below_message,
+                value, threshold.red_below, position, metric_name
             )
-        elif gamma_abs > self.thresholds.gamma_yellow_range[0]:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.GAMMA_NEAR_EXPIRY,
-                    level=AlertLevel.YELLOW,
-                    message=f"持仓 {pos.symbol} Gamma 偏高: {gamma:.4f}",
-                    symbol=pos.symbol,
-                    position_id=pos.position_id,
-                    current_value=gamma_abs,
-                    suggested_action="关注 Gamma 风险",
+            alerts.append(Alert(
+                alert_type=alert_type,
+                level=AlertLevel.RED,
+                message=message,
+                symbol=position.symbol,
+                position_id=position.position_id,
+                current_value=float(value),
+                threshold_value=threshold.red_below,
+                threshold_range=threshold_range,
+                suggested_action=threshold.red_below_action or None,
+            ))
+            return alerts  # RED 优先，不再检查其他
+
+        # 检查绿色范围 - 如果在绿色范围内，产生 GREEN Alert
+        if threshold.green:
+            green_low, green_high = threshold.green
+            in_green = green_low <= value <= green_high or (green_high == float("inf") and value >= green_low)
+            if in_green:
+                # 产生 GREEN Alert（正常状态也要显示）
+                message = self._format_message(
+                    threshold.green_message or f"{{symbol}} {metric_name} 正常: {{value}}",
+                    value, None, position, metric_name
                 )
-            )
-
-        return alerts
-
-    def _check_iv_hv(self, pos: PositionData) -> list[Alert]:
-        """检查 IV/HV 变化"""
-        alerts: list[Alert] = []
-        iv_hv = pos.iv_hv_ratio
-
-        if iv_hv is None:
-            return alerts
-
-        if iv_hv < self.thresholds.iv_hv_unfavorable_below:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.IV_HV_CHANGE,
-                    level=AlertLevel.YELLOW,
-                    message=f"持仓 {pos.symbol} IV/HV 偏低: {iv_hv:.2f}",
-                    symbol=pos.symbol,
-                    position_id=pos.position_id,
-                    current_value=iv_hv,
-                    threshold_value=self.thresholds.iv_hv_unfavorable_below,
-                    suggested_action="IV 相对 HV 偏低，持仓吸引力下降",
-                )
-            )
-        elif iv_hv > self.thresholds.iv_hv_favorable_above:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.IV_HV_CHANGE,
+                alerts.append(Alert(
+                    alert_type=alert_type,
                     level=AlertLevel.GREEN,
-                    message=f"持仓 {pos.symbol} IV/HV 良好: {iv_hv:.2f}",
-                    symbol=pos.symbol,
-                    position_id=pos.position_id,
-                    current_value=iv_hv,
-                    suggested_action="IV 相对 HV 偏高，有利于期权卖方",
-                )
-            )
+                    message=message,
+                    symbol=position.symbol,
+                    position_id=position.position_id,
+                    current_value=float(value),
+                    threshold_range=threshold_range,
+                    suggested_action=threshold.green_action or None,
+                ))
+                return alerts
+
+        # 不在红色范围，也不在绿色范围 -> 黄色预警
+        message = self._format_message(
+            threshold.yellow_message,
+            value, None, position, metric_name
+        )
+        alerts.append(Alert(
+            alert_type=alert_type,
+            level=AlertLevel.YELLOW,
+            message=message,
+            symbol=position.symbol,
+            position_id=position.position_id,
+            current_value=float(value),
+            threshold_range=threshold_range,
+            suggested_action=threshold.yellow_action or None,
+        ))
 
         return alerts
 
-    def _check_prei(self, pos: PositionData) -> list[Alert]:
-        """检查 PREI"""
-        alerts: list[Alert] = []
-        prei = pos.prei
+    def _format_message(
+        self,
+        template: str,
+        value: float | int,
+        threshold: float | None,
+        position: PositionData,
+        metric_name: str,
+    ) -> str:
+        """格式化消息模板
 
-        if prei is None:
-            return alerts
+        Args:
+            template: 消息模板（支持 {value}, {threshold}, {symbol}）
+            value: 当前值
+            threshold: 阈值
+            position: 持仓数据
+            metric_name: 指标名称
 
-        if prei > self.thresholds.prei_red_above:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.PREI_HIGH,
-                    level=AlertLevel.RED,
-                    message=f"持仓 {pos.symbol} PREI 过高: {prei:.1f}",
-                    symbol=pos.symbol,
-                    position_id=pos.position_id,
-                    current_value=prei,
-                    threshold_value=self.thresholds.prei_red_above,
-                    suggested_action="风险暴露过高，考虑减仓或对冲",
-                )
+        Returns:
+            格式化后的消息
+        """
+        if not template:
+            return f"持仓 {position.symbol} {metric_name} 异常: {value}"
+
+        try:
+            # 支持的占位符
+            return template.format(
+                value=value,
+                threshold=threshold if threshold is not None else "",
+                symbol=position.symbol,
             )
-        elif prei > self.thresholds.prei_yellow_range[0]:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.PREI_HIGH,
-                    level=AlertLevel.YELLOW,
-                    message=f"持仓 {pos.symbol} PREI 偏高: {prei:.1f}",
-                    symbol=pos.symbol,
-                    position_id=pos.position_id,
-                    current_value=prei,
-                    suggested_action="关注风险暴露",
-                )
-            )
-
-        return alerts
-
-    def _check_dte(self, pos: PositionData) -> list[Alert]:
-        """检查 DTE"""
-        alerts: list[Alert] = []
-        dte = pos.dte
-
-        if dte is None:
-            return alerts
-
-        if dte <= self.thresholds.dte_urgent_days:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.DTE_WARNING,
-                    level=AlertLevel.RED,
-                    message=f"持仓 {pos.symbol} 即将到期: {dte} 天",
-                    symbol=pos.symbol,
-                    position_id=pos.position_id,
-                    current_value=dte,
-                    threshold_value=self.thresholds.dte_urgent_days,
-                    suggested_action="临近到期，需要决定平仓或展期",
-                )
-            )
-        elif dte <= self.thresholds.dte_warning_days:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.DTE_WARNING,
-                    level=AlertLevel.YELLOW,
-                    message=f"持仓 {pos.symbol} 接近到期: {dte} 天",
-                    symbol=pos.symbol,
-                    position_id=pos.position_id,
-                    current_value=dte,
-                    threshold_value=self.thresholds.dte_warning_days,
-                    suggested_action="开始考虑出场策略",
-                )
-            )
-
-        return alerts
+        except (KeyError, ValueError):
+            return f"持仓 {position.symbol} {metric_name}: {value}"
 
     def _check_pnl(self, pos: PositionData) -> list[Alert]:
-        """检查盈亏"""
+        """检查盈亏
+
+        基于 ThresholdRange 的三档检查：
+        - RED: 触发止损 (P&L < red_below, 默认 0%)
+        - YELLOW: 未达止盈 (0% ~ 50%)
+        - GREEN: 达到止盈目标 (P&L >= 50%)
+        """
         alerts: list[Alert] = []
         pnl_pct = pos.unrealized_pnl_pct
 
         if pnl_pct is None:
             return alerts
 
-        if pnl_pct >= self.thresholds.take_profit_pct:
-            alerts.append(
-                Alert(
+        threshold = self.thresholds.pnl
+        threshold_range = self._format_threshold_range(threshold, is_pct=True)
+
+        # 检查止损（red_below）
+        if threshold.red_below is not None and pnl_pct < threshold.red_below:
+            alerts.append(Alert(
+                alert_type=AlertType.STOP_LOSS,
+                level=AlertLevel.RED,
+                message=f"持仓 {pos.symbol} 触发止损: {pnl_pct:.1%}",
+                symbol=pos.symbol,
+                position_id=pos.position_id,
+                current_value=pnl_pct,
+                threshold_value=threshold.red_below,
+                threshold_range=threshold_range,
+                suggested_action=threshold.red_below_action or "触发止损，执行风险管理",
+            ))
+            return alerts
+
+        # 检查止盈（green 范围）
+        if threshold.green:
+            take_profit = threshold.green[0]  # green 范围下限即止盈目标
+            if pnl_pct >= take_profit:
+                alerts.append(Alert(
                     alert_type=AlertType.PROFIT_TARGET,
                     level=AlertLevel.GREEN,
                     message=f"持仓 {pos.symbol} 达到止盈目标: {pnl_pct:.1%}",
                     symbol=pos.symbol,
                     position_id=pos.position_id,
                     current_value=pnl_pct,
-                    threshold_value=self.thresholds.take_profit_pct,
-                    suggested_action="考虑止盈平仓，锁定利润",
-                )
-            )
-        elif pnl_pct <= self.thresholds.stop_loss_pct:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.STOP_LOSS,
-                    level=AlertLevel.RED,
-                    message=f"持仓 {pos.symbol} 触发止损: {pnl_pct:.1%}",
-                    symbol=pos.symbol,
-                    position_id=pos.position_id,
-                    current_value=pnl_pct,
-                    threshold_value=self.thresholds.stop_loss_pct,
-                    suggested_action="触发止损，执行风险管理",
-                )
-            )
+                    threshold_value=take_profit,
+                    threshold_range=threshold_range,
+                    suggested_action=threshold.green_action or "考虑止盈平仓，锁定利润",
+                ))
+                return alerts
 
-        return alerts
-
-    def _check_sas(self, pos: PositionData) -> list[Alert]:
-        """检查 SAS (Strategy Attractiveness Score)
-
-        SAS 阈值规则：
-        - SAS < 30: RED - 策略失效，建议平仓
-        - SAS 30-50: YELLOW - 边缘区域，需要评估
-        - SAS >= 50: GREEN - 可持有
-        """
-        alerts: list[Alert] = []
-        sas = pos.sas
-
-        if sas is None:
-            return alerts
-
-        # 使用配置的阈值或默认值
-        sas_red = getattr(self.thresholds, "sas_red_below", 30.0)
-        sas_yellow = getattr(self.thresholds, "sas_yellow_range", (30.0, 50.0))
-
-        if sas < sas_red:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.TGR_LOW,  # 复用 TGR_LOW 类型
-                    level=AlertLevel.RED,
-                    message=f"持仓 {pos.symbol} SAS 过低: {sas:.1f}",
-                    symbol=pos.symbol,
-                    position_id=pos.position_id,
-                    current_value=sas,
-                    threshold_value=sas_red,
-                    suggested_action="策略吸引力不足，考虑平仓",
-                    details={"metric": "sas"},
-                )
-            )
-        elif sas < sas_yellow[1]:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.TGR_LOW,
-                    level=AlertLevel.YELLOW,
-                    message=f"持仓 {pos.symbol} SAS 偏低: {sas:.1f}",
-                    symbol=pos.symbol,
-                    position_id=pos.position_id,
-                    current_value=sas,
-                    suggested_action="策略吸引力边缘，密切关注",
-                    details={"metric": "sas"},
-                )
-            )
-
-        return alerts
-
-    def _check_tgr(self, pos: PositionData) -> list[Alert]:
-        """检查 TGR (Theta/Gamma Ratio) at Position Level
-
-        TGR 阈值规则：
-        - TGR < 0.1: YELLOW - 效率较低，需调整
-        - TGR >= 0.1: GREEN - 效率良好
-        """
-        alerts: list[Alert] = []
-        tgr = pos.tgr
-
-        if tgr is None:
-            return alerts
-
-        # 使用配置的阈值或默认值
-        tgr_yellow = getattr(self.thresholds, "tgr_yellow_below", 0.1)
-
-        if tgr < tgr_yellow:
-            alerts.append(
-                Alert(
-                    alert_type=AlertType.TGR_LOW,
-                    level=AlertLevel.YELLOW,
-                    message=f"持仓 {pos.symbol} TGR 偏低: {tgr:.2f}",
-                    symbol=pos.symbol,
-                    position_id=pos.position_id,
-                    current_value=tgr,
-                    threshold_value=tgr_yellow,
-                    suggested_action="Theta/Gamma 效率偏低，考虑调整",
-                    details={"metric": "tgr"},
-                )
-            )
+        # 不在 RED 也不在 GREEN -> YELLOW
+        alerts.append(Alert(
+            alert_type=AlertType.PNL_TARGET,
+            level=AlertLevel.YELLOW,
+            message=f"持仓 {pos.symbol} 盈亏: {pnl_pct:.1%}",
+            symbol=pos.symbol,
+            position_id=pos.position_id,
+            current_value=pnl_pct,
+            threshold_range=threshold_range,
+            suggested_action=threshold.yellow_action or "关注盈亏变化",
+        ))
 
         return alerts
 

@@ -287,8 +287,27 @@ class SuggestionGenerator:
         # 构建详细说明
         details = self._build_details(primary_alert, alerts, positions, position_id)
 
-        # 获取 symbol
+        # 获取 symbol 和合约信息
         symbol = primary_alert.symbol or position_id
+        metadata: dict[str, Any] = {}
+
+        # 从 positions 获取合约详细信息
+        if positions:
+            pos = next((p for p in positions if p.position_id == position_id), None)
+            if pos and pos.is_option:
+                metadata["strategy_type"] = pos.strategy_type
+                metadata["option_type"] = pos.option_type
+                metadata["strike"] = pos.strike
+                metadata["expiry"] = pos.expiry
+                metadata["dte"] = pos.dte
+                metadata["underlying"] = pos.underlying or pos.symbol
+                # 构建更友好的显示名称
+                if pos.option_type and pos.strike and pos.expiry:
+                    try:
+                        exp_str = f"{pos.expiry[4:6]}/{pos.expiry[6:8]}"
+                        symbol = f"{pos.symbol} {pos.option_type.upper()} {pos.strike:.0f} {exp_str}"
+                    except (IndexError, TypeError):
+                        pass
 
         return PositionSuggestion(
             position_id=position_id,
@@ -298,6 +317,7 @@ class SuggestionGenerator:
             reason=reason,
             details=details,
             trigger_alerts=alerts,
+            metadata=metadata,
         )
 
     def _build_reason(self, primary: Alert, all_alerts: list[Alert]) -> str:
@@ -341,6 +361,28 @@ class SuggestionGenerator:
             详细说明文本
         """
         details = []
+
+        # 添加持仓合约信息（优先显示）
+        if positions:
+            pos = next((p for p in positions if p.position_id == position_id), None)
+            if pos and pos.is_option:
+                # 合约标识信息
+                contract_info = []
+                if pos.strategy_type:
+                    contract_info.append(pos.strategy_type.upper())
+                if pos.option_type:
+                    contract_info.append(pos.option_type.upper())
+                if pos.strike:
+                    contract_info.append(f"K={pos.strike:.0f}")
+                if pos.expiry:
+                    # 格式化 expiry: YYYYMMDD -> MM/DD
+                    try:
+                        exp_str = f"{pos.expiry[4:6]}/{pos.expiry[6:8]}"
+                        contract_info.append(f"Exp={exp_str}")
+                    except (IndexError, TypeError):
+                        contract_info.append(f"Exp={pos.expiry}")
+                if contract_info:
+                    details.append(" ".join(contract_info))
 
         # 添加阈值信息
         if primary.current_value is not None and primary.threshold_value is not None:

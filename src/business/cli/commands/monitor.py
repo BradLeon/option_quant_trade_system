@@ -340,8 +340,107 @@ def _load_capital(path: Optional[str]) -> CapitalMetrics:
     )
 
 
+# 指标说明字典
+METRIC_EXPLANATIONS = {
+    # Position 级指标
+    "otm_pct": "OTM% = 虚值百分比，越高越安全。Put=(S-K)/S, Call=(K-S)/S",
+    "delta": "|Delta| = 方向性风险，越低风险越小",
+    "dte": "DTE = 到期天数，越近风险越高（Gamma 风险）",
+    "pnl": "P&L% = 持仓盈亏百分比",
+    "gamma_risk_pct": "Gamma Risk% = |Gamma|/保证金，衡量 Gamma 风险暴露",
+    "tgr": "TGR = Theta/|Gamma|，时间衰减效率，越高越好",
+    "iv_hv": "IV/HV = 隐含/历史波动率比，≥1.2 适合卖方策略",
+    "roc": "ROC = 资本回报率，衡量资金使用效率",
+    "expected_roc": "Expected ROC = 预期资本回报率（考虑胜率）",
+    "win_probability": "Win Prob = 获胜概率，基于价格分布估算",
+    "prei": "PREI = 风险暴露指数，越低越好",
+    "sas": "SAS = 策略吸引力分数，越高越好",
+    # Capital 级指标
+    "sharpe": "Sharpe = 夏普比率，风险调整后收益",
+    "kelly_usage": "Kelly = Kelly 公式仓位使用率",
+    "margin_usage": "Margin = 保证金使用率",
+    "drawdown": "Drawdown = 最大回撤",
+    # Portfolio 级指标
+    "delta_exposure": "Delta = Beta 加权方向性敞口",
+    "gamma_exposure": "Gamma = 组合 Gamma 敞口",
+    "vega_exposure": "Vega = 波动率敞口",
+    "theta_exposure": "Theta = 时间衰减敞口",
+    "concentration": "HHI = 集中度指数，越低越分散",
+    "iv_hv_quality": "IV/HV = Vega 加权波动率质量",
+}
+
+
+def _get_metric_explanation(alert_type) -> str:
+    """根据 AlertType 获取指标说明"""
+    # 从 alert_type.value 提取指标名称
+    type_to_metric = {
+        "otm_pct": "otm_pct",
+        "delta_change": "delta",
+        "dte_warning": "dte",
+        "profit_target": "pnl",
+        "stop_loss": "pnl",
+        "pnl_target": "pnl",
+        "gamma_risk_pct": "gamma_risk_pct",
+        "tgr_low": "tgr",  # Portfolio 级 TGR
+        "position_tgr": "tgr",  # Position 级 TGR
+        "position_iv_hv": "iv_hv",  # Position 级 IV/HV
+        "iv_hv_change": "iv_hv",
+        "iv_hv_quality": "iv_hv_quality",  # Portfolio 级 IV/HV
+        "roc_low": "roc",
+        "expected_roc_low": "expected_roc",
+        "win_prob_low": "win_probability",
+        "prei_high": "prei",
+        "sas_score": "sas",
+        "sharpe_low": "sharpe",
+        "kelly_usage": "kelly_usage",
+        "margin_warning": "margin_usage",
+        "drawdown": "drawdown",
+        "delta_exposure": "delta_exposure",
+        "gamma_exposure": "gamma_exposure",
+        "vega_exposure": "vega_exposure",
+        "theta_exposure": "theta_exposure",
+        "concentration": "concentration",
+    }
+    metric = type_to_metric.get(alert_type.value, "")
+    return METRIC_EXPLANATIONS.get(metric, "")
+
+
+def _print_alerts_group(alerts: list, show_explanation: bool = True) -> None:
+    """打印一组预警（用于 Capital/Portfolio 级）"""
+    # 按级别排序：RED > YELLOW > GREEN
+    level_order = {"red": 0, "yellow": 1, "green": 2}
+    sorted_alerts = sorted(alerts, key=lambda a: level_order.get(a.level.value, 3))
+
+    for alert in sorted_alerts:
+        level_icon = {"red": "🔴", "yellow": "🟡", "green": "🟢"}.get(alert.level.value, "⚪")
+        click.echo(f"  {level_icon} {alert.message}")
+
+        # 显示阈值信息：RED 显示阈值，YELLOW 显示正常范围
+        if alert.level.value == "red" and alert.threshold_value is not None:
+            click.echo(f"     阈值: {alert.threshold_value}")
+        elif alert.level.value == "yellow" and alert.threshold_range:
+            click.echo(f"     正常范围: {alert.threshold_range}")
+
+        if alert.suggested_action:
+            click.echo(f"     💡 {alert.suggested_action}")
+
+        # 显示指标说明
+        if show_explanation:
+            explanation = _get_metric_explanation(alert.alert_type)
+            if explanation:
+                click.echo(f"     📖 {explanation}")
+
+
 def _output_text(result, verbose: bool = False) -> None:
-    """文本格式输出"""
+    """文本格式输出
+
+    按三层监控级别分组展示预警：
+    1. Capital 级（资金风险）
+    2. Portfolio 级（组合风险）
+    3. Position 级（按 position_id 单独展示每个期权合约）
+    """
+    from src.business.monitoring.models import AlertType
+
     click.echo(f"📊 监控状态: {result.status.value}")
     click.echo()
 
@@ -352,27 +451,90 @@ def _output_text(result, verbose: bool = False) -> None:
     click.echo(f"   🟢 绿色: {len(result.green_alerts)}")
     click.echo()
 
-    # 预警详情
-    if result.alerts:
-        click.echo("📋 预警详情:")
-        click.echo("-" * 80)
-
-        for alert in result.alerts:
-            level_icon = {"red": "🔴", "yellow": "🟡", "green": "🟢"}.get(alert.level.value, "⚪")
-            symbol_str = f"[{alert.symbol}] " if alert.symbol else ""
-            click.echo(f"{level_icon} {symbol_str}{alert.message}")
-
-            if alert.current_value is not None and alert.threshold_value is not None:
-                click.echo(f"   当前值: {alert.current_value:.2f} | 阈值: {alert.threshold_value:.2f}")
-
-            if alert.suggested_action:
-                click.echo(f"   建议: {alert.suggested_action}")
-
-            click.echo()
-
-        click.echo("-" * 80)
-    else:
+    if not result.alerts:
         click.echo("✅ 无预警，持仓状态正常")
+        return
+
+    # 按层级分类 AlertType
+    CAPITAL_TYPES = {
+        AlertType.SHARPE_LOW, AlertType.KELLY_USAGE,
+        AlertType.MARGIN_WARNING, AlertType.DRAWDOWN,
+    }
+    PORTFOLIO_TYPES = {
+        AlertType.DELTA_EXPOSURE, AlertType.GAMMA_EXPOSURE,
+        AlertType.VEGA_EXPOSURE, AlertType.THETA_EXPOSURE,
+        AlertType.TGR_LOW, AlertType.CONCENTRATION, AlertType.IV_HV_QUALITY,
+    }
+
+    # 分组预警
+    capital_alerts = [a for a in result.alerts if a.alert_type in CAPITAL_TYPES]
+    portfolio_alerts = [a for a in result.alerts if a.alert_type in PORTFOLIO_TYPES]
+    position_alerts = [a for a in result.alerts
+                       if a.alert_type not in CAPITAL_TYPES
+                       and a.alert_type not in PORTFOLIO_TYPES]
+
+    # Position 级按 position_id 分组（每个期权合约单独展示）
+    position_by_id: dict[str, list] = {}
+    for alert in position_alerts:
+        pos_id = alert.position_id or alert.symbol or "Unknown"
+        if pos_id not in position_by_id:
+            position_by_id[pos_id] = []
+        position_by_id[pos_id].append(alert)
+
+    click.echo("=" * 80)
+    click.echo("📋 预警详情")
+    click.echo("=" * 80)
+
+    # === Capital 级 ===
+    if capital_alerts:
+        click.echo()
+        click.echo("💰 【Capital 级 - 资金风险】")
+        click.echo("-" * 40)
+        _print_alerts_group(capital_alerts)
+
+    # === Portfolio 级 ===
+    if portfolio_alerts:
+        click.echo()
+        click.echo("📊 【Portfolio 级 - 组合风险】")
+        click.echo("-" * 40)
+        _print_alerts_group(portfolio_alerts)
+
+    # === Position 级 ===
+    if position_by_id:
+        click.echo()
+        click.echo("📈 【Position 级 - 持仓风险】")
+        click.echo("-" * 40)
+
+        # 按 position_id 排序后输出，每个期权合约单独展示
+        for pos_id in sorted(position_by_id.keys()):
+            alerts = position_by_id[pos_id]
+            click.echo()
+            click.echo(f"  📍 {pos_id}")
+
+            # 按级别排序：RED > YELLOW > GREEN
+            level_order = {"red": 0, "yellow": 1, "green": 2}
+            sorted_alerts = sorted(alerts, key=lambda a: level_order.get(a.level.value, 3))
+
+            for alert in sorted_alerts:
+                level_icon = {"red": "🔴", "yellow": "🟡", "green": "🟢"}.get(alert.level.value, "⚪")
+                click.echo(f"    {level_icon} {alert.message}")
+
+                # 显示阈值信息：RED 显示阈值，YELLOW 显示正常范围
+                if alert.level.value == "red" and alert.threshold_value is not None:
+                    click.echo(f"       阈值: {alert.threshold_value}")
+                elif alert.level.value == "yellow" and alert.threshold_range:
+                    click.echo(f"       正常范围: {alert.threshold_range}")
+
+                if alert.suggested_action:
+                    click.echo(f"       💡 {alert.suggested_action}")
+
+                # 显示指标说明
+                explanation = _get_metric_explanation(alert.alert_type)
+                if explanation:
+                    click.echo(f"       📖 {explanation}")
+
+    click.echo()
+    click.echo("=" * 80)
 
     # 调整建议
     if result.suggestions:
@@ -388,7 +550,15 @@ def _output_text(result, verbose: bool = False) -> None:
             }.get(suggestion.urgency.value, "📌")
 
             action_str = suggestion.action.value.upper()
-            click.echo(f"{urgency_icon} [{suggestion.symbol}] {action_str}")
+
+            # 构建显示标题：包含策略类型
+            display_title = suggestion.symbol
+            if suggestion.metadata:
+                strategy = suggestion.metadata.get("strategy_type")
+                if strategy:
+                    display_title = f"{suggestion.symbol} ({strategy})"
+
+            click.echo(f"{urgency_icon} [{display_title}] {action_str}")
             click.echo(f"   原因: {suggestion.reason}")
             if suggestion.details:
                 click.echo(f"   详情: {suggestion.details}")
