@@ -159,6 +159,13 @@ class PositionData:
     fundamental_score: Optional[float] = None  # 来自 FundamentalScore.score
     analyst_rating: Optional[str] = None  # 来自 FundamentalScore.rating
 
+    # === 技术信号（由 DataBridge 调用 calc_technical_signal 填充）===
+    market_regime: Optional[str] = None  # ranging, trending_up, trending_down
+    tech_trend_strength: Optional[str] = None  # very_weak, weak, emerging, moderate, strong
+    sell_put_signal: Optional[str] = None  # none, weak, moderate, strong
+    sell_call_signal: Optional[str] = None  # none, weak, moderate, strong
+    is_dangerous_period: Optional[bool] = None
+
     # === 策略指标（由 DataBridge 调用 strategy.calc_metrics() 填充）===
     strategy_type: Optional[str] = None  # "short_put" / "covered_call" 等
     prei: Optional[float] = None  # 来自 StrategyMetrics.prei

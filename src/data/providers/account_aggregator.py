@@ -318,6 +318,7 @@ class AccountAggregator:
         # Price fields: multiply by rate (HKD → USD)
         converted.market_value = pos.market_value * rate
         converted.unrealized_pnl = pos.unrealized_pnl * rate
+        converted.realized_pnl = pos.realized_pnl * rate
         converted.avg_cost = pos.avg_cost * rate
 
         # Convert underlying_price for strategy calculations
@@ -382,13 +383,11 @@ class AccountAggregator:
         merged: list[AccountPosition] = []
         for norm_symbol, pos_list in stocks.items():
             if len(pos_list) == 1:
-                # Single position, keep as is but update symbol
-                pos = pos_list[0]
-                pos.symbol = norm_symbol
-                merged.append(pos)
+                # Single position, keep as is (preserve original symbol with market suffix)
+                merged.append(pos_list[0])
             else:
-                # Multiple positions, merge them
-                merged_pos = self._merge_stock_positions(norm_symbol, pos_list)
+                # Multiple positions, merge them (use first position's symbol)
+                merged_pos = self._merge_stock_positions(pos_list[0].symbol, pos_list)
                 merged.append(merged_pos)
 
         # Add options (not merged)
@@ -412,7 +411,8 @@ class AccountAggregator:
         """
         total_qty = sum(p.quantity for p in positions)
         total_market_value = sum(p.market_value for p in positions)
-        total_pnl = sum(p.unrealized_pnl for p in positions)
+        total_unrealized_pnl = sum(p.unrealized_pnl for p in positions)
+        total_realized_pnl = sum(p.realized_pnl for p in positions)
 
         # Weighted average cost
         total_cost = sum(p.avg_cost * p.quantity for p in positions)
@@ -433,7 +433,8 @@ class AccountAggregator:
             quantity=total_qty,
             avg_cost=avg_cost,
             market_value=total_market_value,
-            unrealized_pnl=total_pnl,
+            unrealized_pnl=total_unrealized_pnl,
+            realized_pnl=total_realized_pnl,
             currency=base.currency,  # Already converted to base
             delta=1.0,  # Stock delta is always 1
             margin=merged_margin,  # Sum of margins from all brokers

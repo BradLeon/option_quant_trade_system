@@ -1423,6 +1423,8 @@ class IBKRProvider(DataProvider, AccountProvider):
                         port_item = portfolio_lookup[pos.contract.conId]
                         results[i].market_value = port_item.marketValue
                         results[i].unrealized_pnl = port_item.unrealizedPNL
+                        # Use averageCost from portfolio (more reliable than Position.avgCost)
+                        results[i].avg_cost = port_item.averageCost
 
                         # For stocks, underlying_price = market_value / quantity
                         if results[i].asset_type == AssetType.STOCK and results[i].quantity != 0:

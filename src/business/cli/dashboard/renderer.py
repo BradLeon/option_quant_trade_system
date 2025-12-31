@@ -577,7 +577,14 @@ class DashboardRenderer:
         return lines
 
     def _render_stock_table(self, positions: list[PositionData], alerts: list[Alert]) -> list[str]:
-        """Render Stock Positions table.
+        """Render Stock Positions tables.
+
+        Displays 5 tables for comprehensive stock position data:
+        1. Market Data (行情数据)
+        2. Fundamental Score (基本面评分)
+        3. Volatility Score (波动率评分)
+        4. Technical Score (技术面评分)
+        5. Technical Signal (技术信号)
 
         Args:
             positions: List of stock positions
@@ -587,37 +594,30 @@ class DashboardRenderer:
             List of table lines
         """
         lines = []
-        lines.append("┌─── 股票持仓明细 " + "─" * 72 + "┐")
 
-        # Define columns: (name, width)
-        columns = [
-            ("标的", 6),
+        # ========== Table 1: Market Data ==========
+        lines.append("┌─── 股票行情 (Market Data) " + "─" * 62 + "┐")
+
+        columns1 = [
+            ("标的", 8),
             ("数量", 6),
-            ("成本", 7),
-            ("现价", 7),
-            ("盈亏%", 6),
-            ("Delta", 6),
-            ("RSI", 4),
-            ("趋势", 4),
-            ("支撑", 7),
-            ("阻力", 7),
-            ("基本面", 6),
+            ("现价", 8),
+            ("成本", 8),
+            ("市值", 10),
+            ("盈亏%", 8),
+            ("盈亏$", 10),
             ("状态", 4),
         ]
 
-        lines.append(table_header(columns))
-        lines.append(table_separator(columns))
+        lines.append(table_header(columns1))
+        lines.append(table_separator(columns1))
 
         for pos in positions:
-            pnl_pct = f"{pos.unrealized_pnl_pct * 100:+.1f}%" if pos.unrealized_pnl_pct else "-"
-            delta_val = f"{pos.quantity:.0f}" if pos.quantity else "-"
-            rsi_val = f"{pos.rsi:.0f}" if pos.rsi is not None else "-"
-            trend_val = (pos.trend_signal or "-")[:4]
-            support_val = f"{pos.support:.1f}" if pos.support else "-"
-            resist_val = f"{pos.resistance:.1f}" if pos.resistance else "-"
-            fund_val = f"{pos.fundamental_score:.1f}" if pos.fundamental_score is not None else "-"
+            pnl_pct = f"{pos.unrealized_pnl_pct:+.1%}" if pos.unrealized_pnl_pct else "-"
+            pnl_val = f"${pos.unrealized_pnl:,.0f}" if pos.unrealized_pnl else "-"
+            market_val = f"${pos.market_value:,.0f}" if pos.market_value else "-"
 
-            # Simple status based on P&L
+            # Status based on P&L
             if pos.unrealized_pnl_pct is not None:
                 if pos.unrealized_pnl_pct > 0.05:
                     status_icon = alert_icon(AlertLevel.GREEN)
@@ -629,21 +629,160 @@ class DashboardRenderer:
                 status_icon = ""
 
             values = [
-                pos.symbol[:6],
+                pos.symbol[:8],
                 f"{pos.quantity:.0f}" if pos.quantity else "-",
-                f"{pos.entry_price:.1f}" if pos.entry_price else "-",
-                f"{pos.current_price:.1f}" if pos.current_price else "-",
+                f"{pos.current_price:.2f}" if pos.current_price else "-",
+                f"{pos.entry_price:.2f}" if pos.entry_price else "-",
+                market_val,
                 pnl_pct,
-                delta_val,
-                rsi_val,
-                trend_val,
-                support_val,
-                resist_val,
-                fund_val,
+                pnl_val,
                 status_icon,
             ]
-
-            lines.append(table_row(values, columns))
+            lines.append(table_row(values, columns1))
 
         lines.append("└" + "─" * 89 + "┘")
+        lines.append("")
+
+        # ========== Table 2: Fundamental Score ==========
+        lines.append("┌─── 基本面评分 (Fundamental) " + "─" * 60 + "┐")
+
+        columns2 = [
+            ("标的", 8),
+            ("Score", 8),
+            ("Rating", 8),
+            ("PE", 8),
+            ("Beta", 6),
+        ]
+
+        lines.append(table_header(columns2))
+        lines.append(table_separator(columns2))
+
+        for pos in positions:
+            score_str = f"{pos.fundamental_score:.1f}" if pos.fundamental_score is not None else "-"
+            rating_str = pos.analyst_rating if pos.analyst_rating else "-"
+            pe_str = f"{pos.pe_ratio:.1f}" if pos.pe_ratio is not None else "-"
+            beta_str = f"{pos.beta:.2f}" if pos.beta is not None else "-"
+
+            values = [
+                pos.symbol[:8],
+                score_str,
+                rating_str,
+                pe_str,
+                beta_str,
+            ]
+            lines.append(table_row(values, columns2))
+
+        lines.append("└" + "─" * 89 + "┘")
+        lines.append("")
+
+        # ========== Table 3: Volatility Score ==========
+        lines.append("┌─── 波动率评分 (Volatility) " + "─" * 61 + "┐")
+
+        columns3 = [
+            ("标的", 8),
+            ("Score", 8),
+            ("Rating", 8),
+            ("IV Rank", 8),
+            ("IV/HV", 8),
+            ("IV Pctl", 8),
+        ]
+
+        lines.append(table_header(columns3))
+        lines.append(table_separator(columns3))
+
+        for pos in positions:
+            score_str = f"{pos.volatility_score:.1f}" if pos.volatility_score is not None else "-"
+            rating_str = pos.volatility_rating if pos.volatility_rating else "-"
+            iv_rank_str = f"{pos.iv_rank:.1f}" if pos.iv_rank is not None else "-"
+            iv_hv_str = f"{pos.iv_hv_ratio:.2f}" if pos.iv_hv_ratio is not None else "-"
+            iv_pctl_str = f"{pos.iv_percentile:.0%}" if pos.iv_percentile is not None else "-"
+
+            values = [
+                pos.symbol[:8],
+                score_str,
+                rating_str,
+                iv_rank_str,
+                iv_hv_str,
+                iv_pctl_str,
+            ]
+            lines.append(table_row(values, columns3))
+
+        lines.append("└" + "─" * 89 + "┘")
+        lines.append("")
+
+        # ========== Table 4: Technical Score ==========
+        lines.append("┌─── 技术面评分 (Technical Score) " + "─" * 56 + "┐")
+
+        columns4 = [
+            ("标的", 8),
+            ("趋势", 6),
+            ("MA对齐", 12),
+            ("RSI", 6),
+            ("RSI区", 10),
+            ("ADX", 6),
+            ("支撑", 8),
+            ("阻力", 8),
+        ]
+
+        lines.append(table_header(columns4))
+        lines.append(table_separator(columns4))
+
+        for pos in positions:
+            trend_str = (pos.trend_signal or "-")[:6]
+            ma_str = (pos.ma_alignment or "-")[:12]
+            rsi_str = f"{pos.rsi:.1f}" if pos.rsi is not None else "-"
+            rsi_zone_str = (pos.rsi_zone or "-")[:10]
+            adx_str = f"{pos.adx:.1f}" if pos.adx is not None else "-"
+            support_str = f"{pos.support:.1f}" if pos.support else "-"
+            resist_str = f"{pos.resistance:.1f}" if pos.resistance else "-"
+
+            values = [
+                pos.symbol[:8],
+                trend_str,
+                ma_str,
+                rsi_str,
+                rsi_zone_str,
+                adx_str,
+                support_str,
+                resist_str,
+            ]
+            lines.append(table_row(values, columns4))
+
+        lines.append("└" + "─" * 89 + "┘")
+        lines.append("")
+
+        # ========== Table 5: Technical Signal ==========
+        lines.append("┌─── 技术信号 (Technical Signal) " + "─" * 57 + "┐")
+
+        columns5 = [
+            ("标的", 8),
+            ("市场状态", 12),
+            ("趋势强度", 10),
+            ("卖Put", 8),
+            ("卖Call", 8),
+            ("危险期", 6),
+        ]
+
+        lines.append(table_header(columns5))
+        lines.append(table_separator(columns5))
+
+        for pos in positions:
+            regime_str = (pos.market_regime or "-")[:12]
+            strength_str = (pos.tech_trend_strength or "-")[:10]
+            put_str = (pos.sell_put_signal or "-")[:8]
+            call_str = (pos.sell_call_signal or "-")[:8]
+            danger_str = "Yes" if pos.is_dangerous_period else "No"
+
+            values = [
+                pos.symbol[:8],
+                regime_str,
+                strength_str,
+                put_str,
+                call_str,
+                danger_str,
+            ]
+            lines.append(table_row(values, columns5))
+
+        lines.append("└" + "─" * 89 + "┘")
+
         return lines

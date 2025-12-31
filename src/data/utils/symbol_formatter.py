@@ -254,11 +254,13 @@ class SymbolFormatter:
 
         Examples:
             >>> SymbolFormatter.from_ibkr_contract("700", "SEHK")  # "0700.HK"
+            >>> SymbolFormatter.from_ibkr_contract("9988", "SMART") # "9988.HK"
             >>> SymbolFormatter.from_ibkr_contract("AAPL", "SMART") # "AAPL"
         """
-        # Detect HK stock by exchange or pure digits
+        # Detect HK stock by exchange or pure digits (HK codes are 1-5 digits)
+        # Note: IBKR may use SMART routing for HK stocks, so check symbol pattern
         is_hk = exchange == SymbolFormatter.HK_EXCHANGE or (
-            exchange is None and symbol.isdigit()
+            symbol.isdigit() and len(symbol) <= 5
         )
 
         if is_hk:

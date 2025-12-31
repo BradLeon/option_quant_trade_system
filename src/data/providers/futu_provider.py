@@ -1003,16 +1003,21 @@ class FutuProvider(DataProvider, AccountProvider):
                 option_info = self._parse_futu_option_symbol(code, stock_name)
                 asset_type = AssetType.OPTION if option_info else AssetType.STOCK
 
-                # Get cost price - try multiple field names for compatibility
-                # Futu API uses cost_price, but some versions may use average_cost
-                avg_cost = self._safe_float(row.get("cost_price", 0))
+                # Get average cost price
+                # Futu API: cost_price = diluted cost (not what we want)
+                #           average_cost = average cost price (correct field)
+                # Always prefer average_cost; fall back to cost_price only if average_cost is unavailable
+                avg_cost = self._safe_float(row.get("average_cost", 0))
                 if avg_cost == 0:
-                    avg_cost = self._safe_float(row.get("average_cost", 0))
+                    avg_cost = self._safe_float(row.get("cost_price", 0))
 
                 # Get unrealized P&L - Futu uses pl_val
                 unrealized_pnl = self._safe_float(row.get("pl_val", 0))
                 if unrealized_pnl == 0:
                     unrealized_pnl = self._safe_float(row.get("unrealized_pl", 0))
+
+                # Get realized P&L
+                realized_pnl = self._safe_float(row.get("realized_pl", 0))
 
                 # Create position
                 position = AccountPosition(
@@ -1023,6 +1028,7 @@ class FutuProvider(DataProvider, AccountProvider):
                     avg_cost=avg_cost,
                     market_value=self._safe_float(row.get("market_val", 0)),
                     unrealized_pnl=unrealized_pnl,
+                    realized_pnl=realized_pnl,
                     currency=currency,
                     broker="futu",
                     last_updated=datetime.now(),

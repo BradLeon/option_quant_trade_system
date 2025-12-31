@@ -19,7 +19,7 @@ from src.data.models.technical import TechnicalData
 from src.data.providers.ibkr_provider import IBKRProvider
 from src.data.providers.unified_provider import UnifiedDataProvider
 from src.engine.position.fundamental.metrics import evaluate_fundamentals
-from src.engine.position.technical.metrics import calc_technical_score
+from src.engine.position.technical.metrics import calc_technical_score, calc_technical_signal
 from src.engine.position.volatility.metrics import evaluate_volatility
 from src.engine.strategy.factory import (
     calc_dte_from_expiry,
@@ -237,6 +237,7 @@ class MonitoringDataBridge:
             )
             self._enrich_volatility(position_data, underlying_symbol)
             self._enrich_technical(position_data, underlying_symbol)
+            self._enrich_technical_signal(position_data, underlying_symbol)
             self._enrich_fundamental(position_data, underlying_symbol)
             return [position_data]
 
@@ -290,6 +291,9 @@ class MonitoringDataBridge:
 
             # 填充技术面数据
             self._enrich_technical(position_data, underlying_symbol)
+
+            # 填充技术信号数据
+            self._enrich_technical_signal(position_data, underlying_symbol)
 
             # 填充基本面数据
             self._enrich_fundamental(position_data, underlying_symbol)
@@ -412,6 +416,9 @@ class MonitoringDataBridge:
         # 填充技术面数据
         self._enrich_technical(position_data, pos.symbol)
 
+        # 填充技术信号数据
+        self._enrich_technical_signal(position_data, pos.symbol)
+
         # 填充基本面数据
         self._enrich_fundamental(position_data, pos.symbol)
 
@@ -486,6 +493,27 @@ class MonitoringDataBridge:
         # 从 FundamentalScore 提取字段
         pos.fundamental_score = fund_score.score
         pos.analyst_rating = fund_score.rating.value if fund_score.rating else None
+
+    def _enrich_technical_signal(self, pos: PositionData, symbol: str) -> None:
+        """调用 calc_technical_signal() 填充技术信号字段
+
+        Args:
+            pos: 待填充的 PositionData
+            symbol: 标的 symbol
+        """
+        tech_data = self._technical_cache.get(symbol)
+        if not tech_data:
+            return
+
+        # 调用统一出口算子
+        tech_signal = calc_technical_signal(tech_data)
+
+        # 从 TechnicalSignal 提取字段
+        pos.market_regime = tech_signal.market_regime
+        pos.tech_trend_strength = tech_signal.trend_strength
+        pos.sell_put_signal = tech_signal.sell_put_signal
+        pos.sell_call_signal = tech_signal.sell_call_signal
+        pos.is_dangerous_period = tech_signal.is_dangerous_period
 
     def clear_cache(self) -> None:
         """清除所有缓存"""

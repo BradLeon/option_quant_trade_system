@@ -331,7 +331,7 @@ def main():
     parser.add_argument(
         "--account-type",
         choices=["paper", "real"],
-        default="paper",
+        default="real",
         help="Account type to use (default: paper)",
     )
     parser.add_argument(
