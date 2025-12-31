@@ -120,6 +120,8 @@ class DashboardRenderer:
     def _render_portfolio_health(self, metrics: Optional[PortfolioMetrics]) -> list[str]:
         """Render Portfolio Health panel.
 
+        Uses NLV-normalized percentage metrics for account-size independent display.
+
         Args:
             metrics: PortfolioMetrics from monitoring result
 
@@ -134,28 +136,35 @@ class DashboardRenderer:
             lines.append(box_bottom(width))
             return lines
 
-        # Define metrics to display
+        # Define metrics to display (using NLV-normalized percentages)
+        # Format: (name, value, min_for_bar, max_for_bar, check_fn, is_percentage)
         items = [
-            ("Beta weighted Delta", metrics.beta_weighted_delta, -300, 300, self.checker.check_delta),
-            ("Theta", metrics.total_theta, -200, 200, self.checker.check_theta),
-            ("Vega", metrics.total_vega, -1500, 1500, self.checker.check_vega),
-            ("Gamma", metrics.total_gamma, -50, 0, self.checker.check_gamma),
-            ("TGR", metrics.portfolio_tgr, 0, 0.3, self.checker.check_tgr),
-            ("HHI", metrics.concentration_hhi, 0, 1, self.checker.check_concentration),
+            ("BWD%", metrics.beta_weighted_delta_pct, -0.5, 0.5, self.checker.check_delta_pct, True),
+            ("Gamma%", metrics.gamma_pct, -0.005, 0.001, self.checker.check_gamma_pct, True),
+            ("Vega%", metrics.vega_pct, -0.006, 0.006, self.checker.check_vega_pct, True),
+            ("Theta%", metrics.theta_pct, 0, 0.003, self.checker.check_theta_pct, True),
+            ("TGR", metrics.portfolio_tgr, 0, 0.3, self.checker.check_tgr, False),
+            ("HHI", metrics.concentration_hhi, 0, 1, self.checker.check_concentration, False),
+            ("IV/HV", metrics.vega_weighted_iv_hv, 0, 2, self.checker.check_iv_hv_quality, False),
         ]
 
-        for name, value, min_v, max_v, check_fn in items:
+        for name, value, min_v, max_v, check_fn, is_pct in items:
             if value is not None:
-                if name in ("TGR", "HHI"):
+                if is_pct:
+                    # Format as percentage with sign (2 decimal places for precision)
+                    val_str = f"{value:+.2%}"
+                elif name == "TGR":
                     val_str = f"{value:.2f}"
-                else:
-                    val_str = f"{value:+.0f}"
+                elif name == "HHI":
+                    val_str = f"{value:.2f}"
+                else:  # IV/HV
+                    val_str = f"{value:.2f}"
                 bar = progress_bar(abs(value), 0, max(abs(min_v), abs(max_v)), 10)
                 level = check_fn(value)
                 icon = alert_icon(level)
-                content = f"{name:6}: {val_str:>6} {bar} {icon}"
+                content = f"{name:7}: {val_str:>8} {bar} {icon}"
             else:
-                content = f"{name:6}:      - [──────────] ⚪"
+                content = f"{name:7}:        - [──────────] ⚪"
             lines.append(box_line(content, width))
 
         lines.append(box_bottom(width))

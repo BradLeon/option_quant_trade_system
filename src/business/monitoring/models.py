@@ -39,6 +39,7 @@ class AlertType(str, Enum):
     THETA_EXPOSURE = "theta_exposure"  # Theta 风险敞口
     TGR_LOW = "tgr_low"  # Theta/Gamma 比率过低
     CONCENTRATION = "concentration"  # 集中度过高
+    IV_HV_QUALITY = "iv_hv_quality"  # 持仓质量（Vega加权IV/HV）
 
     # Position 级
     MONEYNESS = "moneyness"  # 虚值程度

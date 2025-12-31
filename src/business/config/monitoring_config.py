@@ -172,6 +172,87 @@ class PortfolioThresholds:
         )
     )
 
+    # === 新增：NLV 归一化百分比阈值 ===
+    # 这些阈值用于账户大小无关的风险评估
+
+    beta_weighted_delta_pct: ThresholdRange = field(
+        default_factory=lambda: ThresholdRange(
+            green=(-0.20, 0.20),  # ±20%
+            yellow=(-0.50, 0.50),  # ±20~50%
+            red_above=0.50,
+            red_below=-0.50,
+            hysteresis=0.02,
+            alert_type="DELTA_EXPOSURE",
+            red_above_message="BWD/NLV 过高: {value:.1%} > {threshold:.0%}，方向性杠杆过大",
+            red_below_message="BWD/NLV 过低: {value:.1%} < {threshold:.0%}，方向性杠杆过大",
+            yellow_message="BWD/NLV 偏离中性: {value:.1%}",
+            red_above_action="Delta 对冲：交易 SPY/QQQ 期货或 ETF 进行反向对冲，或平掉贡献 Delta 最大的单边头寸",
+            red_below_action="Delta 对冲：交易 SPY/QQQ 期货或 ETF 进行反向对冲，或平掉贡献 Delta 最大的单边头寸",
+            yellow_action="关注方向性敞口",
+        )
+    )
+
+    gamma_pct: ThresholdRange = field(
+        default_factory=lambda: ThresholdRange(
+            green=(-0.001, float("inf")),  # > -0.1%
+            yellow=(-0.003, -0.001),  # -0.1% ~ -0.3%
+            red_below=-0.005,  # < -0.5%
+            hysteresis=0.0005,
+            alert_type="GAMMA_EXPOSURE",
+            red_below_message="Gamma/NLV 空头过大: {value:.2%} < {threshold:.2%}，暴跌时 Delta 敞口恶化加速",
+            yellow_message="Gamma/NLV 空头偏大: {value:.2%}",
+            red_below_action="切断左尾：买入近月深虚值 Put 保护 Gamma，或平掉临期（DTE < 7）的 Short ATM 头寸",
+            yellow_action="关注 Gamma 风险",
+        )
+    )
+
+    vega_pct: ThresholdRange = field(
+        default_factory=lambda: ThresholdRange(
+            green=(-0.003, 0.003),  # ±0.3%
+            yellow=(-0.006, 0.006),  # ±0.3~0.6%
+            red_below=-0.005,  # < -0.5% (做空方向)
+            # 注意：只有做空方向（负值）才触发红色预警
+            # 做多方向（正值）通常比较宽容，因为崩盘时 Long Vega 是对冲
+            hysteresis=0.0005,
+            alert_type="VEGA_EXPOSURE",
+            red_below_message="Vega/NLV 空头过大: {value:.2%} < {threshold:.2%}，崩盘时遭遇股价亏+IV亏双杀",
+            yellow_message="Vega/NLV 偏大: {value:.2%}",
+            red_below_action="IV 对冲/降仓：买入 VIX Call 或 SPY Put，或平掉 Vega 贡献最大的 Short Leg",
+            yellow_action="关注波动率风险",
+        )
+    )
+
+    theta_pct: ThresholdRange = field(
+        default_factory=lambda: ThresholdRange(
+            green=(0.0005, 0.0015),  # 0.05% ~ 0.15%
+            yellow=(0.0015, 0.0025),  # 0.15% ~ 0.25%
+            red_above=0.0030,  # > 0.30%
+            red_below=0.0,  # < 0%
+            hysteresis=0.0002,
+            alert_type="THETA_EXPOSURE",
+            red_above_message="Theta/NLV 过高: {value:.2%} > {threshold:.2%}，卖得太满，Gamma 风险失控",
+            red_below_message="Theta/NLV 为负: {value:.2%}，买方策略时间衰减不利",
+            yellow_message="Theta/NLV 偏高: {value:.2%}",
+            red_above_action="降低风险暴露：平仓部分 Short 头寸，Theta 过高意味着 Gamma 风险过大",
+            red_below_action="检查策略逻辑：如非特意做买方策略，需调整持仓结构",
+            yellow_action="关注时间衰减效率",
+        )
+    )
+
+    vega_weighted_iv_hv: ThresholdRange = field(
+        default_factory=lambda: ThresholdRange(
+            green=(1.0, float("inf")),  # > 1.0
+            yellow=(0.8, 1.2),  # 0.8 ~ 1.2
+            red_below=0.8,  # < 0.8
+            hysteresis=0.05,
+            alert_type="IV_HV_QUALITY",
+            red_below_message='Vega加权 IV/HV 过低: {value:.2f} < {threshold}，持仓在"贱卖"期权',
+            yellow_message="Vega加权 IV/HV 偏低: {value:.2f}",
+            red_below_action="停止做空/熔断：禁止开设新的 Short Vega 仓位，仅允许做 Debit 策略或持有现金",
+            yellow_action="关注期权定价质量",
+        )
+    )
+
     # 保留旧字段用于向后兼容（deprecated）
     tgr_green_above: float = 0.15
     tgr_yellow_range: tuple[float, float] = (0.05, 0.15)

@@ -147,6 +147,88 @@ class ThresholdChecker:
             return AlertLevel.GREEN
         return self._check_range(value, self.config.portfolio.concentration_hhi)
 
+    # ==================== NLV-Normalized Percentage Metrics ====================
+
+    def check_delta_pct(self, value: Optional[float]) -> AlertLevel:
+        """Check beta-weighted delta percentage threshold.
+
+        Measures directional leverage relative to account size.
+        ±20% green, ±50% red.
+
+        Args:
+            value: BWD / NLV ratio
+
+        Returns:
+            AlertLevel based on thresholds
+        """
+        if value is None:
+            return AlertLevel.GREEN
+        return self._check_range(value, self.config.portfolio.beta_weighted_delta_pct)
+
+    def check_gamma_pct(self, value: Optional[float]) -> AlertLevel:
+        """Check gamma percentage threshold.
+
+        Measures convexity/crash risk. More negative is worse.
+        > -0.1% green, < -0.5% red.
+
+        Args:
+            value: Gamma / NLV ratio
+
+        Returns:
+            AlertLevel based on thresholds
+        """
+        if value is None:
+            return AlertLevel.GREEN
+        return self._check_range(value, self.config.portfolio.gamma_pct)
+
+    def check_vega_pct(self, value: Optional[float]) -> AlertLevel:
+        """Check vega percentage threshold.
+
+        Measures volatility risk. Short vega (negative) is strictly monitored.
+        ±0.3% green, < -0.5% red (asymmetric - short vega is dangerous).
+
+        Args:
+            value: Vega / NLV ratio
+
+        Returns:
+            AlertLevel based on thresholds
+        """
+        if value is None:
+            return AlertLevel.GREEN
+        return self._check_range(value, self.config.portfolio.vega_pct)
+
+    def check_theta_pct(self, value: Optional[float]) -> AlertLevel:
+        """Check theta percentage threshold.
+
+        Measures daily time value accrual rate.
+        0.05%~0.15% green, > 0.30% or < 0% red (dual red zones).
+
+        Args:
+            value: Theta / NLV ratio
+
+        Returns:
+            AlertLevel based on thresholds
+        """
+        if value is None:
+            return AlertLevel.GREEN
+        return self._check_range(value, self.config.portfolio.theta_pct)
+
+    def check_iv_hv_quality(self, value: Optional[float]) -> AlertLevel:
+        """Check vega-weighted IV/HV quality threshold.
+
+        Measures option pricing quality for short positions.
+        > 1.0 green (selling overpriced), < 0.8 red (underselling).
+
+        Args:
+            value: Vega-weighted IV/HV ratio
+
+        Returns:
+            AlertLevel based on thresholds
+        """
+        if value is None:
+            return AlertLevel.GREEN
+        return self._check_range(value, self.config.portfolio.vega_weighted_iv_hv)
+
     # ==================== Capital Level ====================
 
     def check_sharpe(self, value: Optional[float]) -> AlertLevel:

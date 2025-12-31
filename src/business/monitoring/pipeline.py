@@ -74,15 +74,17 @@ class MonitoringPipeline:
         capital_metrics: Optional[CapitalMetrics] = None,
         vix: Optional[float] = None,
         market_sentiment: Optional[dict] = None,
+        nlv: Optional[float] = None,
     ) -> MonitorResult:
         """执行完整监控流程
 
         Args:
             positions: 持仓数据列表
             capital_metrics: 资金指标（可选）
-            spy_beta_map: 标的对 SPY 的 Beta 映射表（可选）
             vix: 当前 VIX 值，用于市场环境调整（可选）
             market_sentiment: 市场情绪数据（可选）
+            nlv: 账户净值，用于计算 NLV 归一化百分比指标（可选）
+                如果未提供，尝试从 capital_metrics.total_equity 获取
 
         Returns:
             MonitorResult: 监控结果
@@ -109,19 +111,40 @@ class MonitoringPipeline:
                 )
             logger.debug("=" * 60)
 
+            # 获取 NLV（优先使用传入参数，其次从 capital_metrics 获取）
+            effective_nlv = nlv
+            if effective_nlv is None and capital_metrics and capital_metrics.total_equity:
+                effective_nlv = capital_metrics.total_equity
+
+            # 从 positions 构建 IV/HV 比率映射表
+            position_iv_hv_ratios: dict[str, float] = {}
+            for pos in positions:
+                if pos.iv_hv_ratio is not None:
+                    position_iv_hv_ratios[pos.symbol] = pos.iv_hv_ratio
+
             # 调用 engine 层计算组合指标
             # PositionData 已具备 greeks 和 beta 属性，可直接传入
-            portfolio_metrics = calc_portfolio_metrics(positions)  # type: ignore[arg-type]
+            portfolio_metrics = calc_portfolio_metrics(
+                positions,  # type: ignore[arg-type]
+                nlv=effective_nlv,
+                position_iv_hv_ratios=position_iv_hv_ratios if position_iv_hv_ratios else None,
+            )
 
             # DEBUG: 打印计算结果
             logger.debug(f"calc_portfolio_metrics result:")
             logger.debug(f"  total_delta={portfolio_metrics.total_delta}")
             logger.debug(f"  beta_weighted_delta={portfolio_metrics.beta_weighted_delta}")
+            logger.debug(f"  beta_weighted_delta_pct={portfolio_metrics.beta_weighted_delta_pct}")
             logger.debug(f"  total_gamma={portfolio_metrics.total_gamma}")
+            logger.debug(f"  gamma_pct={portfolio_metrics.gamma_pct}")
             logger.debug(f"  total_theta={portfolio_metrics.total_theta}")
+            logger.debug(f"  theta_pct={portfolio_metrics.theta_pct}")
             logger.debug(f"  total_vega={portfolio_metrics.total_vega}")
+            logger.debug(f"  vega_pct={portfolio_metrics.vega_pct}")
             logger.debug(f"  portfolio_tgr={portfolio_metrics.portfolio_tgr}")
             logger.debug(f"  concentration_hhi={portfolio_metrics.concentration_hhi}")
+            logger.debug(f"  vega_weighted_iv_hv={portfolio_metrics.vega_weighted_iv_hv}")
+            logger.debug(f"  NLV used={effective_nlv}")
 
             # 将计算好的指标传给 monitor 做阈值检查
             portfolio_alerts = self.portfolio_monitor.evaluate(portfolio_metrics)
@@ -200,16 +223,28 @@ class MonitoringPipeline:
     def run_portfolio_only(
         self,
         positions: list[PositionData],
+        nlv: Optional[float] = None,
     ) -> tuple[list[Alert], PortfolioMetrics]:
         """仅执行组合级监控
 
         Args:
             positions: 持仓数据列表
+            nlv: 账户净值，用于计算 NLV 归一化百分比指标（可选）
 
         Returns:
             (预警列表, 组合指标)
         """
-        portfolio_metrics = calc_portfolio_metrics(positions)  # type: ignore[arg-type]
+        # 从 positions 构建 IV/HV 比率映射表
+        position_iv_hv_ratios: dict[str, float] = {}
+        for pos in positions:
+            if pos.iv_hv_ratio is not None:
+                position_iv_hv_ratios[pos.symbol] = pos.iv_hv_ratio
+
+        portfolio_metrics = calc_portfolio_metrics(
+            positions,  # type: ignore[arg-type]
+            nlv=nlv,
+            position_iv_hv_ratios=position_iv_hv_ratios if position_iv_hv_ratios else None,
+        )
         alerts = self.portfolio_monitor.evaluate(portfolio_metrics)
         return alerts, portfolio_metrics
 

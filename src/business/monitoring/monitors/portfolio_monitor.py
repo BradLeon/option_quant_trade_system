@@ -1,19 +1,21 @@
 """
 Portfolio Monitor - 组合级监控器
 
-监控组合级风险指标：
-- Beta 加权 Delta
-- 组合 Theta 暴露
-- 组合 Vega 暴露
-- 组合 Gamma 暴露
+监控组合级风险指标（使用 NLV 归一化百分比）：
+- Beta 加权 Delta % - 方向性杠杆
+- Gamma % - 凸性/暴跌风险
+- Vega % - 波动率风险（做空方向严格监控）
+- Theta % - 每日收租率
 - Theta/Gamma 比率 (TGR)
 - 集中度风险 (HHI)
+- Vega 加权 IV/HV - 持仓质量
 
 设计原则：
 - 只做阈值检查，不做计算（遵循 Decision #0）
 - 所有指标由 engine/portfolio 层计算
 - 接收预计算的 PortfolioMetrics，只做规则判断
 - 使用通用 _check_threshold 函数，消息和建议从配置中读取
+- 优先使用 NLV 归一化指标，实现账户大小无关的风险评估
 """
 
 import logging
@@ -33,13 +35,14 @@ logger = logging.getLogger(__name__)
 class PortfolioMonitor:
     """组合级监控器
 
-    监控组合层面的风险指标：
-    1. Beta 加权 Delta - 市场风险敞口
-    2. 组合 Theta - 时间衰减收益
-    3. 组合 Vega - 波动率风险
-    4. 组合 Gamma - 凸性风险
-    5. TGR - 时间衰减效率
-    6. 集中度 (HHI) - 单一标的风险
+    使用 NLV 归一化指标监控组合层面的风险：
+    1. Beta 加权 Delta % - 方向性杠杆（±20%绿色，±50%红色）
+    2. Gamma % - 凸性/暴跌风险（<-0.5%红色）
+    3. Vega % - 波动率风险（<-0.5%做空方向红色）
+    4. Theta % - 每日收租率（0.05~0.15%绿色，>0.30%或<0%红色）
+    5. TGR - 时间衰减效率（≥0.15绿色，<0.05红色）
+    6. 集中度 (HHI) - 单一标的风险（<0.25绿色，>0.5红色）
+    7. Vega加权 IV/HV - 持仓质量（>1.0绿色，<0.8红色）
     """
 
     def __init__(self, config: MonitoringConfig) -> None:
@@ -54,6 +57,7 @@ class PortfolioMonitor:
     def evaluate(self, metrics: PortfolioMetrics) -> list[Alert]:
         """评估组合风险
 
+        使用 NLV 归一化百分比指标进行阈值检查，实现账户大小无关的风险评估。
         只做阈值检查，不做计算。所有指标由 engine 层预计算。
         使用通用 _check_threshold 函数，消息和建议从配置中读取。
 
@@ -65,35 +69,39 @@ class PortfolioMonitor:
         """
         alerts: list[Alert] = []
 
-        # 检查 Beta 加权 Delta
+        # === NLV 归一化百分比指标（优先使用，账户大小无关）===
+
+        # 检查 Beta 加权 Delta % (方向性杠杆)
         alerts.extend(self._check_threshold(
-            value=metrics.beta_weighted_delta,
-            threshold=self.thresholds.beta_weighted_delta,
-            metric_name="beta_weighted_delta",
+            value=metrics.beta_weighted_delta_pct,
+            threshold=self.thresholds.beta_weighted_delta_pct,
+            metric_name="beta_weighted_delta_pct",
         ))
 
-        # 检查组合 Theta
+        # 检查 Gamma % (凸性/暴跌风险)
         alerts.extend(self._check_threshold(
-            value=metrics.total_theta,
-            threshold=self.thresholds.portfolio_theta,
-            metric_name="portfolio_theta",
+            value=metrics.gamma_pct,
+            threshold=self.thresholds.gamma_pct,
+            metric_name="gamma_pct",
         ))
 
-        # 检查组合 Vega
+        # 检查 Vega % (波动率风险，做空方向严格监控)
         alerts.extend(self._check_threshold(
-            value=metrics.total_vega,
-            threshold=self.thresholds.portfolio_vega,
-            metric_name="portfolio_vega",
+            value=metrics.vega_pct,
+            threshold=self.thresholds.vega_pct,
+            metric_name="vega_pct",
         ))
 
-        # 检查组合 Gamma
+        # 检查 Theta % (每日收租率)
         alerts.extend(self._check_threshold(
-            value=metrics.total_gamma,
-            threshold=self.thresholds.portfolio_gamma,
-            metric_name="portfolio_gamma",
+            value=metrics.theta_pct,
+            threshold=self.thresholds.theta_pct,
+            metric_name="theta_pct",
         ))
 
-        # 检查 TGR
+        # === 比率指标（已经是归一化的）===
+
+        # 检查 TGR (Theta/Gamma 效率)
         alerts.extend(self._check_threshold(
             value=metrics.portfolio_tgr,
             threshold=self.thresholds.portfolio_tgr,
@@ -105,6 +113,13 @@ class PortfolioMonitor:
             value=metrics.concentration_hhi,
             threshold=self.thresholds.concentration_hhi,
             metric_name="concentration_hhi",
+        ))
+
+        # 检查 Vega 加权 IV/HV (持仓质量)
+        alerts.extend(self._check_threshold(
+            value=metrics.vega_weighted_iv_hv,
+            threshold=self.thresholds.vega_weighted_iv_hv,
+            metric_name="vega_weighted_iv_hv",
         ))
 
         return alerts
