@@ -471,21 +471,6 @@ class ThresholdChecker:
             return AlertLevel.GREEN
         return self._check_range(abs(value), self.config.position.delta)
 
-    def check_position_gamma(self, value: Optional[float]) -> AlertLevel:
-        """Check position-level gamma threshold.
-
-        Uses position-level ThresholdRange configuration.
-
-        Args:
-            value: Position gamma value (absolute)
-
-        Returns:
-            AlertLevel
-        """
-        if value is None:
-            return AlertLevel.GREEN
-        return self._check_range(abs(value), self.config.position.gamma)
-
     def check_position_iv_hv(self, value: Optional[float]) -> AlertLevel:
         """Check position-level IV/HV ratio threshold.
 

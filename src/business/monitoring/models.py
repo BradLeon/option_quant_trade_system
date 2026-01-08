@@ -134,7 +134,6 @@ class PositionData:
     expiry: Optional[str] = None  # YYYYMMDD
     dte: Optional[int] = None
     contract_multiplier: int = 1
-    moneyness: Optional[float] = None  # 由 DataBridge 计算: (S-K)/K（旧字段，保留兼容）
     otm_pct: Optional[float] = None  # OTM 百分比: Put=(S-K)/S, Call=(K-S)/S
 
     # === Greeks（期权必须，股票 delta=quantity）===

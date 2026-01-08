@@ -509,46 +509,6 @@ class PositionThresholds:
         )
     )
 
-    # === 保留旧字段用于向后兼容（deprecated）===
-    # Moneyness (旧字段，改用 otm_pct)
-    moneyness: ThresholdRange = field(
-        default_factory=lambda: ThresholdRange(
-            green=(0.10, float("inf")),
-            yellow=(0.05, 0.10),
-            red_below=0.05,
-            alert_type="MONEYNESS",
-        )
-    )
-
-    # Gamma (旧字段，改用 gamma_risk_pct)
-    gamma: ThresholdRange = field(
-        default_factory=lambda: ThresholdRange(
-            green=(0, 0.03),
-            yellow=(0.03, 0.05),
-            red_above=0.05,
-            alert_type="GAMMA_RISK",
-        )
-    )
-
-    # 保留旧字段用于向后兼容（deprecated）
-    moneyness_green_above: float = 0.05
-    moneyness_yellow_range: tuple[float, float] = (0.0, 0.05)
-    moneyness_red_below: float = 0.0
-    delta_red_above: float = 0.5
-    delta_change_warning: float = 0.1
-    gamma_green_below: float = 0.03
-    gamma_yellow_range: tuple[float, float] = (0.03, 0.05)
-    gamma_red_above: float = 0.05
-    gamma_near_expiry_multiplier: float = 1.5
-    iv_hv_favorable_above: float = 1.5
-    iv_hv_unfavorable_below: float = 0.8
-    prei_green_below: float = 40.0
-    prei_yellow_range: tuple[float, float] = (40.0, 75.0)
-    prei_red_above: float = 75.0
-    dte_warning_days: int = 7
-    dte_urgent_days: int = 3
-    take_profit_pct: float = 0.50
-    stop_loss_pct: float = -2.00
 
 
 @dataclass
@@ -731,73 +691,8 @@ class MonitoringConfig:
                     PortfolioThresholds().concentration_hhi,
                 )
 
-        if "position_level" in data:
-            ps = data["position_level"]
-            if "moneyness" in ps:
-                m = ps["moneyness"]
-                config.position.moneyness_green_above = m.get("green_above", 0.05)
-                config.position.moneyness_yellow_range = tuple(
-                    m.get("yellow_range", [0.0, 0.05])
-                )
-                config.position.moneyness_red_below = m.get("red_below", 0.0)
-            if "delta" in ps:
-                d = ps["delta"]
-                config.position.delta_red_above = d.get("put_red_above", 0.5)
-                config.position.delta_change_warning = d.get("change_warning", 0.1)
-            if "gamma" in ps:
-                g = ps["gamma"]
-                config.position.gamma_green_below = g.get("green_below", 0.03)
-                config.position.gamma_yellow_range = tuple(
-                    g.get("yellow_range", [0.03, 0.05])
-                )
-                config.position.gamma_red_above = g.get("red_above", 0.05)
-                config.position.gamma_near_expiry_multiplier = g.get(
-                    "near_expiry_multiplier", 1.5
-                )
-            if "prei" in ps:
-                p = ps["prei"]
-                config.position.prei_green_below = p.get("green_below", 40)
-                config.position.prei_yellow_range = tuple(
-                    p.get("yellow_range", [40, 75])
-                )
-                config.position.prei_red_above = p.get("red_above", 75)
-            if "dte" in ps:
-                config.position.dte_warning_days = ps["dte"].get("warning_days", 7)
-                config.position.dte_urgent_days = ps["dte"].get("urgent_days", 3)
-            if "pnl" in ps:
-                config.position.take_profit_pct = ps["pnl"].get("take_profit_pct", 0.5)
-                config.position.stop_loss_pct = ps["pnl"].get("stop_loss_pct", -2.0)
-
-        if "capital_level" in data:
-            cl = data["capital_level"]
-            if "sharpe_ratio" in cl:
-                s = cl["sharpe_ratio"]
-                config.capital.sharpe_green_above = s.get("green_above", 1.5)
-                config.capital.sharpe_yellow_range = tuple(
-                    s.get("yellow_range", [1.0, 1.5])
-                )
-                config.capital.sharpe_red_below = s.get("red_below", 1.0)
-            if "kelly_usage" in cl:
-                k = cl["kelly_usage"]
-                config.capital.kelly_usage_green_range = tuple(
-                    k.get("green_range", [0.5, 1.0])
-                )
-                config.capital.kelly_usage_opportunity_below = k.get(
-                    "opportunity_below", 0.5
-                )
-                config.capital.kelly_usage_red_above = k.get("red_above", 1.0)
-            if "margin_usage" in cl:
-                m = cl["margin_usage"]
-                config.capital.margin_green_below = m.get("green_below", 0.6)
-                config.capital.margin_yellow_range = tuple(
-                    m.get("yellow_range", [0.6, 0.8])
-                )
-                config.capital.margin_warning_above = m.get("warning_above", 0.8)
-                config.capital.margin_red_above = m.get("red_above", 0.9)
-            if "max_drawdown" in cl:
-                md = cl["max_drawdown"]
-                config.capital.max_drawdown_warning_pct = md.get("warning_pct", 0.10)
-                config.capital.max_drawdown_red_pct = md.get("red_pct", 0.15)
+        # Position level 和 Capital level 的 YAML 解析
+        # 所有阈值现已统一使用 ThresholdRange，可按需扩展此处解析逻辑
 
         if "dynamic_adjustment" in data:
             da = data["dynamic_adjustment"]
