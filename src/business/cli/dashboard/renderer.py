@@ -171,7 +171,13 @@ class DashboardRenderer:
         return lines
 
     def _render_capital_panel(self, metrics: Optional[CapitalMetrics]) -> list[str]:
-        """Render Capital Management panel.
+        """Render Capital Risk Control panel.
+
+        Displays 4 core risk control metrics (四大支柱):
+        1. Margin Utilization (生存)
+        2. Cash Ratio (流动性)
+        3. Gross Leverage (敞口)
+        4. Stress Test Loss (稳健)
 
         Args:
             metrics: CapitalMetrics from monitoring result
@@ -180,50 +186,43 @@ class DashboardRenderer:
             List of panel lines
         """
         width = 42
-        lines = [box_title("资金管理", width)]
+        lines = [box_title("资金风控", width)]
 
         if metrics is None:
             lines.append(box_line("无数据", width))
             lines.append(box_bottom(width))
             return lines
 
-        # Sharpe Ratio
-        if metrics.sharpe_ratio is not None:
-            level = self.checker.check_sharpe(metrics.sharpe_ratio)
-            content = f"Sharpe Ratio: {metrics.sharpe_ratio:>6.2f}  {alert_icon(level)}"
+        # 1. Margin Utilization (保证金使用率)
+        if metrics.margin_utilization is not None:
+            level = self.checker.check_margin_utilization(metrics.margin_utilization)
+            content = f"Margin Util: {metrics.margin_utilization:>7.1%}  {alert_icon(level)}"
         else:
-            content = "Sharpe Ratio:      -"
+            content = "Margin Util:        -"
         lines.append(box_line(content, width))
 
-        # Kelly Optimal (just display, calculated externally)
-        if metrics.kelly_capacity is not None:
-            content = f"Kelly Optimal: {metrics.kelly_capacity:>5.1%}"
+        # 2. Cash Ratio (现金留存率)
+        if metrics.cash_ratio is not None:
+            level = self.checker.check_cash_ratio(metrics.cash_ratio)
+            content = f"Cash Ratio: {metrics.cash_ratio:>8.1%}  {alert_icon(level)}"
         else:
-            content = "Kelly Optimal:      -"
+            content = "Cash Ratio:         -"
         lines.append(box_line(content, width))
 
-        # Kelly Usage
-        if metrics.kelly_usage is not None:
-            level = self.checker.check_kelly_usage(metrics.kelly_usage)
-            content = f"Current Usage: {metrics.kelly_usage:>5.1%}  {alert_icon(level)}"
+        # 3. Gross Leverage (总名义杠杆)
+        if metrics.gross_leverage is not None:
+            level = self.checker.check_gross_leverage(metrics.gross_leverage)
+            content = f"Gross Lev: {metrics.gross_leverage:>8.1f}x  {alert_icon(level)}"
         else:
-            content = "Current Usage:      -"
+            content = "Gross Lev:          -"
         lines.append(box_line(content, width))
 
-        # Margin Usage
-        if metrics.margin_usage is not None:
-            level = self.checker.check_margin_usage(metrics.margin_usage)
-            content = f"Margin Usage: {metrics.margin_usage:>6.1%}  {alert_icon(level)}"
+        # 4. Stress Test Loss (压力测试风险)
+        if metrics.stress_test_loss is not None:
+            level = self.checker.check_stress_test_loss(metrics.stress_test_loss)
+            content = f"Stress Loss: {metrics.stress_test_loss:>6.1%}  {alert_icon(level)}"
         else:
-            content = "Margin Usage:      -"
-        lines.append(box_line(content, width))
-
-        # Drawdown
-        if metrics.current_drawdown is not None:
-            level = self.checker.check_drawdown(metrics.current_drawdown)
-            content = f"Drawdown: {metrics.current_drawdown:>10.1%}  {alert_icon(level)}"
-        else:
-            content = "Drawdown:          -"
+            content = "Stress Loss:        -"
         lines.append(box_line(content, width))
 
         lines.append(box_bottom(width))

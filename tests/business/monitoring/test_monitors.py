@@ -78,12 +78,14 @@ class TestMonitorModels:
         cm = CapitalMetrics(
             total_equity=100000.0,
             cash_balance=50000.0,
-            margin_usage=0.25,
-            sharpe_ratio=1.5,
-            current_drawdown=0.02,
+            # Core Risk Control Metrics (4 Pillars)
+            margin_utilization=0.25,
+            cash_ratio=0.50,
+            gross_leverage=1.5,
+            stress_test_loss=0.08,
         )
         assert cm.total_equity == 100000.0
-        assert cm.sharpe_ratio == 1.5
+        assert cm.margin_utilization == 0.25
 
     def test_create_alert(self):
         """Test creating Alert"""
@@ -155,16 +157,16 @@ class TestAlertCreation:
         assert alert.alert_type == AlertType.DELTA_EXPOSURE
         assert alert.current_value > alert.threshold_value
 
-    def test_margin_warning_alert(self):
+    def test_margin_utilization_alert(self):
         alert = Alert(
             level=AlertLevel.RED,
-            alert_type=AlertType.MARGIN_WARNING,
+            alert_type=AlertType.MARGIN_UTILIZATION,
             message="保证金使用率过高",
-            current_value=0.65,
-            threshold_value=0.50,
-            suggested_action="立即减仓或追加保证金",
+            current_value=0.75,
+            threshold_value=0.70,
+            suggested_action="强制去杠杆：减仓直到保证金使用率低于40%",
         )
-        assert alert.alert_type == AlertType.MARGIN_WARNING
+        assert alert.alert_type == AlertType.MARGIN_UTILIZATION
         assert alert.level == AlertLevel.RED
 
     def test_dte_warning_alert(self):

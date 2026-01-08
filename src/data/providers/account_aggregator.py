@@ -492,6 +492,20 @@ class AccountAggregator:
                     pos.vega = greeks.get("vega")
                     pos.iv = greeks.get("iv")
                     pos.underlying_price = greeks.get("underlying_price")
+
+                    # Fallback: If underlying_price still None, try Futu
+                    if pos.underlying_price is None and self._futu:
+                        try:
+                            # Convert underlying code to Futu symbol format
+                            # underlying is like "700" or "9988"
+                            futu_symbol = f"HK.{int(underlying):05d}"  # "700" → "HK.00700"
+                            quote = self._futu.get_stock_quote(futu_symbol)
+                            if quote and quote.close:
+                                pos.underlying_price = quote.close
+                                logger.info(f"Got underlying_price from Futu for {pos.symbol}: {pos.underlying_price}")
+                        except Exception as e:
+                            logger.debug(f"Could not fetch underlying price from Futu for {underlying}: {e}")
+
                     logger.info(f"Updated Greeks for {pos.symbol}: delta={pos.delta}, "
                                f"iv={pos.iv}, undPrice={pos.underlying_price}")
                 else:

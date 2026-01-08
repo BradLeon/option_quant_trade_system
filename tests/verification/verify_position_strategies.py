@@ -488,6 +488,7 @@ def print_strategy_metrics_detail(
 def verify_position_strategies(
     portfolio: ConsolidatedPortfolio,
     ibkr_provider: IBKRProvider | None,
+    futu_provider: FutuProvider | None = None,
     verbose: bool = False,
 ) -> None:
     """Verify Position-level strategy metrics for all option positions.
@@ -495,6 +496,7 @@ def verify_position_strategies(
     Args:
         portfolio: Consolidated portfolio with all positions.
         ibkr_provider: IBKR provider for volatility data.
+        futu_provider: Futu provider for fallback HK stock quotes.
         verbose: If True, print detailed debug info for each strategy.
     """
     print_section_header("Position-Level Strategy Metrics Verification")
@@ -526,6 +528,7 @@ def verify_position_strategies(
             position=pos,
             all_positions=portfolio.positions,
             ibkr_provider=ibkr_provider,
+            futu_provider=futu_provider,
         )
 
         if not strategy_instances:
@@ -734,7 +737,7 @@ def main():
         )
 
         # Verify position strategies
-        verify_position_strategies(portfolio, ibkr, verbose=args.verbose)
+        verify_position_strategies(portfolio, ibkr, futu_provider=futu, verbose=args.verbose)
 
         print("\n" + "=" * 120)
         print("  Verification Complete")

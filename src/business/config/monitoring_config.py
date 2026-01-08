@@ -87,29 +87,68 @@ TODO：
 
 Gross Leverage (总名义杠杆)。
 
-Gross Leverage = (|Long Exposure| + |Short Exposure|) / NAV
-
-Long Exposure  = 股票多头市值 + Σ(正Delta期权的 Delta Notional)
-Short Exposure = |股票空头市值| + Σ|负Delta期权的 Delta Notional|
-
-Delta Notional = |Delta| × 标的价 × 合约乘数 × 合约数
-Option Notional: 期权的名义价值。例如 1 张 0700.HK 的 Call，行权价 400，名义价值是 
-400×100=40000
+该指标衡量账户控制的总资产规模相对于净资产的倍数。对于期权，使用**行权价 (Strike)** 计算名义本金是风控中最保守且通用的做法（代表潜在的履约义务规模）。
 意义： 如果你账户有 10 万，你卖了名义价值 100 万的 Put（哪怕保证金够），你的杠杆也是 10 倍。一旦出事，就是 10 倍速的毁灭。控制总杠杆就是控制总风险。
 
 
-新增的核心指标：Stress Test Loss (压力测试)
+#### 核心公式
+$$
+\text{Gross Leverage} = \frac{\sum_{i=1}^{N_s} |V_{\text{stock}, i}| + \sum_{j=1}^{N_o} |V_{\text{option}, j}|}{\text{NLV}}
+$$
+
+#### 变量定义与计算细节
+
+*   **$\text{NLV}$ (Net Liquidation Value):** 账户当前净清算价值。
+*   **$V_{\text{stock}, i}$ (股票名义价值):**
+    $$ V_{\text{stock}} = Q_s \times S $$
+*   **$V_{\text{option}, j}$ (期权名义价值):**
+    $$ V_{\text{option}} = Q_o \times M \times K $$
+
+> **符号说明:**
+> *   $|\dots|$: 取绝对值（无论做多还是做空，都会增加杠杆）。
+> *   $Q_s$: 股票持仓数量。
+> *   $Q_o$: 期权持仓张数。
+> *   $S$: 标的当前股价 (Spot Price)。
+> *   $K$: 期权行权价 (Strike Price)。
+> *   $M$: 合约乘数 (Multiplier，如美股100，港股腾讯100)。
+
+
+
+
+Stress Test Loss (压力测试)
 背景： 对于 Options + Stocks 组合，最大的风险不是线性的（Delta），而是非线性的（Gamma + Vega）。
 场景： 现在的 Margin 可能很低（绿色），但如果明天大盘跌 10%，波动率翻倍，你的 Margin 可能会瞬间膨胀 5 倍导致爆仓。
+
+该指标通过**完全重估 (Full Revaluation)** 方法，计算在特定极端情境下账户净值的预计回撤比例。不要使用 Delta/Gamma 估算，必须代入定价模型重算价格。
+
+
 算法：
-设定一个极端场景（例如：SPY -10% AND IV +40%），代入 B-S 模型重算所有期权价格，得出预估净值。
-Stress Loss % = |Stress P&L| / NAV
-Stress P&L = Delta损失 + Gamma损失 + Vega损失
+#### 核心公式
+$$
+\text{Stress Test Loss \%} = \frac{\text{NLV}_{\text{current}} - \text{NLV}_{\text{stress}}}{\text{NLV}_{\text{current}}} \times 100\%
+$$
+
+#### 场景设定 (Scenario)
+假设发生“股灾+恐慌”情境：
+*   **股价暴跌:** $S_{\text{stress}} = S_{\text{current}} \times (1 - 15\%)$
+*   **波动率飙升:** $\sigma_{\text{stress}} = \sigma_{\text{current}} \times (1 + 40\%)$
+    *   *(注：也可以设定为绝对值增加，如 $\sigma + 0.15$)*
+
+#### 净值重估公式 ($\text{NLV}_{\text{stress}}$)
+$$
+\text{NLV}_{\text{stress}} = \text{Cash} + \sum \text{Val}_{\text{stock}}(S_{\text{stress}}) + \sum \text{Val}_{\text{option}}(S_{\text{stress}}, \sigma_{\text{stress}}, T)
+$$
 
 其中：
-- Delta损失 = BW_Delta × SPY$ × 10%
-- Gamma损失 = 0.5 × |Gamma| × (SPY$ × 10%)²
-- Vega损失  = |Vega| × 40  (当 Short Vega 时)
+
+1.  **股票重估价值:**
+    $$ \text{Val}_{\text{stock}} = Q_s \times S_{\text{stress}} $$
+
+2.  **期权重估价值 (基于 B-S 模型):**
+    $$ \text{Val}_{\text{option}} = Q_o \times M \times \text{BS\_Price}(S_{\text{stress}}, K, T, r, \sigma_{\text{stress}}) $$
+    *   对于 **Call**: $\text{BS\_Price}$ 使用 $S_{\text{stress}}$ 和 $\sigma_{\text{stress}}$ 计算看涨价格。
+    *   对于 **Put**: $\text{BS\_Price}$ 使用 $S_{\text{stress}}$ 和 $\sigma_{\text{stress}}$ 计算看跌价格。
+
 """
 
 from dataclasses import dataclass, field
@@ -514,81 +553,87 @@ class PositionThresholds:
 
 @dataclass
 class CapitalThresholds:
-    """资金级阈值 - 统一使用 ThresholdRange"""
+    """资金级阈值 - 统一使用 ThresholdRange
 
-    # Sharpe Ratio
-    sharpe: ThresholdRange = field(
-        default_factory=lambda: ThresholdRange(
-            green=(1.5, float("inf")),
-            yellow=(1.0, 1.5),
-            red_below=1.0,
-            hysteresis=0.1,
-            alert_type="SHARPE_LOW",
-            red_below_message="Sharpe Ratio 过低: {value:.2f} < {threshold}，风险调整收益不佳",
-            yellow_message="Sharpe Ratio 偏低: {value:.2f}",
-            red_below_action="检视策略执行，优化风险收益比",
-            yellow_action="关注风险调整收益",
-        )
-    )
+    核心风控四大支柱：
+    1. Margin Utilization (保证金使用率) - 生存：距离追保的距离
+    2. Cash Ratio (现金留存率) - 流动性：操作灵活度
+    3. Gross Leverage (总名义杠杆) - 敞口：防止"虚胖"
+    4. Stress Test Loss (压力测试风险) - 稳健：尾部风险保护
+    """
 
-    # Kelly Usage
-    kelly_usage: ThresholdRange = field(
+    # 1. Margin Utilization: Maint Margin / NLV
+    # 绿色: < 40%, 黄色: 40%~70%, 红色: > 70%
+    margin_utilization: ThresholdRange = field(
         default_factory=lambda: ThresholdRange(
-            green=(0.5, 1.0),
-            yellow=(0.3, 0.5),  # 偏低，有加仓空间
-            red_above=1.0,  # 过载
-            hysteresis=0.05,
-            alert_type="KELLY_USAGE",
-            red_above_message="Kelly 使用率过高: {value:.1%} > {threshold:.0%}，仓位过重",
-            yellow_message="Kelly 使用率偏低: {value:.1%}，有加仓空间",
-            red_above_action="仓位过重，考虑减仓",
-            yellow_action="可寻找新机会",
-        )
-    )
-
-    # Margin Usage
-    margin_usage: ThresholdRange = field(
-        default_factory=lambda: ThresholdRange(
-            green=(0, 0.6),
-            yellow=(0.6, 0.8),
-            red_above=0.9,
+            green=(0, 0.40),
+            yellow=(0.40, 0.70),
+            red_above=0.70,
             hysteresis=0.02,
-            alert_type="MARGIN_WARNING",
-            red_above_message="保证金使用率过高: {value:.1%} > {threshold:.0%}，有追保风险",
+            alert_type="MARGIN_UTILIZATION",
+            red_above_message="保证金使用率过高: {value:.1%} > {threshold:.0%}，接近追保线",
             yellow_message="保证金使用率偏高: {value:.1%}",
-            red_above_action="立即减仓，降低保证金占用",
+            green_message="保证金使用率正常: {value:.1%}",
+            red_above_action="强制去杠杆：按保证金/Theta效率排序，平掉效率最低的头寸",
             yellow_action="谨慎加仓，关注保证金水平",
+            green_action="保证金充足",
         )
     )
 
-    # Drawdown
-    drawdown: ThresholdRange = field(
+    # 2. Cash Ratio: Net Cash Balance / NLV
+    # 绿色: > 30%, 黄色: 10%~30%, 红色: < 10%
+    cash_ratio: ThresholdRange = field(
+        default_factory=lambda: ThresholdRange(
+            green=(0.30, float("inf")),
+            yellow=(0.10, 0.30),
+            red_below=0.10,
+            hysteresis=0.02,
+            alert_type="CASH_RATIO",
+            red_below_message="现金留存率过低: {value:.1%} < {threshold:.0%}，流动性不足",
+            yellow_message="现金留存率偏低: {value:.1%}",
+            green_message="现金留存率充足: {value:.1%}",
+            red_below_action="停止开仓 & 变现：禁止消耗现金的新仓位，平掉部分盈利头寸补充现金",
+            yellow_action="关注现金储备，控制开仓节奏",
+            green_action="现金充足，可正常操作",
+        )
+    )
+
+    # 3. Gross Leverage: Total Notional / NLV
+    # 绿色: < 2.0x, 黄色: 2.0x~4.0x, 红色: > 4.0x
+    gross_leverage: ThresholdRange = field(
+        default_factory=lambda: ThresholdRange(
+            green=(0, 2.0),
+            yellow=(2.0, 4.0),
+            red_above=4.0,
+            hysteresis=0.1,
+            alert_type="GROSS_LEVERAGE",
+            red_above_message="总名义杠杆过高: {value:.1f}x > {threshold:.1f}x，账户'虚胖'",
+            yellow_message="总名义杠杆偏高: {value:.1f}x",
+            green_message="总名义杠杆正常: {value:.1f}x",
+            red_above_action="缩减规模：按比例缩减所有策略的仓位规模，降低整体风险暴露",
+            yellow_action="关注总敞口，避免继续放大",
+            green_action="杠杆水平合理",
+        )
+    )
+
+    # 4. Stress Test Loss: (Current_NLV - Stressed_NLV) / Current_NLV
+    # 场景: Spot -15% & IV +40%
+    # 绿色: < 10%, 黄色: 10%~20%, 红色: > 20%
+    stress_test_loss: ThresholdRange = field(
         default_factory=lambda: ThresholdRange(
             green=(0, 0.10),
-            yellow=(0.10, 0.15),
-            red_above=0.15,
+            yellow=(0.10, 0.20),
+            red_above=0.20,
             hysteresis=0.01,
-            alert_type="DRAWDOWN",
-            red_above_message="回撤过大: {value:.1%} > {threshold:.0%}，超过风控阈值",
-            yellow_message="回撤接近警戒线: {value:.1%}",
-            red_above_action="执行风险控制，考虑减仓或暂停交易",
-            yellow_action="关注回撤变化，准备执行风控",
+            alert_type="STRESS_TEST_LOSS",
+            red_above_message="压力测试亏损过高: {value:.1%} > {threshold:.0%}，尾部风险过大",
+            yellow_message="压力测试亏损偏高: {value:.1%}",
+            green_message="压力测试亏损可控: {value:.1%}",
+            red_above_action="切断尾部：买入深虚值Put保护，或平掉Short Gamma最大的头寸",
+            yellow_action="关注尾部风险，考虑增加保护",
+            green_action="尾部风险可控",
         )
     )
-
-    # 保留旧字段用于向后兼容（deprecated）
-    sharpe_green_above: float = 1.5
-    sharpe_yellow_range: tuple[float, float] = (1.0, 1.5)
-    sharpe_red_below: float = 1.0
-    kelly_usage_green_range: tuple[float, float] = (0.5, 1.0)
-    kelly_usage_opportunity_below: float = 0.5
-    kelly_usage_red_above: float = 1.0
-    margin_green_below: float = 0.6
-    margin_yellow_range: tuple[float, float] = (0.6, 0.8)
-    margin_warning_above: float = 0.8
-    margin_red_above: float = 0.9
-    max_drawdown_warning_pct: float = 0.10
-    max_drawdown_red_pct: float = 0.15
 
 
 @dataclass

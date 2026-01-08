@@ -245,7 +245,7 @@ def _load_from_account(
             ibkr_provider=ibkr,
             futu_provider=futu,
         )
-        bridge = MonitoringDataBridge(data_provider=unified_provider, ibkr_provider=ibkr)
+        bridge = MonitoringDataBridge(data_provider=unified_provider, ibkr_provider=ibkr, futu_provider=futu)
         position_list = bridge.convert_positions(portfolio)
 
         # 调用 engine 层计算 CapitalMetrics
@@ -443,18 +443,24 @@ def _get_sample_positions() -> list[PositionData]:
 
 
 def _get_sample_capital() -> CapitalMetrics:
-    """获取示例资金数据"""
+    """获取示例资金数据
+
+    示例数据展示核心风控四大支柱：
+    - Margin Utilization: 25% (绿色 < 40%)
+    - Cash Ratio: 35% (绿色 > 30%)
+    - Gross Leverage: 1.8x (绿色 < 2.0x)
+    - Stress Test Loss: 8% (绿色 < 10%)
+    """
     return CapitalMetrics(
         total_equity=100000.0,
-        cash_balance=50000.0,
+        cash_balance=35000.0,  # 35% cash ratio
         maintenance_margin=25000.0,
-        margin_usage=0.25,
         unrealized_pnl=1500.0,
         realized_pnl=3000.0,
-        sharpe_ratio=1.8,
-        total_position_value=50000.0,
-        kelly_capacity=0.085,  # 8.5% optimal
-        kelly_usage=0.072,  # 7.2% current
-        peak_equity=102000.0,
-        current_drawdown=0.021,  # 2.1%
+        total_position_value=65000.0,
+        # 核心风控四大支柱
+        margin_utilization=0.25,  # 25% - GREEN
+        cash_ratio=0.35,  # 35% - GREEN
+        gross_leverage=1.8,  # 1.8x - GREEN
+        stress_test_loss=0.08,  # 8% - GREEN
     )

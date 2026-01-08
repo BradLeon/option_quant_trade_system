@@ -29,7 +29,7 @@ class TestAlertType:
     def test_alert_types(self):
         assert AlertType.DELTA_EXPOSURE.value == "delta_exposure"
         assert AlertType.STOP_LOSS.value == "stop_loss"
-        assert AlertType.MARGIN_WARNING.value == "margin_warning"
+        assert AlertType.MARGIN_UTILIZATION.value == "margin_utilization"
 
 
 class TestMonitorStatus:
@@ -148,16 +148,17 @@ class TestCapitalMetrics:
             total_equity=100000.0,
             cash_balance=50000.0,
             maintenance_margin=25000.0,
-            margin_usage=0.25,
             unrealized_pnl=1500.0,
             realized_pnl=3000.0,
-            sharpe_ratio=1.5,
-            kelly_usage=0.10,
-            current_drawdown=0.02,
+            # Core Risk Control Metrics (4 Pillars)
+            margin_utilization=0.25,
+            cash_ratio=0.50,
+            gross_leverage=1.5,
+            stress_test_loss=0.08,
         )
         assert cm.total_equity == 100000.0
         assert cm.maintenance_margin == 25000.0
-        assert cm.sharpe_ratio == 1.5
+        assert cm.margin_utilization == 0.25
 
 
 class TestPortfolioMetrics:
@@ -209,7 +210,7 @@ class TestMonitorResult:
     def test_alert_filtering(self):
         alerts = [
             Alert(level=AlertLevel.RED, alert_type=AlertType.STOP_LOSS, message="止损"),
-            Alert(level=AlertLevel.RED, alert_type=AlertType.MARGIN_WARNING, message="保证金"),
+            Alert(level=AlertLevel.RED, alert_type=AlertType.MARGIN_UTILIZATION, message="保证金"),
             Alert(level=AlertLevel.YELLOW, alert_type=AlertType.DELTA_EXPOSURE, message="Delta"),
         ]
         result = MonitorResult(

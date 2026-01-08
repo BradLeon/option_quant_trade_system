@@ -75,9 +75,11 @@ ALERT_ACTION_MAP: dict[tuple[AlertType, AlertLevel], tuple[ActionType, UrgencyLe
     (AlertType.GAMMA_EXPOSURE, AlertLevel.RED): (ActionType.REDUCE, UrgencyLevel.IMMEDIATE),
     (AlertType.PREI_HIGH, AlertLevel.RED): (ActionType.REDUCE, UrgencyLevel.IMMEDIATE),
     (AlertType.TGR_LOW, AlertLevel.RED): (ActionType.ADJUST, UrgencyLevel.IMMEDIATE),
-    (AlertType.MARGIN_WARNING, AlertLevel.RED): (ActionType.REDUCE, UrgencyLevel.IMMEDIATE),
-    (AlertType.DRAWDOWN, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
-    (AlertType.KELLY_USAGE, AlertLevel.RED): (ActionType.REDUCE, UrgencyLevel.IMMEDIATE),
+    # Capital 级 - 核心风控四大支柱
+    (AlertType.MARGIN_UTILIZATION, AlertLevel.RED): (ActionType.REDUCE, UrgencyLevel.IMMEDIATE),
+    (AlertType.CASH_RATIO, AlertLevel.RED): (ActionType.HOLD, UrgencyLevel.IMMEDIATE),
+    (AlertType.GROSS_LEVERAGE, AlertLevel.RED): (ActionType.REDUCE, UrgencyLevel.IMMEDIATE),
+    (AlertType.STRESS_TEST_LOSS, AlertLevel.RED): (ActionType.HEDGE, UrgencyLevel.IMMEDIATE),
     (AlertType.CONCENTRATION, AlertLevel.RED): (ActionType.DIVERSIFY, UrgencyLevel.IMMEDIATE),
     (AlertType.DELTA_EXPOSURE, AlertLevel.RED): (ActionType.HEDGE, UrgencyLevel.IMMEDIATE),
     # === YELLOW Alerts → SOON or MONITOR ===
@@ -90,8 +92,11 @@ ALERT_ACTION_MAP: dict[tuple[AlertType, AlertLevel], tuple[ActionType, UrgencyLe
     (AlertType.IV_HV_CHANGE, AlertLevel.YELLOW): (ActionType.REVIEW, UrgencyLevel.MONITOR),
     (AlertType.TGR_LOW, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
     (AlertType.VEGA_EXPOSURE, AlertLevel.YELLOW): (ActionType.REDUCE, UrgencyLevel.SOON),
-    (AlertType.SHARPE_LOW, AlertLevel.YELLOW): (ActionType.REVIEW, UrgencyLevel.SOON),
-    (AlertType.MARGIN_WARNING, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
+    # Capital 级 - 核心风控四大支柱 YELLOW
+    (AlertType.MARGIN_UTILIZATION, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
+    (AlertType.CASH_RATIO, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
+    (AlertType.GROSS_LEVERAGE, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
+    (AlertType.STRESS_TEST_LOSS, AlertLevel.YELLOW): (ActionType.REVIEW, UrgencyLevel.SOON),
     (AlertType.CONCENTRATION, AlertLevel.YELLOW): (ActionType.DIVERSIFY, UrgencyLevel.SOON),
     (AlertType.DELTA_EXPOSURE, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
     # === GREEN Alerts → Opportunities ===
@@ -109,22 +114,23 @@ ALERT_ACTION_MAP: dict[tuple[AlertType, AlertLevel], tuple[ActionType, UrgencyLe
 ALERT_PRIORITY = {
     # RED alerts - 按危险程度
     AlertType.STOP_LOSS: 100,
-    AlertType.DRAWDOWN: 95,
-    AlertType.MARGIN_WARNING: 90,
-    AlertType.MONEYNESS: 85,  # 行权风险
-    AlertType.DTE_WARNING: 80,
-    AlertType.DELTA_CHANGE: 75,
-    AlertType.GAMMA_EXPOSURE: 70,
-    AlertType.PREI_HIGH: 65,
-    AlertType.KELLY_USAGE: 60,
-    AlertType.DELTA_EXPOSURE: 55,
-    AlertType.TGR_LOW: 50,
-    AlertType.CONCENTRATION: 45,
+    # Capital 级 - 核心风控四大支柱
+    AlertType.MARGIN_UTILIZATION: 95,  # 生存
+    AlertType.CASH_RATIO: 90,  # 流动性
+    AlertType.GROSS_LEVERAGE: 85,  # 敞口
+    AlertType.STRESS_TEST_LOSS: 80,  # 稳健
+    AlertType.MONEYNESS: 75,  # 行权风险
+    AlertType.DTE_WARNING: 70,
+    AlertType.DELTA_CHANGE: 65,
+    AlertType.GAMMA_EXPOSURE: 60,
+    AlertType.PREI_HIGH: 55,
+    AlertType.DELTA_EXPOSURE: 50,
+    AlertType.TGR_LOW: 45,
+    AlertType.CONCENTRATION: 40,
     # YELLOW alerts
-    AlertType.GAMMA_NEAR_EXPIRY: 40,
-    AlertType.VEGA_EXPOSURE: 35,
-    AlertType.IV_HV_CHANGE: 30,
-    AlertType.SHARPE_LOW: 25,
+    AlertType.GAMMA_NEAR_EXPIRY: 35,
+    AlertType.VEGA_EXPOSURE: 30,
+    AlertType.IV_HV_CHANGE: 25,
     # GREEN alerts
     AlertType.PROFIT_TARGET: 10,
 }

@@ -245,7 +245,7 @@ def _load_from_account(
         ibkr_provider=ibkr,
         futu_provider=futu,
     )
-    bridge = MonitoringDataBridge(data_provider=unified_provider, ibkr_provider=ibkr)
+    bridge = MonitoringDataBridge(data_provider=unified_provider, ibkr_provider=ibkr, futu_provider=futu)
     position_list = bridge.convert_positions(portfolio)
 
     click.echo(f"  转换后持仓: {len(position_list)} 个")
@@ -457,8 +457,8 @@ def _output_text(result, verbose: bool = False) -> None:
 
     # 按层级分类 AlertType
     CAPITAL_TYPES = {
-        AlertType.SHARPE_LOW, AlertType.KELLY_USAGE,
-        AlertType.MARGIN_WARNING, AlertType.DRAWDOWN,
+        AlertType.MARGIN_UTILIZATION, AlertType.CASH_RATIO,
+        AlertType.GROSS_LEVERAGE, AlertType.STRESS_TEST_LOSS,
     }
     PORTFOLIO_TYPES = {
         AlertType.DELTA_EXPOSURE, AlertType.GAMMA_EXPOSURE,

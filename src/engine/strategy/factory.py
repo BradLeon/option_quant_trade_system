@@ -5,6 +5,7 @@ including automatic handling of partial coverage scenarios.
 """
 
 import logging
+import math
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -12,6 +13,7 @@ from src.data.models.account import AccountPosition, AssetType
 from src.data.models.option import Greeks, OptionType
 from src.data.models.stock import StockVolatility
 from src.data.providers.ibkr_provider import IBKRProvider
+from src.data.providers.futu_provider import FutuProvider
 from src.engine.models.enums import PositionSide
 from src.engine.models.strategy import OptionLeg, StrategyParams
 from src.engine.strategy.base import OptionStrategy
@@ -236,6 +238,7 @@ def create_strategies_from_position(
     position: AccountPosition,
     all_positions: list[AccountPosition],
     ibkr_provider: IBKRProvider | None = None,
+    futu_provider: FutuProvider | None = None,
     risk_free_rate: float = 0.03,
 ) -> list[StrategyInstance]:
     """Create strategy instances from a position, handling partial coverage.
@@ -248,6 +251,7 @@ def create_strategies_from_position(
         position: The option position to analyze
         all_positions: All positions in the account (to find stock holdings)
         ibkr_provider: IBKR provider for fetching volatility data (optional)
+        futu_provider: Futu provider for HK stock data fallback (optional)
         risk_free_rate: Risk-free rate for calculations (default: 0.03)
 
     Returns:
@@ -273,7 +277,7 @@ def create_strategies_from_position(
         return []
 
     # Step 2: Validate and prepare data
-    if not _validate_position_data(position, ibkr_provider):
+    if not _validate_position_data(position, ibkr_provider, futu_provider):
         return []
 
     # Step 3: Get volatility data
@@ -308,7 +312,9 @@ def create_strategies_from_position(
 
 
 def _validate_position_data(
-    position: AccountPosition, ibkr_provider: IBKRProvider | None
+    position: AccountPosition,
+    ibkr_provider: IBKRProvider | None,
+    futu_provider: FutuProvider | None = None,
 ) -> bool:
     """Validate and fetch missing position data."""
     # Validate required fields
@@ -324,25 +330,81 @@ def _validate_position_data(
         underlying_symbol = position.underlying or position.symbol
 
         # Convert HK stocks to .HK format if needed
+        is_hk_stock = False
         if underlying_symbol.startswith("HK."):
             code = underlying_symbol[3:].lstrip("0") or "0"
             underlying_symbol = f"{int(code):04d}.HK"
+            is_hk_stock = True
         elif underlying_symbol.isdigit():
             underlying_symbol = f"{int(underlying_symbol):04d}.HK"
+            is_hk_stock = True
 
+        # HKD to USD conversion rate (for HK stocks when position is already in USD)
+        # Position has been converted to USD by AccountAggregator, so fetched HKD prices
+        # need to be converted to match
+        hkd_to_usd = 0.128  # ~7.8 HKD/USD
+
+        # Try IBKR first
         try:
             if ibkr_provider:
                 stock_quote = ibkr_provider.get_stock_quote(underlying_symbol)
-                if stock_quote and stock_quote.close:
-                    position.underlying_price = stock_quote.close
-                    logger.info(
-                        f"Fetched missing underlying_price for {position.symbol}: "
-                        f"{position.underlying_price}"
-                    )
+                # Check for valid close price (not None, not nan)
+                if stock_quote and stock_quote.close is not None:
+                    try:
+                        if not math.isnan(stock_quote.close):
+                            fetched_price = stock_quote.close
+                            # Convert HKD to USD if position currency is USD
+                            if is_hk_stock and position.currency == "USD":
+                                fetched_price = fetched_price * hkd_to_usd
+                                logger.info(
+                                    f"Converted HK stock price to USD: {stock_quote.close:.2f} HKD -> {fetched_price:.2f} USD"
+                                )
+                            position.underlying_price = fetched_price
+                            logger.info(
+                                f"Fetched missing underlying_price for {position.symbol}: "
+                                f"{position.underlying_price}"
+                            )
+                        else:
+                            logger.warning(
+                                f"Stock quote for {underlying_symbol} returned nan close price"
+                            )
+                    except (TypeError, ValueError):
+                        # close is not a number
+                        pass
         except Exception as e:
             logger.warning(
-                f"Could not fetch underlying price for {position.symbol}: {e}"
+                f"Could not fetch underlying price for {position.symbol} via IBKR: {e}"
             )
+
+        # Fallback: Try Futu for HK stocks if IBKR failed
+        if not position.underlying_price and is_hk_stock and futu_provider:
+            try:
+                # Convert to Futu symbol format: "0700.HK" → "HK.00700"
+                code = underlying_symbol.replace(".HK", "")
+                futu_symbol = f"HK.{int(code):05d}"
+                logger.info(f"Trying Futu fallback for {position.symbol}: {futu_symbol}")
+                stock_quote = futu_provider.get_stock_quote(futu_symbol)
+                if stock_quote and stock_quote.close is not None:
+                    try:
+                        if not math.isnan(stock_quote.close):
+                            fetched_price = stock_quote.close
+                            # Convert HKD to USD if position currency is USD
+                            if position.currency == "USD":
+                                fetched_price = fetched_price * hkd_to_usd
+                                logger.info(
+                                    f"Converted HK stock price to USD: {stock_quote.close:.2f} HKD -> {fetched_price:.2f} USD"
+                                )
+                            position.underlying_price = fetched_price
+                            logger.info(
+                                f"Fetched underlying_price from Futu for {position.symbol}: "
+                                f"{position.underlying_price}"
+                            )
+                    except (TypeError, ValueError):
+                        pass
+            except Exception as e:
+                logger.warning(
+                    f"Could not fetch underlying price for {position.symbol} via Futu: {e}"
+                )
 
         if not position.underlying_price:
             logger.warning(

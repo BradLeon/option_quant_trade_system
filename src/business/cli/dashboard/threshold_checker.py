@@ -229,71 +229,71 @@ class ThresholdChecker:
             return AlertLevel.GREEN
         return self._check_range(value, self.config.portfolio.vega_weighted_iv_hv)
 
-    # ==================== Capital Level ====================
+    # ==================== Capital Level (核心风控四大支柱) ====================
 
-    def check_sharpe(self, value: Optional[float]) -> AlertLevel:
-        """Check Sharpe Ratio threshold.
+    def check_margin_utilization(self, value: Optional[float]) -> AlertLevel:
+        """Check margin utilization threshold (生存).
 
-        Higher Sharpe is better.
-        Uses unified ThresholdRange configuration.
+        Measures distance from margin call.
+        < 40% green, 40%~70% yellow, > 70% red.
 
         Args:
-            value: Sharpe ratio value
+            value: Margin utilization ratio (0-1)
 
         Returns:
             AlertLevel based on thresholds
         """
         if value is None:
             return AlertLevel.GREEN
-        return self._check_range(value, self.config.capital.sharpe)
+        return self._check_range(value, self.config.capital.margin_utilization)
 
-    def check_kelly_usage(self, value: Optional[float]) -> AlertLevel:
-        """Check Kelly usage threshold.
+    def check_cash_ratio(self, value: Optional[float]) -> AlertLevel:
+        """Check cash ratio threshold (流动性).
 
-        Optimal Kelly usage is 0.5-1.0.
-        Uses unified ThresholdRange configuration.
+        Measures liquidity buffer for assignments and emergencies.
+        > 30% green, 10%~30% yellow, < 10% red.
 
         Args:
-            value: Kelly usage ratio
+            value: Cash ratio (0-1)
 
         Returns:
             AlertLevel based on thresholds
         """
         if value is None:
             return AlertLevel.GREEN
-        return self._check_range(value, self.config.capital.kelly_usage)
+        return self._check_range(value, self.config.capital.cash_ratio)
 
-    def check_margin_usage(self, value: Optional[float]) -> AlertLevel:
-        """Check margin usage threshold.
+    def check_gross_leverage(self, value: Optional[float]) -> AlertLevel:
+        """Check gross leverage threshold (敞口).
 
-        Lower margin usage is safer.
-        Uses unified ThresholdRange configuration.
+        Measures total notional exposure relative to NLV.
+        < 2.0x green, 2.0x~4.0x yellow, > 4.0x red.
 
         Args:
-            value: Margin usage ratio (0-1)
+            value: Gross leverage multiple
 
         Returns:
             AlertLevel based on thresholds
         """
         if value is None:
             return AlertLevel.GREEN
-        return self._check_range(value, self.config.capital.margin_usage)
+        return self._check_range(value, self.config.capital.gross_leverage)
 
-    def check_drawdown(self, value: Optional[float]) -> AlertLevel:
-        """Check drawdown threshold.
+    def check_stress_test_loss(self, value: Optional[float]) -> AlertLevel:
+        """Check stress test loss threshold (稳健).
 
-        Lower drawdown is better.
-        Uses unified ThresholdRange configuration.
+        Measures simulated loss under extreme scenario (Spot -15%, IV +40%).
+        < 10% green, 10%~20% yellow, > 20% red.
 
         Args:
-            value: Current drawdown ratio (0-1)
+            value: Stress test loss ratio (0-1)
 
         Returns:
             AlertLevel based on thresholds
         """
         if value is None:
             return AlertLevel.GREEN
-        return self._check_range(value, self.config.capital.drawdown)
+        return self._check_range(value, self.config.capital.stress_test_loss)
 
     # ==================== Position Level ====================
 

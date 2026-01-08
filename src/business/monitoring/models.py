@@ -61,11 +61,11 @@ class AlertType(str, Enum):
     EXPECTED_ROC_LOW = "expected_roc_low"  # Expected ROC 过低
     WIN_PROB_LOW = "win_prob_low"  # Win Probability 过低
 
-    # Capital 级
-    SHARPE_LOW = "sharpe_low"  # Sharpe 过低
-    KELLY_USAGE = "kelly_usage"  # Kelly 使用率
-    MARGIN_WARNING = "margin_warning"  # 保证金预警
-    DRAWDOWN = "drawdown"  # 回撤预警
+    # Capital 级 - 核心风控四大支柱
+    MARGIN_UTILIZATION = "margin_utilization"  # 保证金使用率（生存）
+    CASH_RATIO = "cash_ratio"  # 现金留存率（流动性）
+    GROSS_LEVERAGE = "gross_leverage"  # 总名义杠杆（敞口）
+    STRESS_TEST_LOSS = "stress_test_loss"  # 压力测试亏损（稳健）
 
 
 class MonitorStatus(str, Enum):

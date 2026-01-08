@@ -16,6 +16,7 @@ from src.data.models.account import AccountPosition, AssetType, ConsolidatedPort
 from src.data.models.fundamental import Fundamental
 from src.data.models.stock import StockVolatility
 from src.data.models.technical import TechnicalData
+from src.data.providers.futu_provider import FutuProvider
 from src.data.providers.ibkr_provider import IBKRProvider
 from src.data.providers.unified_provider import UnifiedDataProvider
 from src.engine.position.fundamental.metrics import evaluate_fundamentals
@@ -43,6 +44,7 @@ class MonitoringDataBridge:
         self,
         data_provider: UnifiedDataProvider | None = None,
         ibkr_provider: IBKRProvider | None = None,
+        futu_provider: FutuProvider | None = None,
         cache_ttl_seconds: int = 300,
     ):
         """初始化数据转换器
@@ -50,10 +52,12 @@ class MonitoringDataBridge:
         Args:
             data_provider: 统一数据提供者，用于获取补充数据
             ibkr_provider: IBKR 提供者，用于获取 HV 数据计算 SAS
+            futu_provider: Futu 提供者，用于 HK 股票价格 fallback
             cache_ttl_seconds: 缓存有效期（秒），默认 5 分钟
         """
         self._provider = data_provider
         self._ibkr_provider = ibkr_provider
+        self._futu_provider = futu_provider
         self._cache_ttl = cache_ttl_seconds
 
         # 数据缓存（按 symbol 存储）
@@ -235,6 +239,7 @@ class MonitoringDataBridge:
                 position=pos,
                 all_positions=all_positions,
                 ibkr_provider=self._ibkr_provider,  # 传入 ibkr_provider 获取 HV 数据
+                futu_provider=self._futu_provider,  # 传入 futu_provider 获取 HK 股票价格 fallback
             )
         except Exception as e:
             logger.warning(f"Failed to create strategies for {pos.symbol}: {e}")
