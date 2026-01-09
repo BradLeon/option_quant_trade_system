@@ -1,7 +1,7 @@
 """Market sentiment analysis for account-level decisions.
 
 Account-level module for macro market sentiment indicators:
-- VIX analysis and term structure
+- VIX analysis and term structure (VIX vs VIX3M)
 - Market trend signals (SPY, QQQ, 2800.HK, 3032.HK)
 - Put/Call Ratio
 - Aggregated sentiment for US and HK markets
@@ -13,6 +13,14 @@ from src.engine.account.sentiment.pcr import (
     get_pcr_zone,
     interpret_pcr,
     is_pcr_favorable_for_puts,
+)
+from src.engine.account.sentiment.term_structure import (
+    TermStructureResult,
+    calc_term_structure,
+    get_term_structure_regime,
+    get_term_structure_state,
+    interpret_term_structure,
+    is_term_structure_favorable,
 )
 from src.engine.account.sentiment.trend import (
     calc_ema,
@@ -70,13 +78,18 @@ __all__ = [
     "is_vix_favorable_for_selling",
     "calc_vix_percentile",
     "get_vix_regime",
-    # VIX Term Structure
+    # Term Structure (term_structure.py)
+    "TermStructureResult",
+    "calc_term_structure",
+    "get_term_structure_state",
+    "get_term_structure_regime",
+    # VIX Term Structure (vix_term.py)
     "calc_vix_term_ratio",
     "get_term_structure",
     "interpret_term_structure",
     "analyze_term_structure",
     "is_term_structure_favorable",
-    # Trend (legacy)
+    # Trend
     "calc_sma",
     "calc_ema",
     "calc_spy_trend",

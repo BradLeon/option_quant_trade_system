@@ -207,26 +207,37 @@ def calc_beta_weighted_delta(positions: list[Position]) -> float | None:
 
     spy_price = _get_spy_price(base_currency)
     if spy_price is None or spy_price <= 0:
+        logger.debug(f"calc_beta_weighted_delta: SPY price unavailable")
         return None
+
+    logger.debug(f"calc_beta_weighted_delta: SPY price={spy_price:.2f}")
 
     total_bwd = 0.0
     for pos in positions:
         if pos.delta is None or pos.underlying_price is None:
+            logger.debug(f"  {pos.symbol}: SKIP - delta={pos.delta}, und_price={pos.underlying_price}")
             continue
 
         # Get beta - use provided value or fetch from Yahoo Finance
         beta = pos.beta
+        beta_source = "provided"
         if beta is None:
             beta = _get_stock_beta(pos.symbol)
+            beta_source = "yfinance"
         if beta is None:
-            logger.debug(f"Skipping {pos.symbol} for BWD: no beta available")
+            logger.debug(f"  {pos.symbol}: SKIP - no beta available")
             continue
 
         # Beta-weighted delta = delta × underlying_price × multiplier × quantity × beta / spy_price
         delta_dollars = pos.delta * pos.underlying_price * pos.contract_multiplier * pos.quantity
         bwd = delta_dollars * beta / spy_price
         total_bwd += bwd
+        logger.debug(
+            f"  {pos.symbol}: delta={pos.delta:.4f} und={pos.underlying_price:.2f} mult={pos.contract_multiplier} "
+            f"qty={pos.quantity:.0f} beta={beta:.2f}({beta_source}) -> delta$={delta_dollars:.2f} bwd={bwd:.2f}"
+        )
 
+    logger.debug(f"calc_beta_weighted_delta: total_bwd={total_bwd:.2f}")
     return total_bwd
 
 

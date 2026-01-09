@@ -1,0 +1,69 @@
+# Short Put 策略筛选配置
+# 卖出看跌期权策略
+
+market_filter:
+  # 美股市场指标
+  us_market:
+    vix_symbol: "^VIX"
+    vix_range: [15, 28]           # VIX 适宜区间
+    vix_percentile_range: [0.3, 0.8]
+    vix3m_symbol: "^VIX3M"
+    term_structure_threshold: 0.9  # VIX/VIX3M < 0.9 为正向结构
+    trend_indices:
+      - symbol: "SPY"
+        weight: 0.6
+      - symbol: "QQQ"
+        weight: 0.4
+    trend_required: "bullish_or_neutral"
+    pcr_symbol: "SPY"
+    pcr_range: [0.8, 1.2]
+
+  # 港股市场指标
+  hk_market:
+    volatility_source: "2800.HK"
+    iv_calculation: "atm_weighted"
+    iv_range: [18, 32]
+    iv_percentile_range: [0.3, 0.8]
+    trend_indices:
+      - symbol: "2800.HK"
+        weight: 0.5
+      - symbol: "3033.HK"
+        weight: 0.5
+    trend_required: "bullish_or_neutral"
+
+underlying_filter:
+  min_iv_rank: 50                 # 最低 IV Rank
+  max_iv_hv_ratio: 2.0            # IV/HV 上限
+  min_iv_hv_ratio: 0.8            # IV/HV 下限
+  technical:
+    min_rsi: 30                   # RSI 下限（避免接飞刀）
+    max_rsi: 70                   # RSI 上限
+    rsi_stabilizing_range: [30, 45]  # 企稳区间
+    bb_percent_b_range: [0.1, 0.3]   # 布林带 %B 企稳区间
+    max_adx: 45                   # ADX 上限（避免强趋势）
+    min_sma_alignment: "neutral"  # MA 排列要求
+  fundamental:
+    enabled: false                # 是否启用基本面筛选
+    max_pe_percentile: 0.7        # PE 历史百分位上限
+    min_recommendation: "hold"    # 最低分析师评级
+
+contract_filter:
+  dte_range: [25, 45]             # DTE 范围
+  optimal_dte_range: [30, 35]     # 最优 DTE 范围（Theta 效率最高）
+  delta_range: [-0.35, -0.15]     # Delta 范围（卖Put）
+  optimal_delta_range: [-0.25, -0.20]  # 最优 Delta 范围
+  liquidity:
+    max_bid_ask_spread: 0.10      # 最大 Bid/Ask 价差比例
+    min_open_interest: 100        # 最小持仓量
+    min_volume: 10                # 最小成交量
+  metrics:
+    min_sharpe_ratio: 1.0         # 最低夏普比率
+    min_sas: 50                   # 最低策略吸引力分数
+    max_prei: 75                  # 最高风险暴露指数
+    min_tgr: 0.05                 # 最低 Theta/Gamma 比率
+    max_kelly_fraction: 0.25      # Kelly 仓位上限系数
+
+output:
+  max_opportunities: 10           # 最多返回机会数
+  sort_by: "sas"                  # 排序字段
+  sort_order: "desc"              # 排序方向

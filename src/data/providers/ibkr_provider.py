@@ -1,6 +1,7 @@
 """IBKR TWS API data provider implementation."""
 
 import logging
+import math
 import os
 import time
 from datetime import date, datetime, timedelta
@@ -95,7 +96,7 @@ class IBKRProvider(DataProvider, AccountProvider):
         port: int | None = None,
         client_id: int | None = None,
         timeout: int = 30,
-        account_type: AccountType = AccountType.PAPER,
+        account_type: AccountType = AccountType.REAL,
     ) -> None:
         """Initialize IBKR provider.
 
@@ -250,12 +251,12 @@ class IBKRProvider(DataProvider, AccountProvider):
                     logger.warning(f"Could not qualify contract for {symbol}")
                     continue
 
-                # Request market data
-                ticker = self._ib.reqMktData(contract, "", False, False)
+                # Request market data with generic tick 221 (Mark Price) for HK stocks
+                ticker = self._ib.reqMktData(contract, "221", False, False)
 
-                # Wait for data with timeout
+                # Wait for data with timeout (10 seconds for HK market)
                 timeout_count = 0
-                while ticker.last != ticker.last and timeout_count < 50:  # NaN check
+                while ticker.last != ticker.last and timeout_count < 100:  # NaN check
                     self._ib.sleep(0.1)
                     timeout_count += 1
 
@@ -263,13 +264,30 @@ class IBKRProvider(DataProvider, AccountProvider):
                 if ticker.last != ticker.last:
                     self._ib.sleep(1)
 
+                # Improved close price retrieval with multiple fallbacks
+                close_price = None
+                # 1. Priority: last price
+                if ticker.last == ticker.last:
+                    close_price = ticker.last
+                # 2. Fallback: prev close
+                elif ticker.close == ticker.close:
+                    close_price = ticker.close
+                # 3. Fallback: bid/ask midpoint
+                elif ticker.bid == ticker.bid and ticker.ask == ticker.ask and ticker.bid > 0 and ticker.ask > 0:
+                    close_price = (ticker.bid + ticker.ask) / 2
+                    logger.debug(f"Using bid/ask midpoint for {normalized}: {close_price}")
+                # 4. Fallback: markPrice (from generic tick 221)
+                elif hasattr(ticker, 'markPrice') and ticker.markPrice == ticker.markPrice:
+                    close_price = ticker.markPrice
+                    logger.debug(f"Using markPrice for {normalized}: {close_price}")
+
                 quote = StockQuote(
                     symbol=normalized,
                     timestamp=datetime.now(),
                     open=ticker.open if ticker.open == ticker.open else None,
                     high=ticker.high if ticker.high == ticker.high else None,
                     low=ticker.low if ticker.low == ticker.low else None,
-                    close=ticker.last if ticker.last == ticker.last else ticker.close,
+                    close=close_price,
                     volume=int(ticker.volume) if ticker.volume == ticker.volume else None,
                     prev_close=ticker.close if ticker.close == ticker.close else None,
                     source=self.name,
@@ -1423,6 +1441,14 @@ class IBKRProvider(DataProvider, AccountProvider):
                         port_item = portfolio_lookup[pos.contract.conId]
                         results[i].market_value = port_item.marketValue
                         results[i].unrealized_pnl = port_item.unrealizedPNL
+                        # Use averageCost from portfolio (more reliable than Position.avgCost)
+                        # IBKR's averageCost for OPTIONS is per-contract (price × multiplier)
+                        # Normalize to per-share price for consistent calculation across brokers
+                        # NOTE: Only apply to OPTIONS, Stock avg_cost is already per-share
+                        if results[i].asset_type == AssetType.OPTION and results[i].contract_multiplier > 0:
+                            results[i].avg_cost = port_item.averageCost / results[i].contract_multiplier
+                        else:
+                            results[i].avg_cost = port_item.averageCost
 
                         # For stocks, underlying_price = market_value / quantity
                         if results[i].asset_type == AssetType.STOCK and results[i].quantity != 0:
@@ -1487,6 +1513,34 @@ class IBKRProvider(DataProvider, AccountProvider):
                 # Get underlying price from modelGreeks
                 if hasattr(mg, "undPrice") and mg.undPrice == mg.undPrice:
                     position.underlying_price = mg.undPrice
+
+                # Fallback: If undPrice not available from Greeks, fetch stock quote
+                if position.underlying_price is None:
+                    underlying_code = position.underlying or position.symbol.split()[0]
+                    logger.info(f"undPrice not in Greeks for {position.symbol}, fetching stock quote for {underlying_code}")
+                    try:
+                        # Convert to standard format for quote fetching
+                        std_symbol = SymbolFormatter.to_standard(underlying_code)
+                        stock_quote = self.get_stock_quote(std_symbol)
+                        if stock_quote:
+                            # Priority: close (last price), then bid/ask midpoint
+                            if stock_quote.close is not None:
+                                try:
+                                    if not math.isnan(stock_quote.close):
+                                        position.underlying_price = stock_quote.close
+                                        logger.info(f"Got undPrice from stock quote for {position.symbol}: {position.underlying_price}")
+                                except (TypeError, ValueError):
+                                    pass
+                            # Try bid/ask midpoint if close is nan
+                            if position.underlying_price is None:
+                                bid = getattr(stock_quote, '_bid', None)
+                                ask = getattr(stock_quote, '_ask', None)
+                                if bid is not None and ask is not None and bid > 0 and ask > 0:
+                                    position.underlying_price = (bid + ask) / 2
+                                    logger.info(f"Got undPrice from bid/ask midpoint for {position.symbol}: {position.underlying_price}")
+                    except Exception as e:
+                        logger.debug(f"Could not fetch stock quote for {underlying_code}: {e}")
+
                 logger.debug(f"Fetched Greeks for {position.symbol}: delta={position.delta}, "
                            f"iv={position.iv}, undPrice={position.underlying_price}")
             else:
@@ -1572,13 +1626,26 @@ class IBKRProvider(DataProvider, AccountProvider):
             # Step 1: Normalize underlying symbol using SymbolFormatter
             underlying_symbol = SymbolFormatter.to_standard(underlying)
 
-            # Step 2: Get underlying price
+            # Step 2: Get underlying price with multiple fallbacks
             underlying_price = None
             try:
                 stock_quote = self.get_stock_quote(underlying_symbol)
-                if stock_quote and stock_quote.close:
-                    underlying_price = stock_quote.close
-                    logger.debug(f"Fetched underlying price: {underlying_price}")
+                if stock_quote:
+                    # Priority: close (last price)
+                    if stock_quote.close is not None:
+                        try:
+                            if not math.isnan(stock_quote.close):
+                                underlying_price = stock_quote.close
+                                logger.debug(f"Fetched underlying price from close: {underlying_price}")
+                        except (TypeError, ValueError):
+                            pass
+                    # Fallback: bid/ask midpoint
+                    if underlying_price is None:
+                        bid = getattr(stock_quote, '_bid', None)
+                        ask = getattr(stock_quote, '_ask', None)
+                        if bid is not None and ask is not None and bid > 0 and ask > 0:
+                            underlying_price = (bid + ask) / 2
+                            logger.debug(f"Fetched underlying price from bid/ask midpoint: {underlying_price}")
             except Exception as e:
                 logger.debug(f"Could not fetch underlying stock quote: {e}")
 
@@ -1726,6 +1793,33 @@ class IBKRProvider(DataProvider, AccountProvider):
                 und_price = None
                 if hasattr(mg, "undPrice") and mg.undPrice == mg.undPrice:
                     und_price = mg.undPrice
+
+                # Fallback: If undPrice not available from Greeks, fetch stock quote
+                if und_price is None:
+                    logger.info(f"undPrice not in Greeks, fetching stock quote for {underlying_code}")
+                    try:
+                        # Convert to standard format for quote fetching
+                        std_symbol = SymbolFormatter.to_standard(underlying_code)  # "700" → "0700.HK"
+                        stock_quote = self.get_stock_quote(std_symbol)
+                        if stock_quote:
+                            # Priority: close (last price), then bid/ask midpoint
+                            if stock_quote.close is not None:
+                                try:
+                                    if not math.isnan(stock_quote.close):
+                                        und_price = stock_quote.close
+                                        logger.info(f"Got undPrice from stock quote: {und_price}")
+                                except (TypeError, ValueError):
+                                    pass
+                            # Try bid/ask midpoint if close is nan
+                            if und_price is None:
+                                bid = getattr(stock_quote, '_bid', None)
+                                ask = getattr(stock_quote, '_ask', None)
+                                if bid is not None and ask is not None and bid > 0 and ask > 0:
+                                    und_price = (bid + ask) / 2
+                                    logger.info(f"Got undPrice from bid/ask midpoint: {und_price}")
+                    except Exception as e:
+                        logger.debug(f"Could not fetch stock quote for {underlying_code}: {e}")
+
                 result = {
                     "delta": mg.delta if mg.delta == mg.delta else None,
                     "gamma": mg.gamma if mg.gamma == mg.gamma else None,

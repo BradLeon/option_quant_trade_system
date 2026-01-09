@@ -1,0 +1,71 @@
+# 飞书推送配置
+
+# Webhook 配置
+webhook:
+  # Webhook URL 从环境变量 FEISHU_WEBHOOK_URL 读取
+  # 也可以直接配置：url: "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+  url_env: "FEISHU_WEBHOOK_URL"
+
+  # 签名密钥（可选，从环境变量读取）
+  secret_env: "FEISHU_WEBHOOK_SECRET"
+
+  # 请求超时（秒）
+  timeout: 10
+
+# 推送频率控制
+rate_limit:
+  min_interval: 60                # 最小推送间隔（秒）
+  aggregation_window: 300         # 聚合时间窗口（秒）
+  dedup_window: 1800              # 去重时间窗口（秒）
+
+  # 静默时段（不推送）
+  silent_hours:
+    enabled: true
+    start: "23:00"
+    end: "07:00"
+    timezone: "Asia/Shanghai"
+
+# 重试配置
+retry:
+  max_attempts: 3
+  initial_delay: 1                # 初始重试延迟（秒）
+  backoff_multiplier: 3           # 重试延迟倍数
+
+# 推送内容配置
+content:
+  include_market_status: true     # 是否包含市场状态
+  include_suggestions: true       # 是否包含建议操作
+  max_opportunities: 5            # 最多推送机会数
+
+  # 启用的预警级别
+  alert_levels:
+    - red                         # 风险
+    - yellow                      # 关注
+    - green                       # 机会
+
+# 消息模板配置
+templates:
+  # 标题模板
+  screening_opportunity_title: "📈 {strategy} 开仓机会"
+  screening_no_opportunity_title: "📊 筛选完成 - 暂无机会"
+  market_unfavorable_title: "⚠️ 市场环境不利 - 建议观望"
+  risk_alert_title: "🔴 风险预警 - {alert_type}"
+  attention_alert_title: "🟡 关注提醒 - {alert_type}"
+  opportunity_alert_title: "🟢 发现机会 - {alert_type}"
+  monitor_report_title: "📋 持仓监控报告"
+
+  # 卡片颜色
+  colors:
+    opportunity: "green"
+    no_opportunity: "grey"
+    unfavorable: "yellow"
+    risk: "red"
+    attention: "yellow"
+    info: "blue"
+
+# 日志配置
+logging:
+  enabled: true
+  log_file: "logs/notification.log"
+  max_size_mb: 10
+  backup_count: 5

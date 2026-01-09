@@ -1,0 +1,155 @@
+# 持仓监控阈值配置
+
+# 组合级监控阈值（统一使用 ThresholdRange 格式）
+portfolio_level:
+  beta_weighted_delta:
+    green: [-100, 100]            # 正常区间
+    yellow: [-200, 200]           # 关注区间
+    red_above: 300                # 风险上限
+    red_below: -300               # 风险下限
+    hysteresis: 20                # 迟滞值，防止状态抖动
+    alert_type: DELTA_EXPOSURE
+    red_above_message: "Beta 加权 Delta 过高: {value:.0f} > {threshold}"
+    red_below_message: "Beta 加权 Delta 过低: {value:.0f} < {threshold}"
+    yellow_message: "Beta 加权 Delta 偏离中性: {value:.0f}"
+    red_above_action: "减少多头 Delta 暴露或对冲"
+    red_below_action: "减少空头 Delta 暴露或对冲"
+    yellow_action: "关注 Delta 暴露变化"
+
+  portfolio_theta:
+    green: [0, .inf]              # Theta 正值为好（卖方策略）
+    yellow: [-50, 0]
+    red_below: -100
+    hysteresis: 10
+    alert_type: THETA_EXPOSURE
+    red_below_message: "组合 Theta 为负: {value:.0f}，时间衰减不利"
+    yellow_message: "组合 Theta 偏低: {value:.0f}"
+    red_below_action: "减少买方头寸或增加卖方头寸"
+    yellow_action: "关注时间衰减效率"
+
+  portfolio_vega:
+    green: [-500, 500]
+    yellow: [-1000, 1000]
+    red_above: 1500
+    red_below: -1500
+    hysteresis: 100
+    alert_type: VEGA_EXPOSURE
+    red_above_message: "组合 Vega 暴露过高: {value:.0f} > {threshold}"
+    red_below_message: "组合 Vega 暴露过低: {value:.0f} < {threshold}"
+    yellow_message: "组合 Vega 暴露偏大: {value:.0f}"
+    red_above_action: "减少 Vega 暴露，考虑平仓部分头寸"
+    red_below_action: "Vega 空头过大，波动率上升风险高"
+    yellow_action: "关注波动率风险"
+
+  portfolio_gamma:
+    green: [-30, 0]               # 卖方 Gamma 为负
+    yellow: [-50, -30]
+    red_below: -50
+    hysteresis: 5
+    alert_type: GAMMA_EXPOSURE
+    red_below_message: "组合 Gamma 空头过大: {value:.0f} < {threshold}"
+    yellow_message: "组合 Gamma 空头偏大: {value:.0f}"
+    red_below_action: "Gamma 空头风险高，大幅波动时亏损加速"
+    yellow_action: "关注 Gamma 风险"
+
+  portfolio_tgr:                  # Theta/Gamma 比率
+    green: [0.15, .inf]           # 健康
+    yellow: [0.05, 0.15]          # 关注
+    red_below: 0.05               # 风险
+    hysteresis: 0.01
+    alert_type: TGR_LOW
+    red_below_message: "组合 TGR 过低: {value:.3f} < {threshold}"
+    yellow_message: "组合 TGR 偏低: {value:.3f}"
+    red_below_action: "时间衰减效率不足，考虑调整持仓"
+    yellow_action: "关注时间衰减效率"
+
+  concentration_hhi:              # 集中度 (Herfindahl-Hirschman Index)
+    green: [0, 0.25]              # 分散良好
+    yellow: [0.25, 0.5]           # 偏集中
+    red_above: 0.5                # 高集中度
+    hysteresis: 0.05
+    alert_type: CONCENTRATION
+    red_above_message: "持仓集中度过高 (HHI={value:.2f} > {threshold})"
+    yellow_message: "持仓集中度偏高 (HHI={value:.2f})"
+    red_above_action: "分散持仓，降低单一标的风险"
+    yellow_action: "关注集中度变化"
+
+  # 保留旧字段用于向后兼容（deprecated）
+  tgr:
+    green_above: 0.15
+    yellow_range: [0.05, 0.15]
+    red_below: 0.05
+  correlation:
+    max_concentration: 0.5
+
+# 持仓级监控阈值
+position_level:
+  moneyness:                      # (S-K)/K
+    green_above: 0.05             # 安全
+    yellow_range: [0.0, 0.05]     # 关注
+    red_below: 0.0                # 风险（ITM）
+
+  delta:
+    put_red_above: 0.5            # Short Put |Delta| 上限
+    call_red_above: 0.5           # Short Call |Delta| 上限
+    change_warning: 0.1           # Delta 变化预警阈值
+
+  gamma:
+    green_below: 0.03
+    yellow_range: [0.03, 0.05]
+    red_above: 0.05
+    near_expiry_multiplier: 1.5   # DTE < 14 时乘以此系数
+
+  iv_hv_ratio:
+    favorable_above: 1.5          # 波动率溢价高（利好卖方）
+    unfavorable_below: 0.8        # IV 偏低（考虑平仓）
+
+  prei:                           # 风险暴露指数
+    green_below: 40
+    yellow_range: [40, 75]
+    red_above: 75
+
+  dte:
+    warning_days: 7               # 到期预警天数
+    urgent_days: 3                # 紧急预警天数
+
+  pnl:                            # 盈亏监控
+    take_profit_pct: 0.50         # 止盈：50% 权利金
+    stop_loss_pct: -2.00          # 止损：200% 权利金
+
+# 资金级监控阈值
+capital_level:
+  sharpe_ratio:
+    green_above: 1.5
+    yellow_range: [1.0, 1.5]
+    red_below: 1.0
+
+  kelly_usage:                    # 实际仓位 / Kelly 最优仓位
+    green_range: [0.5, 1.0]
+    opportunity_below: 0.5        # 可加仓
+    red_above: 1.0                # 过度杠杆
+
+  margin_usage:                   # 保证金使用率
+    green_below: 0.6
+    yellow_range: [0.6, 0.8]
+    warning_above: 0.8
+    red_above: 0.9
+
+  max_drawdown:
+    warning_pct: 0.10             # 10% 回撤预警
+    red_pct: 0.15                 # 15% 回撤告警
+
+# 动态阈值调整（基于市场状态）
+dynamic_adjustment:
+  high_volatility:                # VIX > 28
+    gamma_multiplier: 0.6         # 收紧 Gamma 阈值
+    delta_multiplier: 0.8         # 收紧 Delta 阈值
+    kelly_multiplier: 0.5         # 使用 1/4 Kelly
+
+  trending:                       # ADX > 25
+    counter_trend_multiplier: 0.7 # 逆势仓位收紧阈值
+    with_trend_multiplier: 1.2    # 顺势仓位放宽阈值
+
+  ranging:                        # ADX < 20
+    gamma_multiplier: 1.3         # 放宽 Gamma 阈值
+    tgr_multiplier: 1.2           # 提高 TGR 要求

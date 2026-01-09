@@ -39,6 +39,7 @@ class AccountPosition:
         market_value: Market value in local currency.
         unrealized_pnl: Unrealized P&L in local currency.
         currency: Original currency (USD/HKD/CNY).
+        realized_pnl: Realized P&L in local currency.
         strike: Option strike price.
         expiry: Option expiry date (YYYY-MM-DD).
         option_type: "call" or "put".
@@ -60,6 +61,8 @@ class AccountPosition:
     market_value: float
     unrealized_pnl: float
     currency: str
+    # Realized P&L (default 0 since not all brokers provide it)
+    realized_pnl: float = 0.0
     # Option-specific fields
     underlying: str | None = None  # Underlying stock code (e.g., "9988" for IBKR)
     strike: float | None = None

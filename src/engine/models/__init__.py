@@ -56,6 +56,8 @@ from src.engine.models.result import (
     VolatilityScore,
 )
 from src.engine.models.strategy import OptionLeg, StrategyMetrics, StrategyParams
+from src.engine.models.capital import CapitalMetrics
+from src.engine.models.portfolio import PortfolioMetrics
 
 __all__ = [
     # B-S params
@@ -88,4 +90,7 @@ __all__ = [
     "OptionLeg",
     "StrategyParams",
     "StrategyMetrics",
+    # Capital & Portfolio
+    "CapitalMetrics",
+    "PortfolioMetrics",
 ]

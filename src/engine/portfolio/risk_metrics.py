@@ -197,3 +197,63 @@ def calc_concentration_risk(positions: list[Position]) -> float | None:
     hhi = sum(w ** 2 for w in weights)
 
     return hhi
+
+
+def calc_vega_weighted_iv_hv(
+    positions: list[Position],
+    position_iv_hv_ratios: dict[str, float] | None = None,
+) -> float | None:
+    """Calculate vega-weighted IV/HV ratio for portfolio quality assessment.
+
+    Formula: Σ(|Pos_Vega_i| × IV_HV_i) / Σ(|Pos_Vega_i|)
+
+    Physical meaning:
+    - Measures whether the portfolio is selling "expensive" options
+    - IV/HV ratio indicates option pricing relative to realized volatility
+    - Vega-weighting because a position's contribution to portfolio vol risk
+      is proportional to its vega (not premium or delta)
+    - > 1.0: Good quality - selling overpriced IV relative to HV
+    - 0.8 ~ 1.2: Neutral - fair pricing
+    - < 0.8: Poor quality - "underselling" options, insufficient vol premium
+
+    Args:
+        positions: List of Position objects with vega values.
+        position_iv_hv_ratios: Dict mapping symbol to its IV/HV ratio.
+            Must be provided externally as Position model lacks IV/HV data.
+
+    Returns:
+        Vega-weighted IV/HV ratio, or None if insufficient data.
+
+    Example:
+        # Position A: vega=$500, IV/HV=1.3 (selling overpriced)
+        # Position B: vega=$300, IV/HV=0.9 (slightly underpriced)
+        # Weighted IV/HV = (500*1.3 + 300*0.9) / (500+300) = 1.15
+    """
+    if not positions or not position_iv_hv_ratios:
+        return None
+
+    total_vega = 0.0
+    weighted_sum = 0.0
+
+    for pos in positions:
+        if pos.vega is None:
+            continue
+
+        # Calculate absolute vega dollars for this position
+        pos_vega = abs(pos.vega * pos.quantity * pos.contract_multiplier)
+        if pos_vega == 0:
+            continue
+
+        # Get IV/HV ratio for this position's underlying
+        # Try both the position symbol and underlying (for options)
+        iv_hv = position_iv_hv_ratios.get(pos.symbol)
+        if iv_hv is None:
+            continue
+
+        weighted_sum += pos_vega * iv_hv
+        total_vega += pos_vega
+
+    if total_vega == 0:
+        return None
+
+    return weighted_sum / total_vega

@@ -1,0 +1,69 @@
+# Covered Call 策略筛选配置
+# 持股卖出看涨期权策略
+
+market_filter:
+  # 美股市场指标
+  us_market:
+    vix_symbol: "^VIX"
+    vix_range: [12, 25]           # VIX 适宜区间（比 Short Put 略低）
+    vix_percentile_range: [0.2, 0.7]
+    vix3m_symbol: "^VIX3M"
+    term_structure_threshold: 0.95
+    trend_indices:
+      - symbol: "SPY"
+        weight: 0.6
+      - symbol: "QQQ"
+        weight: 0.4
+    trend_required: "neutral_or_bearish"  # 中性或温和看跌更适合 Covered Call
+    pcr_symbol: "SPY"
+    pcr_range: [0.6, 1.0]
+
+  # 港股市场指标
+  hk_market:
+    volatility_source: "2800.HK"
+    iv_calculation: "atm_weighted"
+    iv_range: [15, 28]
+    iv_percentile_range: [0.2, 0.7]
+    trend_indices:
+      - symbol: "2800.HK"
+        weight: 0.5
+      - symbol: "3033.HK"
+        weight: 0.5
+    trend_required: "neutral_or_bearish"
+
+underlying_filter:
+  min_iv_rank: 40                 # 最低 IV Rank（比 Short Put 略低）
+  max_iv_hv_ratio: 1.8
+  min_iv_hv_ratio: 0.9
+  technical:
+    min_rsi: 45                   # RSI 下限
+    max_rsi: 75                   # RSI 上限（动能衰竭区间）
+    rsi_exhaustion_range: [55, 70]   # 动能衰竭区间
+    bb_percent_b_range: [0.7, 0.9]   # 布林带 %B 动能衰竭区间
+    max_adx: 40
+    min_sma_alignment: "neutral"
+  fundamental:
+    enabled: false
+    max_pe_percentile: 0.8
+    min_recommendation: "hold"
+
+contract_filter:
+  dte_range: [20, 40]             # DTE 范围
+  optimal_dte_range: [25, 30]
+  delta_range: [0.20, 0.40]       # Delta 范围（卖Call）
+  optimal_delta_range: [0.25, 0.35]
+  liquidity:
+    max_bid_ask_spread: 0.10
+    min_open_interest: 100
+    min_volume: 10
+  metrics:
+    min_sharpe_ratio: 0.8         # 略低于 Short Put
+    min_sas: 45
+    max_prei: 70
+    min_tgr: 0.04
+    max_kelly_fraction: 0.20
+
+output:
+  max_opportunities: 10
+  sort_by: "sas"
+  sort_order: "desc"
