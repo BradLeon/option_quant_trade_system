@@ -326,6 +326,12 @@ class YahooProvider(DataProvider):
                 logger.warning(f"No fundamental data for {symbol}")
                 return None
 
+            # Extract earnings date from various possible fields
+            earnings_date = self._extract_earnings_date(info)
+
+            # Extract ex-dividend date
+            ex_dividend_date = self._extract_ex_dividend_date(info)
+
             return Fundamental(
                 symbol=symbol,
                 date=date.today(),
@@ -359,11 +365,85 @@ class YahooProvider(DataProvider):
                 analyst_count=info.get("numberOfAnalystOpinions"),
                 target_price=info.get("targetMeanPrice"),
                 source=self.name,
+                # Event calendar dates
+                earnings_date=earnings_date,
+                ex_dividend_date=ex_dividend_date,
             )
 
         except Exception as e:
             logger.error(f"Error getting fundamental for {symbol}: {e}")
             return None
+
+    def _extract_earnings_date(self, info: dict[str, Any]) -> date | None:
+        """Extract earnings date from yfinance info dict.
+
+        Tries multiple possible fields:
+        - earningsTimestamp (Unix timestamp)
+        - earningsTimestampStart (Unix timestamp)
+        - earningsDate (may be list or date)
+
+        Args:
+            info: yfinance ticker.info dictionary
+
+        Returns:
+            Next earnings date or None
+        """
+        # Try earningsTimestamp first (Unix timestamp)
+        timestamp = info.get("earningsTimestamp")
+        if timestamp:
+            try:
+                return datetime.fromtimestamp(timestamp).date()
+            except (ValueError, OSError, TypeError):
+                pass
+
+        # Try earningsTimestampStart (Unix timestamp)
+        timestamp = info.get("earningsTimestampStart")
+        if timestamp:
+            try:
+                return datetime.fromtimestamp(timestamp).date()
+            except (ValueError, OSError, TypeError):
+                pass
+
+        # Try earningsDate (may be a list of timestamps)
+        earnings_list = info.get("earningsDate")
+        if earnings_list and isinstance(earnings_list, list) and len(earnings_list) > 0:
+            try:
+                return datetime.fromtimestamp(earnings_list[0]).date()
+            except (ValueError, OSError, TypeError):
+                pass
+
+        return None
+
+    def _extract_ex_dividend_date(self, info: dict[str, Any]) -> date | None:
+        """Extract ex-dividend date from yfinance info dict.
+
+        Tries multiple possible fields:
+        - exDividendDate (Unix timestamp)
+        - dividendDate (Unix timestamp)
+
+        Args:
+            info: yfinance ticker.info dictionary
+
+        Returns:
+            Ex-dividend date or None
+        """
+        # Try exDividendDate first (Unix timestamp)
+        timestamp = info.get("exDividendDate")
+        if timestamp:
+            try:
+                return datetime.fromtimestamp(timestamp).date()
+            except (ValueError, OSError, TypeError):
+                pass
+
+        # Try dividendDate as fallback
+        timestamp = info.get("dividendDate")
+        if timestamp:
+            try:
+                return datetime.fromtimestamp(timestamp).date()
+            except (ValueError, OSError, TypeError):
+                pass
+
+        return None
 
     def get_macro_data(
         self,

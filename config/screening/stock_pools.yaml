@@ -1,0 +1,46 @@
+# 股票池配置
+# Stock Pool Configuration for Screening Pipeline
+#
+# 使用方式:
+#   1. CLI: screen --pool us_default
+#   2. API: StockPoolManager().load_pool("us_default")
+#
+# 股票池命名规范:
+#   - {market}_{category}: us_default, hk_default
+#   - market: us (美股), hk (港股)
+#   - category: default (默认)
+
+# 美股股票池
+us_pools:
+  # 美股默认池 - 高流动性期权标的
+  us_default:
+    description: "美股默认池 - 高流动性期权标的"
+    symbols:
+      # 科技三巨头
+      - GOOG   # Alphabet
+      - NVDA   # NVIDIA
+      - TSLA   # Tesla
+      # 指数 ETF
+      - IVE    # S&P 500 ETF
+      - QQQ    # Nasdaq 100 ETF
+    #  - TQQQ   # ProShares UltraPro QQQ (3x)
+      # 杠杆 ETF
+    #  - TSLL   # Direxion Daily TSLA Bull 2X
+    #  - NVDL   # GraniteShares 2x Long NVDA Daily ETF
+     # - GGLL   # Direxion Daily GOOGL Bull 2X
+
+# 港股股票池
+hk_pools:
+  # 港股默认池 - 高流动性期权标的
+  hk_default:
+    description: "港股默认池 - 高流动性期权标的"
+    symbols:
+      - 0700.HK   # 腾讯控股
+      - 9988.HK   # 阿里巴巴
+     # - 3032.HK   # 恒生科技ETF
+     # - 2800.HK   # 盈富基金 (Tracker Fund)
+
+# 默认池映射
+defaults:
+  us: us_default
+  hk: hk_default

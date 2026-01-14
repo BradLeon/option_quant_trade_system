@@ -208,12 +208,13 @@ class RoutingConfig:
                 data_type="history_kline",
                 providers=["futu", "ibkr", "yahoo"],
             ),
-            # HK options → IBKR preferred (has IV/Greeks), Futu fallback
-            # Note: IBKR provides IV data, Futu only provides contract structure
+            # HK options → Futu preferred (native HK support), IBKR fallback
+            # Note: Futu has native HK option symbol format, IBKR format is incompatible
+            # Using Futu ensures consistent symbol format across chain and quotes
             RoutingRule(
                 market="hk",
                 data_type=["option_chain", "option_quote", "option_quotes"],
-                providers=["ibkr", "futu"],
+                providers=["futu", "ibkr"],
             ),
             # HK stocks (quote) → Futu preferred
             RoutingRule(

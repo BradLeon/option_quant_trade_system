@@ -1,8 +1,29 @@
 """Fundamental data models."""
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Any
+
+
+def _parse_date(value: Any) -> date | None:
+    """Parse date from various formats.
+
+    Args:
+        value: Date value (str, date, int timestamp, or None)
+
+    Returns:
+        Parsed date or None
+    """
+    if value is None:
+        return None
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        return date.fromisoformat(value)
+    if isinstance(value, (int, float)):
+        # Unix timestamp
+        return datetime.fromtimestamp(value).date()
+    return None
 
 
 @dataclass
@@ -44,6 +65,9 @@ class Fundamental:
     analyst_count: int | None = None  # Number of analyst opinions
     target_price: float | None = None  # Mean target price
     source: str = "unknown"
+    # Event calendar dates
+    earnings_date: date | None = None  # Next earnings report date
+    ex_dividend_date: date | None = None  # Next ex-dividend date
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for database storage."""
@@ -68,6 +92,8 @@ class Fundamental:
             "analyst_count": self.analyst_count,
             "target_price": self.target_price,
             "source": self.source,
+            "earnings_date": self.earnings_date.isoformat() if self.earnings_date else None,
+            "ex_dividend_date": self.ex_dividend_date.isoformat() if self.ex_dividend_date else None,
         }
 
     @classmethod
@@ -108,6 +134,8 @@ class Fundamental:
             analyst_count=data.get("analyst_count"),
             target_price=data.get("target_price"),
             source=data.get("source", "unknown"),
+            earnings_date=_parse_date(data.get("earnings_date")),
+            ex_dividend_date=_parse_date(data.get("ex_dividend_date")),
         )
 
     @property

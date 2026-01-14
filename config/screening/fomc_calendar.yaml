@@ -1,0 +1,30 @@
+# FOMC Meeting Calendar
+#
+# Source: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+# Update: Annually (Fed publishes schedule in advance)
+#
+# Dates represent the SECOND day of each 2-day meeting
+# (when the rate decision is announced, typically at 2:00 PM ET)
+#
+# Meetings marked with * include Summary of Economic Projections (SEP)
+
+fomc_meetings:
+  2025:
+    - "2025-01-29"  # Jan 28-29
+    - "2025-03-19"  # Mar 18-19*
+    - "2025-05-07"  # May 6-7
+    - "2025-06-18"  # Jun 17-18*
+    - "2025-07-30"  # Jul 29-30
+    - "2025-09-17"  # Sep 16-17*
+    - "2025-10-29"  # Oct 28-29
+    - "2025-12-10"  # Dec 9-10*
+
+  2026:
+    - "2026-01-28"  # Jan 27-28
+    - "2026-03-18"  # Mar 17-18*
+    - "2026-04-29"  # Apr 28-29
+    - "2026-06-17"  # Jun 16-17*
+    - "2026-07-29"  # Jul 28-29
+    - "2026-09-16"  # Sep 15-16*
+    - "2026-10-28"  # Oct 27-28
+    - "2026-12-09"  # Dec 8-9*

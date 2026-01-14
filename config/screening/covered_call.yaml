@@ -47,23 +47,4 @@ underlying_filter:
     max_pe_percentile: 0.8
     min_recommendation: "hold"
 
-contract_filter:
-  dte_range: [20, 40]             # DTE 范围
-  optimal_dte_range: [25, 30]
-  delta_range: [0.20, 0.40]       # Delta 范围（卖Call）
-  optimal_delta_range: [0.25, 0.35]
-  liquidity:
-    max_bid_ask_spread: 0.10
-    min_open_interest: 100
-    min_volume: 10
-  metrics:
-    min_sharpe_ratio: 0.8         # 略低于 Short Put
-    min_sas: 45
-    max_prei: 70
-    min_tgr: 0.04
-    max_kelly_fraction: 0.20
-
-output:
-  max_opportunities: 10
-  sort_by: "sas"
-  sort_order: "desc"
+# contract_filter 和 output 使用 screening_config.py 默认值

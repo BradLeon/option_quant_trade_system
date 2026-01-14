@@ -20,12 +20,14 @@ from datetime import date, timedelta
 
 from src.business.config.screening_config import (
     HKMarketConfig,
+    MacroEventConfig,
     ScreeningConfig,
     USMarketConfig,
 )
 from src.business.screening.models import (
     FilterStatus,
     IndexStatus,
+    MacroEventStatus,
     MarketStatus,
     MarketType,
     PCRStatus,
@@ -101,6 +103,7 @@ class MarketFilter:
     def _evaluate_us_market(self) -> MarketStatus:
         """评估美股市场环境"""
         us_config = self.config.market_filter.us_market
+        macro_config = self.config.market_filter.macro_events
         unfavorable_reasons: list[str] = []
 
         # 1. 检查 VIX
@@ -115,8 +118,19 @@ class MarketFilter:
         # 4. 检查 PCR
         pcr_status = self._get_pcr_status(us_config.pcr_symbol, us_config.pcr_range)
 
+        # 5. 检查宏观事件
+        macro_status = self._check_macro_events(macro_config)
+
         # 评估是否有利
         is_favorable = True
+
+        # 宏观事件黑名单检查（最高优先级）
+        if macro_status and macro_status.is_in_blackout:
+            is_favorable = False
+            event_names = ", ".join(macro_status.event_names[:3])
+            unfavorable_reasons.append(
+                f"宏观事件黑名单期: {event_names} 将于 {macro_status.blackout_days} 天内发布"
+            )
 
         # VIX 检查
         if vix_status and vix_status.filter_status == FilterStatus.UNFAVORABLE:
@@ -131,6 +145,19 @@ class MarketFilter:
                     f"VIX={vix_status.value:.1f} 过高（>{us_config.vix_range[1]}），"
                     f"风险过大"
                 )
+            # 检查 percentile 超出范围的情况
+            elif vix_status.percentile is not None:
+                pct_low, pct_high = us_config.vix_percentile_range
+                if vix_status.percentile < pct_low:
+                    unfavorable_reasons.append(
+                        f"VIX Percentile={vix_status.percentile*100:.1f}% 偏低"
+                        f"（<{pct_low*100:.0f}%），历史低位"
+                    )
+                elif vix_status.percentile > pct_high:
+                    unfavorable_reasons.append(
+                        f"VIX Percentile={vix_status.percentile*100:.1f}% 过高"
+                        f"（>{pct_high*100:.0f}%），恐慌情绪"
+                    )
 
         # 趋势检查
         if overall_trend in [TrendStatus.STRONG_BEARISH, TrendStatus.BEARISH]:
@@ -165,36 +192,64 @@ class MarketFilter:
             overall_trend=overall_trend,
             term_structure=term_structure,
             pcr=pcr_status,
+            macro_events=macro_status,
             unfavorable_reasons=unfavorable_reasons,
         )
 
     def _evaluate_hk_market(self) -> MarketStatus:
         """评估港股市场环境"""
         hk_config = self.config.market_filter.hk_market
+        macro_config = self.config.market_filter.macro_events
         unfavorable_reasons: list[str] = []
 
-        # 1. 检查波动率（使用 2800.HK 期权链 IV）
+        # 1. 检查波动率（使用 VHSI - 恒生波动率指数）
         vol_status = self._get_hk_volatility_status(hk_config)
 
         # 2. 检查大盘趋势
         trend_indices, overall_trend = self._get_hk_trend_status(hk_config)
 
+        # 3. 检查宏观事件（复用 US 逻辑，FOMC 对全球市场有影响）
+        macro_status = None
+        if hk_config.check_us_macro_events:
+            macro_status = self._check_macro_events(macro_config)
+
         # 评估是否有利
         is_favorable = True
 
-        # 波动率检查
+        # 宏观事件黑名单检查
+        if macro_status and macro_status.is_in_blackout:
+            is_favorable = False
+            event_names = ", ".join(macro_status.event_names[:3])
+            unfavorable_reasons.append(
+                f"US宏观事件黑名单期: {event_names} 将于 {macro_status.blackout_days} 天内发布"
+            )
+
+        # 波动率检查 (VHSI)
         if vol_status and vol_status.filter_status == FilterStatus.UNFAVORABLE:
             is_favorable = False
-            if vol_status.value < hk_config.iv_range[0]:
+            if vol_status.value < hk_config.vhsi_range[0]:
                 unfavorable_reasons.append(
-                    f"2800.HK IV={vol_status.value:.1f}% 偏低（<{hk_config.iv_range[0]}），"
+                    f"VHSI={vol_status.value:.1f} 偏低（<{hk_config.vhsi_range[0]}），"
                     f"权利金不足"
                 )
-            elif vol_status.value > hk_config.iv_range[1]:
+            elif vol_status.value > hk_config.vhsi_range[1]:
                 unfavorable_reasons.append(
-                    f"2800.HK IV={vol_status.value:.1f}% 过高（>{hk_config.iv_range[1]}），"
+                    f"VHSI={vol_status.value:.1f} 过高（>{hk_config.vhsi_range[1]}），"
                     f"风险过大"
                 )
+            # 检查 percentile 超出范围的情况
+            elif vol_status.percentile is not None:
+                pct_low, pct_high = hk_config.vhsi_percentile_range
+                if vol_status.percentile < pct_low:
+                    unfavorable_reasons.append(
+                        f"VHSI Percentile={vol_status.percentile*100:.1f}% 偏低"
+                        f"（<{pct_low*100:.0f}%），历史低位"
+                    )
+                elif vol_status.percentile > pct_high:
+                    unfavorable_reasons.append(
+                        f"VHSI Percentile={vol_status.percentile*100:.1f}% 过高"
+                        f"（>{pct_high*100:.0f}%），恐慌情绪"
+                    )
 
         # 趋势检查
         if overall_trend in [TrendStatus.STRONG_BEARISH, TrendStatus.BEARISH]:
@@ -214,6 +269,7 @@ class MarketFilter:
             overall_trend=overall_trend,
             term_structure=None,  # 港股无期限结构
             pcr=None,  # 港股 PCR 数据可用性较低
+            macro_events=macro_status,  # 复用 US 宏观事件检查
             unfavorable_reasons=unfavorable_reasons,
         )
 
@@ -292,42 +348,61 @@ class MarketFilter:
     ) -> VolatilityIndexStatus | None:
         """获取港股波动率状态
 
-        数据来源：UnifiedDataProvider.get_stock_volatility() (IBKR)
+        数据来源：Yahoo Finance VHSI (^HSIL) - 恒生波动率指数
+        类似 VIX，通过 get_macro_data() 获取历史数据并计算百分位
         """
         try:
-            # 从 data_layer 获取 2800.HK 的 IV
-            vol_data = self.provider.get_stock_volatility(config.volatility_source)
+            end_date = date.today()
+            start_date = end_date - timedelta(days=365)
 
-            if vol_data is None or vol_data.iv is None:
-                logger.warning(f"无法获取 {config.volatility_source} 波动率数据")
+            # 从 Yahoo Finance 获取 VHSI 历史数据
+            macro_data = self.provider.get_macro_data(
+                config.vhsi_symbol,  # ^HSIL
+                start_date,
+                end_date,
+            )
+
+            if not macro_data:
+                logger.warning(f"无法获取 VHSI ({config.vhsi_symbol}) 数据")
                 return None
 
-            # IV 通常以小数形式存储，转换为百分比
-            current_iv = vol_data.iv * 100 if vol_data.iv < 1 else vol_data.iv
-            percentile = vol_data.iv_percentile
+            current_vhsi = macro_data[-1].close if macro_data else None
+            if current_vhsi is None:
+                return None
 
-            # 业务层判断状态
-            iv_low, iv_high = config.iv_range
-            if current_iv < iv_low:
-                status = VolatilityStatus.LOW
-                filter_status = FilterStatus.UNFAVORABLE
-            elif current_iv > iv_high:
-                status = VolatilityStatus.EXTREME if current_iv > iv_high * 1.5 else VolatilityStatus.HIGH
-                filter_status = FilterStatus.UNFAVORABLE
-            else:
-                status = VolatilityStatus.NORMAL
-                filter_status = FilterStatus.FAVORABLE
-
-            # 额外检查百分位
+            # 计算百分位
+            historical_values = [d.close for d in macro_data if d.close is not None]
+            percentile = calc_vix_percentile(current_vhsi, historical_values)
             if percentile is not None:
-                pct_low, pct_high = config.iv_percentile_range
+                percentile = percentile / 100.0  # 转为 0-1 范围
+
+            # 判断 VHSI 区域 (复用 VIX 区域逻辑)
+            vhsi_zone = get_vix_zone(current_vhsi)
+            zone_to_status = {
+                "low": VolatilityStatus.LOW,
+                "normal": VolatilityStatus.NORMAL,
+                "elevated": VolatilityStatus.HIGH,
+                "high": VolatilityStatus.HIGH,
+                "extreme": VolatilityStatus.EXTREME,
+            }
+            status = zone_to_status.get(vhsi_zone.value, VolatilityStatus.NORMAL)
+
+            # 业务层判断：是否在配置范围内
+            vhsi_low, vhsi_high = config.vhsi_range
+            if vhsi_low <= current_vhsi <= vhsi_high:
+                filter_status = FilterStatus.FAVORABLE
+            else:
+                filter_status = FilterStatus.UNFAVORABLE
+
+            # 额外检查百分位范围
+            if percentile is not None:
+                pct_low, pct_high = config.vhsi_percentile_range
                 if not (pct_low <= percentile <= pct_high):
-                    if filter_status == FilterStatus.FAVORABLE:
-                        filter_status = FilterStatus.NEUTRAL
+                    filter_status = FilterStatus.UNFAVORABLE
 
             return VolatilityIndexStatus(
-                symbol=config.volatility_source,
-                value=current_iv,
+                symbol=config.vhsi_symbol,
+                value=current_vhsi,
                 percentile=percentile,
                 status=status,
                 filter_status=filter_status,
@@ -537,10 +612,6 @@ class MarketFilter:
             if pcr is None:
                 return None
 
-            # 调用 engine_layer 获取 PCR 区域（用于参考）
-            pcr_zone = get_pcr_zone(pcr)
-            logger.debug(f"PCR zone: {pcr_zone.value}")
-
             # 业务层判断
             pcr_low, pcr_high = pcr_range
             if pcr_low <= pcr <= pcr_high:
@@ -560,3 +631,53 @@ class MarketFilter:
         except Exception as e:
             logger.error(f"获取 PCR 状态失败: {e}")
             return None
+
+    def _check_macro_events(
+        self,
+        config: MacroEventConfig,
+    ) -> MacroEventStatus | None:
+        """检查宏观事件黑名单期
+
+        检查未来 N 天内是否有重大宏观事件（FOMC、CPI、NFP等）。
+        如果有，建议暂停新开仓。
+
+        数据来源：UnifiedDataProvider.check_macro_blackout()
+
+        Args:
+            config: 宏观事件配置
+
+        Returns:
+            MacroEventStatus 或 None（如果检查失败或未启用）
+        """
+        if not config.enabled:
+            logger.debug("宏观事件检查已禁用")
+            return None
+
+        try:
+            # 调用 data_layer 检查黑名单期
+            is_in_blackout, events = self.provider.check_macro_blackout(
+                target_date=date.today(),
+                blackout_days=config.blackout_days,
+                blackout_events=config.blackout_events,
+            )
+
+            if is_in_blackout:
+                event_info = [f"{e.name} ({e.event_date})" for e in events[:3]]
+                logger.warning(
+                    f"宏观事件黑名单期: {', '.join(event_info)}"
+                )
+
+            return MacroEventStatus(
+                is_in_blackout=is_in_blackout,
+                upcoming_events=events,
+                blackout_days=config.blackout_days,
+            )
+
+        except Exception as e:
+            logger.error(f"检查宏观事件失败: {e}")
+            # 失败时采用 fail-open 策略，不阻止开仓
+            return MacroEventStatus(
+                is_in_blackout=False,
+                upcoming_events=[],
+                blackout_days=config.blackout_days,
+            )

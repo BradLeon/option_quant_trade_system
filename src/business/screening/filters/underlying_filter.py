@@ -19,6 +19,7 @@ import logging
 from datetime import date, timedelta
 
 from src.business.config.screening_config import (
+    EventCalendarConfig,
     FundamentalConfig,
     ScreeningConfig,
     TechnicalConfig,
@@ -100,6 +101,10 @@ class UnderlyingFilter:
             try:
                 score = self._evaluate_single(symbol, market_type)
                 results.append(score)
+
+                # 输出详细评估结果
+                self._log_evaluation_result(score)
+
             except Exception as e:
                 logger.error(f"评估标的 {symbol} 失败: {e}")
                 results.append(
@@ -111,7 +116,56 @@ class UnderlyingFilter:
                     )
                 )
 
+        # 输出汇总统计
+        passed = sum(1 for s in results if s.passed)
+        failed = len(results) - passed
+        logger.info(f"标的评估汇总: 通过={passed}, 淘汰={failed}")
+
         return results
+
+    def _log_evaluation_result(self, score: UnderlyingScore) -> None:
+        """输出单个标的的详细评估结果"""
+        status = "PASS" if score.passed else "FAIL"
+
+        # 波动率指标
+        iv_rank_str = f"{score.iv_rank:.1f}%" if score.iv_rank is not None else "N/A"
+        iv_hv_str = f"{score.iv_hv_ratio:.2f}" if score.iv_hv_ratio is not None else "N/A"
+        iv_str = f"{score.current_iv*100:.1f}%" if score.current_iv is not None else "N/A"
+        hv_str = f"{score.hv_20*100:.1f}%" if score.hv_20 is not None else "N/A"
+
+        # 技术面指标
+        rsi_str = "N/A"
+        adx_str = "N/A"
+        sma_str = "N/A"
+        if score.technical:
+            if score.technical.rsi is not None:
+                rsi_str = f"{score.technical.rsi:.1f} ({score.technical.rsi_zone})"
+            if score.technical.adx is not None:
+                adx_str = f"{score.technical.adx:.1f}"
+            if score.technical.sma_alignment:
+                sma_str = score.technical.sma_alignment
+
+        # 价格
+        price_str = f"${score.current_price:.2f}" if score.current_price else "N/A"
+
+        # 主日志行
+        logger.info(
+            f"[{status}] {score.symbol}: "
+            f"Price={price_str}, "
+            f"IV Rank={iv_rank_str}, "
+            f"IV/HV={iv_hv_str} (IV={iv_str}, HV={hv_str}), "
+            f"RSI={rsi_str}, ADX={adx_str}, SMA={sma_str}"
+        )
+
+        # 淘汰原因
+        if score.disqualify_reasons:
+            for reason in score.disqualify_reasons:
+                logger.info(f"    └─ {reason}")
+
+        # 警告信息
+        if score.warnings:
+            for warning in score.warnings:
+                logger.info(f"    └─ {warning}")
 
     def evaluate_single(
         self,
@@ -134,9 +188,29 @@ class UnderlyingFilter:
         symbol: str,
         market_type: MarketType,
     ) -> UnderlyingScore:
-        """评估单个标的（内部实现）"""
+        """评估单个标的（内部实现）
+
+        优先级说明：
+        - P0/P1 条件阻塞标的选择（disqualify_reasons）
+        - P2/P3 条件只警告不阻塞（warnings）
+
+        P1 阻塞条件：
+        - 波动率数据缺失
+        - IV/HV 比率超出范围（期权相对便宜或可能有特殊事件）
+        - 财报日期 < 7天（且不允许跨财报）
+
+        P2/P3 警告条件：
+        - IV Rank 偏低
+        - RSI 超买/超卖
+        - ADX 过高
+        - 均线空头排列
+        - PE 百分位过高
+        - 分析师评级偏低
+        - 除息日临近
+        """
         filter_config = self.config.underlying_filter
-        disqualify_reasons: list[str] = []
+        disqualify_reasons: list[str] = []  # P0/P1 阻塞条件
+        warnings: list[str] = []  # P2/P3 警告条件
 
         # 从 data_layer 获取当前价格
         current_price = self._get_current_price(symbol)
@@ -155,40 +229,63 @@ class UnderlyingFilter:
             hv_20 = vol_data.hv
             current_iv = vol_data.iv
 
-            # 业务层判断：检查 IV Rank
+            # P2: IV Rank 检查（只警告，不阻塞）
             if iv_rank is not None and iv_rank < filter_config.min_iv_rank:
-                disqualify_reasons.append(
-                    f"IV Rank={iv_rank:.1f}% 偏低（<{filter_config.min_iv_rank}%）"
+                warnings.append(
+                    f"[P2] IV Rank={iv_rank:.1f}% 偏低（<{filter_config.min_iv_rank}%）"
                 )
 
-            # 业务层判断：检查 IV/HV 比率
+            # P1: IV/HV 比率检查（阻塞）
             if iv_hv_ratio is not None:
                 if iv_hv_ratio < filter_config.min_iv_hv_ratio:
                     disqualify_reasons.append(
-                        f"IV/HV={iv_hv_ratio:.2f} 偏低（<{filter_config.min_iv_hv_ratio}），"
+                        f"[P1] IV/HV={iv_hv_ratio:.2f} 偏低（<{filter_config.min_iv_hv_ratio}），"
                         f"期权相对便宜"
                     )
                 elif iv_hv_ratio > filter_config.max_iv_hv_ratio:
                     disqualify_reasons.append(
-                        f"IV/HV={iv_hv_ratio:.2f} 过高（>{filter_config.max_iv_hv_ratio}），"
+                        f"[P1] IV/HV={iv_hv_ratio:.2f} 过高（>{filter_config.max_iv_hv_ratio}），"
                         f"可能有特殊事件"
                     )
         else:
-            disqualify_reasons.append("无法获取波动率数据")
+            # P1: 波动率数据缺失（阻塞）
+            disqualify_reasons.append("[P1] 无法获取波动率数据")
 
-        # 2. 获取技术面评分
+        # 2. 获取技术面评分（P2/P3 只警告）
         technical = self._evaluate_technical(symbol, filter_config.technical)
-        tech_reasons = self._check_technical(technical, filter_config.technical)
-        disqualify_reasons.extend(tech_reasons)
+        tech_warnings = self._check_technical(technical, filter_config.technical)
+        warnings.extend(tech_warnings)
 
-        # 3. 获取基本面评分（可选）
+        # 3. 获取基本面评分（P3 只警告）
         fundamental = None
         if filter_config.fundamental.enabled:
             fundamental = self._evaluate_fundamental(symbol, filter_config.fundamental)
-            fund_reasons = self._check_fundamental(fundamental, filter_config.fundamental)
-            disqualify_reasons.extend(fund_reasons)
+            fund_warnings = self._check_fundamental(fundamental, filter_config.fundamental)
+            warnings.extend(fund_warnings)
 
-        # 综合判断
+        # 4. 检查事件日历（财报日、除息日）
+        earnings_date = None
+        ex_dividend_date = None
+        days_to_earnings = None
+        days_to_ex_dividend = None
+
+        if filter_config.event_calendar.enabled:
+            event_result = self._check_event_calendar(
+                symbol, filter_config.event_calendar
+            )
+            if event_result:
+                earnings_date = event_result.get("earnings_date")
+                ex_dividend_date = event_result.get("ex_dividend_date")
+                days_to_earnings = event_result.get("days_to_earnings")
+                days_to_ex_dividend = event_result.get("days_to_ex_dividend")
+                # P1: 财报日期阻塞
+                event_disqualify = event_result.get("disqualify_reasons", [])
+                disqualify_reasons.extend(event_disqualify)
+                # P2: 除息日警告
+                event_warnings = event_result.get("warnings", [])
+                warnings.extend(event_warnings)
+
+        # 综合判断：只有 disqualify_reasons 非空才阻塞
         passed = len(disqualify_reasons) == 0
 
         return UnderlyingScore(
@@ -202,7 +299,12 @@ class UnderlyingFilter:
             current_iv=current_iv,
             technical=technical,
             fundamental=fundamental,
+            earnings_date=earnings_date,
+            ex_dividend_date=ex_dividend_date,
+            days_to_earnings=days_to_earnings,
+            days_to_ex_dividend=days_to_ex_dividend,
             disqualify_reasons=disqualify_reasons,
+            warnings=warnings,
         )
 
     def _get_current_price(self, symbol: str) -> float | None:
@@ -257,14 +359,7 @@ class UnderlyingFilter:
                 return None
 
             # 构建 TechnicalData（engine_layer 的输入格式）
-            tech_data = TechnicalData(
-                symbol=symbol,
-                opens=[k.open for k in klines],
-                highs=[k.high for k in klines],
-                lows=[k.low for k in klines],
-                closes=[k.close for k in klines],
-                volumes=[k.volume for k in klines] if hasattr(klines[0], "volume") else None,
-            )
+            tech_data = TechnicalData.from_klines(klines)
 
             # 调用 engine_layer 计算技术评分和信号
             score = calc_technical_score(tech_data)
@@ -307,24 +402,27 @@ class UnderlyingFilter:
         technical: TechnicalScore | None,
         config: TechnicalConfig,
     ) -> list[str]:
-        """检查技术面是否符合条件（业务层判断）"""
-        reasons: list[str] = []
+        """检查技术面是否符合条件（业务层判断）
+
+        注意：技术面检查都是 P2/P3 级别，只返回警告不阻塞。
+        """
+        warnings: list[str] = []
 
         if technical is None:
-            return reasons  # 技术面数据缺失不作为淘汰条件
+            return warnings  # 技术面数据缺失不作为警告条件
 
-        # RSI 检查
+        # P2: RSI 检查
         if technical.rsi is not None:
             if technical.rsi < config.min_rsi:
-                reasons.append(f"RSI={technical.rsi:.1f} 过低（<{config.min_rsi}），超卖风险")
+                warnings.append(f"[P2] RSI={technical.rsi:.1f} 过低（<{config.min_rsi}），超卖风险")
             elif technical.rsi > config.max_rsi:
-                reasons.append(f"RSI={technical.rsi:.1f} 过高（>{config.max_rsi}），超买风险")
+                warnings.append(f"[P2] RSI={technical.rsi:.1f} 过高（>{config.max_rsi}），超买风险")
 
-        # ADX 检查（趋势过强不利于期权卖方）
+        # P2: ADX 检查（趋势过强不利于期权卖方）
         if technical.adx is not None and technical.adx > config.max_adx:
-            reasons.append(f"ADX={technical.adx:.1f} 过高（>{config.max_adx}），趋势过强")
+            warnings.append(f"[P2] ADX={technical.adx:.1f} 过高（>{config.max_adx}），趋势过强")
 
-        # 均线排列检查
+        # P3: 均线排列检查
         alignment_order = [
             "strong_bullish",
             "bullish",
@@ -340,12 +438,12 @@ class UnderlyingFilter:
                 current_idx = alignment_order.index(current_alignment)
                 # 对于 short put，空头排列不利
                 if current_idx > min_idx + 1:  # 允许一定容忍度
-                    reasons.append(
-                        f"均线排列为 {current_alignment}，"
+                    warnings.append(
+                        f"[P3] 均线排列为 {current_alignment}，"
                         f"需至少 {min_alignment}"
                     )
 
-        return reasons
+        return warnings
 
     def _evaluate_fundamental(
         self,
@@ -428,21 +526,24 @@ class UnderlyingFilter:
         fundamental: FundamentalScore | None,
         config: FundamentalConfig,
     ) -> list[str]:
-        """检查基本面是否符合条件（业务层判断）"""
-        reasons: list[str] = []
+        """检查基本面是否符合条件（业务层判断）
+
+        注意：基本面检查都是 P3 级别，只返回警告不阻塞。
+        """
+        warnings: list[str] = []
 
         if fundamental is None:
-            return reasons  # 基本面数据缺失不作为淘汰条件
+            return warnings  # 基本面数据缺失不作为警告条件
 
-        # PE 百分位检查
+        # P3: PE 百分位检查
         if fundamental.pe_percentile is not None:
             if fundamental.pe_percentile > config.max_pe_percentile:
-                reasons.append(
-                    f"PE 百分位={fundamental.pe_percentile:.1%} 过高"
+                warnings.append(
+                    f"[P3] PE 百分位={fundamental.pe_percentile:.1%} 过高"
                     f"（>{config.max_pe_percentile:.0%}），估值偏贵"
                 )
 
-        # 推荐评级检查
+        # P3: 推荐评级检查
         if fundamental.recommendation is not None:
             rec_order = ["strong_buy", "buy", "hold", "sell", "strong_sell"]
             min_rec = config.min_recommendation
@@ -450,12 +551,102 @@ class UnderlyingFilter:
                 min_idx = rec_order.index(min_rec)
                 current_idx = rec_order.index(fundamental.recommendation)
                 if current_idx > min_idx:
-                    reasons.append(
-                        f"分析师评级为 {fundamental.recommendation}，"
+                    warnings.append(
+                        f"[P3] 分析师评级为 {fundamental.recommendation}，"
                         f"需至少 {min_rec}"
                     )
 
-        return reasons
+        return warnings
+
+    def _check_event_calendar(
+        self,
+        symbol: str,
+        config: EventCalendarConfig,
+    ) -> dict | None:
+        """检查事件日历（财报日、除息日）
+
+        检查标的是否有即将发布的财报或除息日。
+
+        优先级说明：
+        - P1: 财报日期 < min_days_to_earnings（阻塞，放入 disqualify_reasons）
+        - P2: 除息日期 < min_days_to_ex_dividend（警告，放入 warnings）
+
+        数据来源：UnifiedDataProvider.get_fundamental() (包含 earnings_date, ex_dividend_date)
+
+        Args:
+            symbol: 标的代码
+            config: 事件日历配置
+
+        Returns:
+            包含 earnings_date, ex_dividend_date, days_to_*, disqualify_reasons, warnings 的字典
+        """
+        result = {
+            "earnings_date": None,
+            "ex_dividend_date": None,
+            "days_to_earnings": None,
+            "days_to_ex_dividend": None,
+            "disqualify_reasons": [],  # P1 阻塞
+            "warnings": [],  # P2 警告
+        }
+
+        try:
+            # 从 data_layer 获取基本面数据（包含财报日和除息日）
+            fundamental = self.provider.get_fundamental(symbol)
+
+            if fundamental is None:
+                logger.debug(f"{symbol} 无法获取基本面数据用于事件日历检查")
+                return result
+
+            today = date.today()
+
+            # P1: 检查财报日期（阻塞）
+            if hasattr(fundamental, "earnings_date") and fundamental.earnings_date:
+                earnings_date = fundamental.earnings_date
+                result["earnings_date"] = earnings_date
+
+                # 计算距财报天数（只考虑未来的财报）
+                if earnings_date >= today:
+                    days_to_earnings = (earnings_date - today).days
+                    result["days_to_earnings"] = days_to_earnings
+
+                    # 业务层判断：检查是否在黑名单期内
+                    if days_to_earnings < config.min_days_to_earnings:
+                        # 如果配置允许在财报前到期的合约，这里只记录警告
+                        # 实际的合约层面检查在 ContractFilter 中进行
+                        if not config.allow_earnings_if_before_expiry:
+                            result["disqualify_reasons"].append(
+                                f"[P1] 财报日 {earnings_date} 仅剩 {days_to_earnings} 天"
+                                f"（<{config.min_days_to_earnings}）"
+                            )
+                        else:
+                            logger.info(
+                                f"{symbol} 财报日 {earnings_date} 仅剩 {days_to_earnings} 天，"
+                                f"允许合约在财报前到期"
+                            )
+
+            # P2: 检查除息日期（只警告，不阻塞）
+            if hasattr(fundamental, "ex_dividend_date") and fundamental.ex_dividend_date:
+                ex_div_date = fundamental.ex_dividend_date
+                result["ex_dividend_date"] = ex_div_date
+
+                # 计算距除息日天数（只考虑未来的除息日）
+                if ex_div_date >= today:
+                    days_to_ex_div = (ex_div_date - today).days
+                    result["days_to_ex_dividend"] = days_to_ex_div
+
+                    # 业务层判断：除息日对 Covered Call 有影响
+                    # P2 级别，只警告不阻塞
+                    if days_to_ex_div < config.min_days_to_ex_dividend:
+                        result["warnings"].append(
+                            f"[P2] 除息日 {ex_div_date} 仅剩 {days_to_ex_div} 天"
+                            f"（<{config.min_days_to_ex_dividend}），Covered Call 需注意"
+                        )
+
+            return result
+
+        except Exception as e:
+            logger.warning(f"检查 {symbol} 事件日历失败: {e}")
+            return result
 
     def filter_passed(
         self,

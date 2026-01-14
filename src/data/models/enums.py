@@ -22,3 +22,4 @@ class Market(Enum):
     US = "us"  # United States
     HK = "hk"  # Hong Kong
     CN = "cn"  # China mainland (Shanghai/Shenzhen)
+    UNKNOWN = "unknown"  # Unknown market

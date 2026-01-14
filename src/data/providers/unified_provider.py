@@ -7,6 +7,8 @@ from typing import Any, Callable, TypeVar
 
 from src.data.cache import DataCache
 from src.data.models import (
+    EconomicEvent,
+    EventCalendar,
     Fundamental,
     KlineBar,
     MacroData,
@@ -19,6 +21,7 @@ from src.data.models.enums import DataType, Market
 from src.data.models.option import OptionContract
 from src.data.models.stock import KlineType
 from src.data.providers.base import DataProvider
+from src.data.providers.economic_calendar_provider import EconomicCalendarProvider
 from src.data.providers.futu_provider import FutuProvider
 from src.data.providers.ibkr_provider import IBKRProvider
 from src.data.providers.routing import RoutingConfig
@@ -72,6 +75,8 @@ class UnifiedDataProvider:
         futu_provider: FutuProvider | None = None,
         ibkr_provider: IBKRProvider | None = None,
         yahoo_provider: YahooProvider | None = None,
+        economic_calendar_provider: EconomicCalendarProvider | None = None,
+        use_cache: bool = False,
     ) -> None:
         """Initialize unified provider with routing configuration.
 
@@ -84,6 +89,8 @@ class UnifiedDataProvider:
             futu_provider: Optional pre-configured Futu provider.
             ibkr_provider: Optional pre-configured IBKR provider.
             yahoo_provider: Optional pre-configured Yahoo provider.
+            economic_calendar_provider: Optional pre-configured economic calendar provider.
+            use_cache: Whether to use Supabase caching. Default False (disabled).
         """
         # Load routing configuration
         if isinstance(routing_config, RoutingConfig):
@@ -93,7 +100,8 @@ class UnifiedDataProvider:
         else:
             self._routing = RoutingConfig()  # Use defaults
 
-        self._cache = cache or DataCache()
+        # Cache is disabled by default
+        self._cache = cache if use_cache else None
 
         # Store provider instances
         self._providers: dict[str, DataProvider | None] = {
@@ -102,11 +110,15 @@ class UnifiedDataProvider:
             "ibkr": ibkr_provider,
         }
 
+        # Economic calendar provider (FRED + static FOMC, separate from routing)
+        self._economic_calendar = economic_calendar_provider
+
         # Track initialization status
         self._provider_initialized: dict[str, bool] = {
             "yahoo": True,  # Yahoo is always initialized
             "futu": futu_provider is not None,
             "ibkr": ibkr_provider is not None,
+            "economic_calendar": economic_calendar_provider is not None,
         }
 
     # =========================================================================
@@ -208,6 +220,93 @@ class UnifiedDataProvider:
         # Default to US market
         return Market.US
 
+    def _apply_otm_pct_filter(
+        self,
+        chain: "OptionChain",
+        otm_pct_min: float | None,
+        otm_pct_max: float | None,
+    ) -> "OptionChain":
+        """Apply OTM% filter to option chain.
+
+        OTM% calculation:
+        - PUT OTM%: (S - K) / S  (positive when K < S, i.e., OTM)
+        - CALL OTM%: (K - S) / S  (positive when K > S, i.e., OTM)
+
+        Args:
+            chain: OptionChain to filter.
+            otm_pct_min: Minimum OTM% (e.g., 0.05 = 5%).
+            otm_pct_max: Maximum OTM% (e.g., 0.15 = 15%).
+
+        Returns:
+            Filtered OptionChain.
+        """
+        from src.data.models.option import OptionChain
+
+        # Get underlying price - try from chain or fetch it
+        underlying_price = None
+
+        # Try to get price from provider
+        try:
+            stock_quote = self.get_stock_quote(chain.underlying)
+            if stock_quote:
+                underlying_price = stock_quote.close or stock_quote.last_price
+        except Exception as e:
+            logger.warning(f"Could not fetch underlying price for OTM% filter: {e}")
+
+        if not underlying_price or underlying_price <= 0:
+            logger.warning(f"No underlying price for OTM% filter, skipping filter")
+            return chain
+
+        original_puts = len(chain.puts)
+        original_calls = len(chain.calls)
+
+        def calc_otm_pct(strike: float, is_put: bool) -> float:
+            """Calculate OTM% for a contract."""
+            if is_put:
+                # PUT OTM%: (S - K) / S
+                return (underlying_price - strike) / underlying_price
+            else:
+                # CALL OTM%: (K - S) / S
+                return (strike - underlying_price) / underlying_price
+
+        def passes_filter(strike: float, is_put: bool) -> bool:
+            """Check if contract passes OTM% filter."""
+            otm_pct = calc_otm_pct(strike, is_put)
+            # Only consider OTM options (positive OTM%)
+            if otm_pct < 0:
+                return False
+            if otm_pct_min is not None and otm_pct < otm_pct_min:
+                return False
+            if otm_pct_max is not None and otm_pct > otm_pct_max:
+                return False
+            return True
+
+        # Filter puts and calls
+        filtered_puts = [
+            q for q in chain.puts
+            if passes_filter(q.contract.strike_price, is_put=True)
+        ]
+        filtered_calls = [
+            q for q in chain.calls
+            if passes_filter(q.contract.strike_price, is_put=False)
+        ]
+
+        logger.info(
+            f"OTM% filter ({otm_pct_min:.1%}-{otm_pct_max:.1%}): "
+            f"underlying=${underlying_price:.2f}, "
+            f"puts {original_puts}->{len(filtered_puts)}, "
+            f"calls {original_calls}->{len(filtered_calls)}"
+        )
+
+        return OptionChain(
+            underlying=chain.underlying,
+            timestamp=chain.timestamp,
+            expiry_dates=chain.expiry_dates,
+            calls=filtered_calls,
+            puts=filtered_puts,
+            source=chain.source,
+        )
+
     # =========================================================================
     # Routing Logic
     # =========================================================================
@@ -308,7 +407,9 @@ class UnifiedDataProvider:
             providers = self._route(DataType.STOCK_QUOTE, symbol)
             return self._execute_with_fallback(providers, "get_stock_quote", symbol)
 
-        return self._cache.get_or_fetch_stock_quote(symbol, fetcher, force_refresh)
+        if self._cache:
+            return self._cache.get_or_fetch_stock_quote(symbol, fetcher, force_refresh)
+        return fetcher()
 
     def get_stock_quotes(
         self, symbols: list[str], force_refresh: bool = False
@@ -367,9 +468,11 @@ class UnifiedDataProvider:
             )
             return result or []
 
-        return self._cache.get_or_fetch_klines(
-            symbol, ktype.value, start_date, end_date, fetcher, force_refresh
-        )
+        if self._cache:
+            return self._cache.get_or_fetch_klines(
+                symbol, ktype.value, start_date, end_date, fetcher, force_refresh
+            )
+        return fetcher()
 
     # =========================================================================
     # Option Data Methods
@@ -380,8 +483,21 @@ class UnifiedDataProvider:
         underlying: str,
         expiry_start: date | None = None,
         expiry_end: date | None = None,
+        # ===== 统一过滤参数 =====
+        expiry_min_days: int | None = None,  # IBKR 原生, Futu 转换为 expiry_start
+        expiry_max_days: int | None = None,  # IBKR 原生, Futu 转换为 expiry_end
+        option_type: str | None = None,  # Futu 原生, IBKR 后处理
+        option_cond_type: str | None = None,  # Futu 原生 (otm/itm), IBKR 后处理
+        delta_min: float | None = None,  # Futu 原生, IBKR 不支持
+        delta_max: float | None = None,  # Futu 原生, IBKR 不支持
+        open_interest_min: int | None = None,  # Futu 原生, IBKR 不支持
+        vol_min: int | None = None,  # Futu 原生, IBKR 不支持
+        strike_range_pct: float | None = None,  # IBKR 原生, Futu 忽略
+        # ===== OTM% 过滤 (后处理) =====
+        otm_pct_min: float | None = None,  # 最小 OTM% (如 0.05 = 5%)
+        otm_pct_max: float | None = None,  # 最大 OTM% (如 0.15 = 15%)
     ) -> OptionChain | None:
-        """Get option chain with intelligent routing.
+        """Get option chain with intelligent routing and unified filtering.
 
         Routing:
         - HK options → Futu (only provider with HK options)
@@ -389,18 +505,123 @@ class UnifiedDataProvider:
 
         Note: Yahoo provides option chain but no Greeks.
 
+        Filter Support:
+        - Futu: option_type, option_cond_type (原生), delta/OI (OptionDataFilter)
+        - IBKR: expiry_min/max_days, strike_range_pct (原生), option_type/cond_type (后处理)
+        - OTM%: 后处理过滤，公式: PUT=(S-K)/S, CALL=(K-S)/S
+
         Args:
             underlying: Underlying stock symbol.
             expiry_start: Optional start date for expiry filter.
             expiry_end: Optional end date for expiry filter.
+            expiry_min_days: Minimum DTE (IBKR native, converted to expiry_start for Futu).
+            expiry_max_days: Maximum DTE (IBKR native, converted to expiry_end for Futu).
+            option_type: "call" / "put" / None.
+            option_cond_type: "otm" (虚值) / "itm" (实值) / None.
+            delta_min: Minimum delta (Futu only).
+            delta_max: Maximum delta (Futu only).
+            open_interest_min: Minimum open interest (Futu only).
+            vol_min: Minimum volume (Futu only).
+            strike_range_pct: Strike price range percentage (IBKR only).
+            otm_pct_min: Minimum OTM% filter (e.g., 0.05 = 5%). PUT: (S-K)/S, CALL: (K-S)/S.
+            otm_pct_max: Maximum OTM% filter (e.g., 0.15 = 15%).
 
         Returns:
             OptionChain instance or None if not available.
         """
+        # 转换 DTE 参数为日期（用于 Futu 或覆盖显式日期）
+        today = date.today()
+        if expiry_min_days is not None and expiry_start is None:
+            expiry_start = today + timedelta(days=expiry_min_days)
+        if expiry_max_days is not None and expiry_end is None:
+            expiry_end = today + timedelta(days=expiry_max_days)
+
+        market = self._detect_market(underlying)
         providers = self._route(DataType.OPTION_CHAIN, underlying)
-        return self._execute_with_fallback(
-            providers, "get_option_chain", underlying, expiry_start, expiry_end
-        )
+
+        for i, provider in enumerate(providers):
+            try:
+                result = None
+                # 根据 provider 类型传递不同的参数
+                if provider.name == "futu":
+                    # Futu: 原生支持 option_type, option_cond_type, delta/OI filter
+                    result = provider.get_option_chain(
+                        underlying,
+                        expiry_start=expiry_start,
+                        expiry_end=expiry_end,
+                        option_type=option_type,
+                        option_cond_type=option_cond_type,
+                        delta_min=delta_min,
+                        delta_max=delta_max,
+                        open_interest_min=open_interest_min,
+                        vol_min=vol_min,
+                    )
+                elif provider.name == "ibkr":
+                    # IBKR: 原生支持 DTE/strike_range, 后处理 option_type/cond_type
+                    result = provider.get_option_chain(
+                        underlying,
+                        expiry_start=expiry_start,
+                        expiry_end=expiry_end,
+                        expiry_min_days=expiry_min_days,
+                        expiry_max_days=expiry_max_days,
+                        strike_range_pct=strike_range_pct,
+                        option_type=option_type,
+                        option_cond_type=option_cond_type,
+                    )
+                else:
+                    # Yahoo or other providers: basic params only
+                    result = provider.get_option_chain(
+                        underlying,
+                        expiry_start=expiry_start,
+                        expiry_end=expiry_end,
+                    )
+
+                if result is not None:
+                    # 检查链是否为空（calls 和 puts 都是空列表）
+                    is_empty = not result.calls and not result.puts
+                    if is_empty:
+                        remaining = len(providers) - i - 1
+                        if remaining > 0:
+                            logger.debug(
+                                f"get_option_chain returned empty chain from {provider.name}, "
+                                f"trying fallback ({remaining} remaining)..."
+                            )
+                            continue  # 尝试下一个 provider
+                        # 没有更多 fallback，返回空链
+
+                    if i > 0:
+                        logger.info(
+                            f"Successfully routed get_option_chain to {provider.name} (fallback)"
+                        )
+                    else:
+                        logger.debug(f"Routed get_option_chain to {provider.name}")
+
+                    # ===== 后处理：OTM% 过滤 =====
+                    # 公式: PUT OTM% = (S-K)/S, CALL OTM% = (K-S)/S
+                    if otm_pct_min is not None or otm_pct_max is not None:
+                        result = self._apply_otm_pct_filter(
+                            result, otm_pct_min, otm_pct_max
+                        )
+
+                    return result
+                else:
+                    logger.debug(f"get_option_chain returned None from {provider.name}")
+
+            except Exception as e:
+                remaining = len(providers) - i - 1
+                if remaining > 0:
+                    logger.warning(
+                        f"Provider {provider.name} failed for get_option_chain: {e}, "
+                        f"trying fallback ({remaining} remaining)..."
+                    )
+                else:
+                    logger.warning(
+                        f"Provider {provider.name} failed for get_option_chain: {e}, "
+                        f"no more fallbacks available"
+                    )
+
+        logger.warning("All providers failed for get_option_chain")
+        return None
 
     def get_option_quote(
         self, symbol: str, force_refresh: bool = False
@@ -421,7 +642,29 @@ class UnifiedDataProvider:
             providers = self._route(DataType.OPTION_QUOTE, underlying)
             return self._execute_with_fallback(providers, "get_option_quote", symbol)
 
-        return self._cache.get_or_fetch_option_quote(symbol, fetcher, force_refresh)
+        if self._cache:
+            return self._cache.get_or_fetch_option_quote(symbol, fetcher, force_refresh)
+        return fetcher()
+
+    def _detect_option_symbol_format(self, symbol: str) -> str:
+        """Detect the format of an option symbol.
+
+        Returns:
+            "futu" for Futu format (HK.TCH260116C490000)
+            "ibkr" for IBKR format (0700.HK20260129P00500000)
+            "us" for US format (AAPL20260116C00150000)
+            "unknown" if format cannot be determined
+        """
+        if symbol.startswith("HK.") and len(symbol) > 10:
+            # Futu HK format: HK.TCH260116C490000
+            return "futu"
+        elif ".HK" in symbol and len(symbol) > 15:
+            # IBKR HK format: 0700.HK20260129P00500000
+            return "ibkr"
+        elif symbol[0].isalpha() and len(symbol) > 10:
+            # US format: AAPL20260116C00150000
+            return "us"
+        return "unknown"
 
     def get_option_quotes_batch(
         self,
@@ -431,6 +674,7 @@ class UnifiedDataProvider:
         """Get quotes for multiple option contracts.
 
         Routes based on the underlying of the first contract.
+        Also checks symbol format compatibility with each provider.
 
         Args:
             contracts: List of option contracts.
@@ -446,8 +690,19 @@ class UnifiedDataProvider:
         underlying = contracts[0].underlying
         providers = self._route(DataType.OPTION_QUOTES, underlying)
 
+        # Detect symbol format from first contract
+        symbol_format = self._detect_option_symbol_format(contracts[0].symbol)
+        logger.debug(f"Option symbol format detected: {symbol_format} (symbol: {contracts[0].symbol})")
+
         for provider in providers:
             try:
+                # Check symbol format compatibility
+                # Futu can only handle Futu format symbols
+                # IBKR can handle IBKR and US format symbols
+                if provider.name == "futu" and symbol_format == "ibkr":
+                    logger.debug(f"Skipping Futu provider - incompatible symbol format ({symbol_format})")
+                    continue
+
                 # Check if provider has batch method
                 if hasattr(provider, "get_option_quotes_batch"):
                     result = provider.get_option_quotes_batch(contracts, min_volume)
@@ -502,7 +757,9 @@ class UnifiedDataProvider:
             providers = self._route(DataType.FUNDAMENTAL, symbol)
             return self._execute_with_fallback(providers, "get_fundamental", symbol)
 
-        return self._cache.get_or_fetch_fundamental(symbol, fetcher, force_refresh)
+        if self._cache:
+            return self._cache.get_or_fetch_fundamental(symbol, fetcher, force_refresh)
+        return fetcher()
 
     # =========================================================================
     # Stock Volatility Methods
@@ -582,6 +839,132 @@ class UnifiedDataProvider:
         if yahoo and hasattr(yahoo, "get_put_call_ratio"):
             return yahoo.get_put_call_ratio(symbol)
         return None
+
+    # =========================================================================
+    # Economic Calendar Methods
+    # =========================================================================
+
+    def _init_economic_calendar(self) -> EconomicCalendarProvider | None:
+        """Initialize economic calendar provider if not already done."""
+        if self._economic_calendar is not None:
+            return self._economic_calendar
+
+        if self._provider_initialized.get("economic_calendar"):
+            return None  # Already tried and failed
+
+        try:
+            provider = EconomicCalendarProvider()
+            if provider.is_available:
+                self._economic_calendar = provider
+                self._provider_initialized["economic_calendar"] = True
+                logger.info("Economic calendar provider initialized successfully")
+                return provider
+            else:
+                logger.warning("Economic calendar provider not available (no FRED API key or FOMC calendar)")
+                self._provider_initialized["economic_calendar"] = True
+                return None
+        except Exception as e:
+            logger.warning(f"Economic calendar provider unavailable: {e}")
+            self._provider_initialized["economic_calendar"] = True
+            return None
+
+    def get_economic_calendar(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        country: str | None = "US",
+    ) -> EventCalendar | None:
+        """Get economic calendar for a date range.
+
+        Uses FRED API + static FOMC calendar for economic event data.
+
+        Args:
+            start_date: Start date (default: today).
+            end_date: End date (default: 30 days from start).
+            country: Country filter (default: "US").
+
+        Returns:
+            EventCalendar instance or None if unavailable.
+        """
+        if start_date is None:
+            start_date = date.today()
+        if end_date is None:
+            end_date = start_date + timedelta(days=30)
+
+        calendar_provider = self._init_economic_calendar()
+        if calendar_provider is None:
+            logger.warning("Economic calendar provider not available")
+            return None
+
+        try:
+            return calendar_provider.get_economic_calendar(start_date, end_date, country=country)
+        except Exception as e:
+            logger.error(f"Failed to get economic calendar: {e}")
+            return None
+
+    def get_market_moving_events(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[EconomicEvent]:
+        """Get market-moving events (FOMC, CPI, NFP).
+
+        Convenience method for getting high-impact events.
+
+        Args:
+            start_date: Start date (default: today).
+            end_date: End date (default: 30 days from start).
+
+        Returns:
+            List of market-moving events.
+        """
+        if start_date is None:
+            start_date = date.today()
+        if end_date is None:
+            end_date = start_date + timedelta(days=30)
+
+        calendar_provider = self._init_economic_calendar()
+        if calendar_provider is None:
+            return []
+
+        try:
+            return calendar_provider.get_market_moving_events(start_date, end_date)
+        except Exception as e:
+            logger.error(f"Failed to get market-moving events: {e}")
+            return []
+
+    def check_macro_blackout(
+        self,
+        target_date: date | None = None,
+        blackout_days: int = 2,
+        blackout_events: list[str] | None = None,
+    ) -> tuple[bool, list[EconomicEvent]]:
+        """Check if date is in macro event blackout period.
+
+        Args:
+            target_date: Date to check (default: today).
+            blackout_days: Days before event to avoid.
+            blackout_events: Event types to check (default: FOMC, CPI, NFP).
+
+        Returns:
+            Tuple of (is_in_blackout, list of events causing blackout).
+        """
+        if target_date is None:
+            target_date = date.today()
+
+        calendar_provider = self._init_economic_calendar()
+        if calendar_provider is None:
+            # Fail-open: if we can't check, assume no blackout
+            logger.warning("Cannot check macro blackout - economic calendar unavailable")
+            return False, []
+
+        try:
+            return calendar_provider.check_blackout_period(
+                target_date, blackout_days, blackout_events
+            )
+        except Exception as e:
+            logger.error(f"Failed to check macro blackout: {e}")
+            return False, []
 
     # =========================================================================
     # Utility Methods

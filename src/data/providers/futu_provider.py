@@ -41,6 +41,8 @@ try:
         KLType,
         OpenQuoteContext,
         OpenSecTradeContext,
+        OptionCondType,
+        OptionDataFilter,
         OptionType as FutuOptionType,
         RET_ERROR,
         RET_OK,
@@ -257,6 +259,7 @@ class FutuProvider(DataProvider, AccountProvider):
         self._check_rate_limit("quote")
 
         normalized = [self.normalize_symbol(s) for s in symbols]
+        subscribed = False
 
         try:
             # Subscribe first (required by Futu API)
@@ -266,6 +269,7 @@ class FutuProvider(DataProvider, AccountProvider):
             if ret_sub != RET_OK:
                 logger.error(f"Subscribe failed: {err_msg}")
                 return []
+            subscribed = True
 
             # Get quotes
             ret, data = self._quote_ctx.get_stock_quote(normalized)
@@ -296,6 +300,10 @@ class FutuProvider(DataProvider, AccountProvider):
         except Exception as e:
             logger.error(f"Error getting stock quotes: {e}")
             return []
+        finally:
+            # Unsubscribe to free quota
+            if subscribed:
+                self._quote_ctx.unsubscribe(normalized, [SubType.QUOTE])
 
     def get_history_kline(
         self,
@@ -374,8 +382,27 @@ class FutuProvider(DataProvider, AccountProvider):
         underlying: str,
         expiry_start: date | None = None,
         expiry_end: date | None = None,
+        # ===== Futu 原生过滤参数 =====
+        option_type: str | None = None,  # "call" / "put" / None
+        option_cond_type: str | None = None,  # "otm" / "itm" / None
+        delta_min: float | None = None,
+        delta_max: float | None = None,
+        open_interest_min: int | None = None,
+        vol_min: int | None = None,
     ) -> OptionChain | None:
-        """Get option chain for an underlying asset."""
+        """Get option chain for an underlying asset.
+
+        Args:
+            underlying: Underlying symbol (e.g., "2800.HK")
+            expiry_start: Filter options with expiry >= this date
+            expiry_end: Filter options with expiry <= this date
+            option_type: "call" / "put" / None (None = all)
+            option_cond_type: "otm" (虚值) / "itm" (实值) / None
+            delta_min: Minimum delta filter
+            delta_max: Maximum delta filter
+            open_interest_min: Minimum open interest filter
+            vol_min: Minimum volume filter
+        """
         self._ensure_connected()
         self._check_rate_limit("option_chain")
 
@@ -383,10 +410,46 @@ class FutuProvider(DataProvider, AccountProvider):
 
         try:
             kwargs: dict[str, Any] = {"code": underlying}
+
+            # 日期过滤
             if expiry_start:
                 kwargs["start"] = expiry_start.strftime("%Y-%m-%d")
             if expiry_end:
                 kwargs["end"] = expiry_end.strftime("%Y-%m-%d")
+
+            # 期权类型过滤
+            if option_type:
+                type_map = {
+                    "call": FutuOptionType.CALL,
+                    "put": FutuOptionType.PUT,
+                }
+                kwargs["option_type"] = type_map.get(
+                    option_type.lower(), FutuOptionType.ALL
+                )
+
+            # OTM/ITM 过滤 (关键优化点)
+            if option_cond_type:
+                cond_map = {
+                    "otm": OptionCondType.OUTSIDE,  # 虚值
+                    "itm": OptionCondType.WITHIN,  # 实值
+                }
+                kwargs["option_cond_type"] = cond_map.get(
+                    option_cond_type.lower(), OptionCondType.ALL
+                )
+
+            # 数据过滤器 (delta, OI, volume)
+            filter_params: dict[str, Any] = {}
+            if delta_min is not None:
+                filter_params["delta_min"] = delta_min
+            if delta_max is not None:
+                filter_params["delta_max"] = delta_max
+            if open_interest_min is not None:
+                filter_params["open_interest_min"] = open_interest_min
+            if vol_min is not None:
+                filter_params["vol_min"] = vol_min
+
+            if filter_params:
+                kwargs["data_filter"] = OptionDataFilter(**filter_params)
 
             ret, data = self._quote_ctx.get_option_chain(**kwargs)
 
@@ -429,6 +492,50 @@ class FutuProvider(DataProvider, AccountProvider):
                 else:
                     puts.append(quote)
 
+            # ===== 后处理：OTM/ITM 过滤 (Futu API 对美股可能不生效) =====
+            if option_cond_type and (calls or puts):
+                # 获取标的价格用于 OTM/ITM 判断
+                underlying_price = None
+                try:
+                    stock_quote = self.get_stock_quote(underlying)
+                    if stock_quote and stock_quote.close:
+                        underlying_price = stock_quote.close
+                except Exception as e:
+                    logger.warning(f"Could not fetch underlying price for OTM filter: {e}")
+
+                if underlying_price:
+                    cond_lower = option_cond_type.lower()
+                    original_calls = len(calls)
+                    original_puts = len(puts)
+
+                    if cond_lower == "otm":
+                        # PUT OTM: strike < underlying_price
+                        # CALL OTM: strike > underlying_price
+                        puts = [
+                            q for q in puts
+                            if q.contract.strike_price < underlying_price
+                        ]
+                        calls = [
+                            q for q in calls
+                            if q.contract.strike_price > underlying_price
+                        ]
+                    elif cond_lower == "itm":
+                        # PUT ITM: strike > underlying_price
+                        # CALL ITM: strike < underlying_price
+                        puts = [
+                            q for q in puts
+                            if q.contract.strike_price > underlying_price
+                        ]
+                        calls = [
+                            q for q in calls
+                            if q.contract.strike_price < underlying_price
+                        ]
+
+                    logger.debug(f"Futu OTM/ITM post-filter ({cond_lower}): "
+                                f"underlying=${underlying_price:.2f}, "
+                                f"calls {original_calls}->{len(calls)}, "
+                                f"puts {original_puts}->{len(puts)}")
+
             return OptionChain(
                 underlying=underlying,
                 timestamp=datetime.now(),
@@ -448,6 +555,7 @@ class FutuProvider(DataProvider, AccountProvider):
         self._check_rate_limit("quote")
 
         symbol = self.normalize_symbol(symbol)
+        subscribed = False
 
         try:
             # Subscribe to get real-time quote
@@ -457,6 +565,7 @@ class FutuProvider(DataProvider, AccountProvider):
             if ret_sub != RET_OK:
                 logger.error(f"Subscribe failed: {err_msg}")
                 return None
+            subscribed = True
 
             ret, data = self._quote_ctx.get_stock_quote([symbol])
             if ret != RET_OK or data.empty:
@@ -504,6 +613,10 @@ class FutuProvider(DataProvider, AccountProvider):
         except Exception as e:
             logger.error(f"Error getting option quote: {e}")
             return None
+        finally:
+            # Unsubscribe to free quota
+            if subscribed:
+                self._quote_ctx.unsubscribe([symbol], [SubType.QUOTE])
 
     def get_option_quotes_batch(
         self,
@@ -529,22 +642,51 @@ class FutuProvider(DataProvider, AccountProvider):
         contract_map = {c.symbol: c for c in contracts}
 
         logger.info(f"Fetching quotes for {len(contracts)} option contracts...")
+        logger.debug(f"First 5 symbols: {symbols[:5]}")
 
         try:
-            # Use get_market_snapshot which returns bid/ask and option Greeks
-            self._check_rate_limit("quote")
-            ret, data = self._quote_ctx.get_market_snapshot(symbols)
-            if ret != RET_OK:
-                logger.error(f"Get market snapshot failed: {data}")
+            # Use subscribe + get_stock_quote for reliable batch fetching
+            # This works better than get_market_snapshot for HK options
+            BATCH_SIZE = 50
+            all_data_rows = []
+
+            for i in range(0, len(symbols), BATCH_SIZE):
+                batch_symbols = symbols[i:i + BATCH_SIZE]
+                logger.debug(f"Fetching batch {i//BATCH_SIZE + 1}: {len(batch_symbols)} symbols")
+
+                self._check_rate_limit("quote")
+
+                # Subscribe to quotes first
+                ret_sub, err = self._quote_ctx.subscribe(
+                    batch_symbols, [SubType.QUOTE], subscribe_push=False
+                )
+                if ret_sub != RET_OK:
+                    logger.warning(f"Subscribe failed for batch {i//BATCH_SIZE + 1}: {err}")
+                    continue
+
+                # Get quotes
+                ret, data = self._quote_ctx.get_stock_quote(batch_symbols)
+                if ret != RET_OK:
+                    logger.error(f"Get stock quote failed for batch {i//BATCH_SIZE + 1}: {data}")
+                    continue
+
+                # Collect successful rows
+                for _, row in data.iterrows():
+                    all_data_rows.append(row)
+
+                # Unsubscribe to free resources
+                self._quote_ctx.unsubscribe(batch_symbols, [SubType.QUOTE])
+
+            if not all_data_rows:
+                logger.warning("No data received from any batch")
                 return []
 
             results = []
             skipped = 0
 
-            # Debug: print all available columns
-            logger.debug(f"Available columns in snapshot data: {list(data.columns)}")
-
-            for _, row in data.iterrows():
+            # Process collected data
+            for item in all_data_rows:
+                row = item
                 code = row["code"]
                 contract = contract_map.get(code)
                 if not contract:
@@ -575,32 +717,34 @@ class FutuProvider(DataProvider, AccountProvider):
                 if last_price is not None and last_price <= 0:
                     last_price = None
 
-                bid = safe_float(row.get("bid_price"))
-                if bid is not None and bid <= 0:
-                    bid = None
-
-                ask = safe_float(row.get("ask_price"))
-                if ask is not None and ask <= 0:
-                    ask = None
+                # get_stock_quote doesn't have bid/ask, use high/low as fallback
+                bid = safe_float(row.get("bid_price"))  # Might not exist
+                ask = safe_float(row.get("ask_price"))  # Might not exist
+                if bid is None and ask is None and last_price:
+                    # Use last_price as mid estimate
+                    bid = last_price
+                    ask = last_price
 
                 volume = safe_int(row.get("volume"))
 
-                # Extract Greeks (get_market_snapshot uses option_ prefix)
+                # Extract Greeks (get_stock_quote uses no prefix, get_market_snapshot uses option_ prefix)
+                # Try both column naming conventions
                 greeks = Greeks(
-                    delta=safe_float(row.get("option_delta")),
-                    gamma=safe_float(row.get("option_gamma")),
-                    theta=safe_float(row.get("option_theta")),
-                    vega=safe_float(row.get("option_vega")),
-                    rho=safe_float(row.get("option_rho")),
+                    delta=safe_float(row.get("delta") or row.get("option_delta")),
+                    gamma=safe_float(row.get("gamma") or row.get("option_gamma")),
+                    theta=safe_float(row.get("theta") or row.get("option_theta")),
+                    vega=safe_float(row.get("vega") or row.get("option_vega")),
+                    rho=safe_float(row.get("rho") or row.get("option_rho")),
                 )
 
                 # IV is stored as percentage (e.g., 25 = 25%)
-                iv = safe_float(row.get("option_implied_volatility"))
-                if iv is not None:
-                    iv = iv / 100.0  # Convert percentage to decimal
+                # Try both column naming conventions
+                iv = safe_float(row.get("implied_volatility") or row.get("option_implied_volatility"))
+                if iv is not None and iv > 1:
+                    iv = iv / 100.0  # Convert percentage to decimal if > 100%
 
-                # Open interest
-                open_interest = safe_int(row.get("option_open_interest"))
+                # Open interest - try both column names
+                open_interest = safe_int(row.get("open_interest") or row.get("option_open_interest"))
 
                 # Debug logging
                 logger.debug(f"Quote for {code}: last={last_price}, bid={bid}, ask={ask}, "

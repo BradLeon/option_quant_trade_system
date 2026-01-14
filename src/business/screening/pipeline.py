@@ -145,27 +145,40 @@ class ScreeningPipeline:
 
         # 3. 合约评估
         logger.info(f"Step 3: 评估合约 ({len(passed_underlyings)} 个标的)...")
-        opportunities = self.contract_filter.evaluate(
+
+        # 根据策略类型确定要评估的期权类型
+        if strategy_type == "short_put":
+            option_types = ["put"]
+        elif strategy_type == "covered_call":
+            option_types = ["call"]
+        else:
+            option_types = None  # 评估所有类型
+
+        # 使用 return_rejected=True 获取所有评估的合约（包括被拒绝的）
+        all_evaluated = self.contract_filter.evaluate(
             passed_underlyings,
-            strategy_type,
+            option_types=option_types,
+            return_rejected=True,
         )
+
+        # 统计实际评估数量并筛选出通过的
+        total_evaluated = len(all_evaluated)
+        opportunities = [o for o in all_evaluated if o.passed]
 
         elapsed = (datetime.now() - start_time).total_seconds()
         logger.info(
-            f"筛选完成: {len(opportunities)} 个机会, 耗时 {elapsed:.1f}s"
+            f"筛选完成: {len(opportunities)}/{total_evaluated} 个机会, 耗时 {elapsed:.1f}s"
         )
 
         return ScreeningResult(
             passed=len(opportunities) > 0,
             strategy_type=strategy_type,
             market_status=market_status,
-            opportunities=opportunities,
+            opportunities=all_evaluated,  # 返回所有评估的合约，便于显示淘汰原因
             underlying_scores=underlying_scores,
             scanned_underlyings=len(symbols),
             passed_underlyings=len(passed_underlyings),
-            total_contracts_evaluated=sum(
-                1 for s in passed_underlyings if s.passed
-            ) * 10,  # 估算值
+            total_contracts_evaluated=total_evaluated,  # 使用实际评估数量
             qualified_contracts=len(opportunities),
         )
 
