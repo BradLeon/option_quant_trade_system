@@ -103,6 +103,9 @@ class ScreeningPipeline:
             logger.info("Step 1: 评估市场环境...")
             market_status = self.market_filter.evaluate(market_type)
 
+            # 输出详细市场状态
+            self._log_market_status(market_status)
+
             if not market_status.is_favorable:
                 logger.warning(
                     f"市场环境不利: {', '.join(market_status.unfavorable_reasons)}"
@@ -116,7 +119,7 @@ class ScreeningPipeline:
                     + "; ".join(market_status.unfavorable_reasons),
                 )
 
-            logger.info("市场环境有利，继续筛选")
+            logger.info("✅ 市场环境有利，继续筛选")
         else:
             logger.info("Step 1: 跳过市场环境检查")
 
@@ -208,6 +211,68 @@ class ScreeningPipeline:
             UnderlyingScore 列表
         """
         return self.underlying_filter.evaluate(symbols, market_type)
+
+    def _log_market_status(self, status: MarketStatus) -> None:
+        """输出详细的市场状态日志
+
+        Args:
+            status: 市场状态
+        """
+        market_name = "美股" if status.market_type == MarketType.US else "港股"
+        status_icon = "✅" if status.is_favorable else "❌"
+
+        logger.info(f"{'─' * 50}")
+        logger.info(f"📊 {market_name}市场环境评估 {status_icon}")
+        logger.info(f"{'─' * 50}")
+
+        # 波动率指数
+        if status.volatility_index:
+            vi = status.volatility_index
+            pct_str = f" (百分位 {vi.percentile:.0%})" if vi.percentile else ""
+            logger.info(f"   波动率: {vi.symbol}={vi.value:.2f}{pct_str} [{vi.status.value}]")
+
+        # 期限结构（仅美股）
+        if status.term_structure:
+            ts = status.term_structure
+            structure = "Contango(正向)" if ts.is_contango else "Backwardation(反向)"
+            logger.info(
+                f"   期限结构: VIX={ts.vix_value:.2f} / VIX3M={ts.vix3m_value:.2f} "
+                f"= {ts.ratio:.3f} [{structure}]"
+            )
+
+        # 大盘趋势
+        if status.trend_indices:
+            logger.info(f"   大盘趋势: {status.overall_trend.value}")
+            for idx in status.trend_indices:
+                sma_info = ""
+                if idx.sma50:
+                    above_sma50 = ">" if idx.price > idx.sma50 else "<"
+                    sma_info = f" {above_sma50} SMA50({idx.sma50:.2f})"
+                logger.info(f"      - {idx.symbol}: {idx.price:.2f}{sma_info} [{idx.trend.value}]")
+
+        # Put/Call Ratio
+        if status.pcr:
+            logger.info(f"   PCR: {status.pcr.symbol}={status.pcr.value:.3f} [{status.pcr.filter_status.value}]")
+
+        # 宏观事件
+        if status.macro_events:
+            me = status.macro_events
+            if me.is_in_blackout:
+                events = ", ".join(me.event_names) if me.event_names else "未知事件"
+                logger.info(f"   宏观事件: ⚠️ 黑名单期间 ({events})")
+            elif me.upcoming_events:
+                events = ", ".join(me.event_names)
+                logger.info(f"   宏观事件: {len(me.upcoming_events)} 个即将到来 ({events})")
+            else:
+                logger.info("   宏观事件: ✓ 无重大事件")
+
+        # 不利因素
+        if status.unfavorable_reasons:
+            logger.info("   不利因素:")
+            for reason in status.unfavorable_reasons:
+                logger.info(f"      ❌ {reason}")
+
+        logger.info(f"{'─' * 50}")
 
 
 # 便捷函数
