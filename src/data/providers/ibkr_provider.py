@@ -1687,8 +1687,10 @@ class IBKRProvider(DataProvider, AccountProvider):
                 logger.warning(f"Could not qualify contract for {position.symbol}")
                 return
 
-            logger.debug(f"Requesting Greeks for {position.symbol}, asset_type:{position.asset_type},  underlying:{position.underlying}, strike:{position.strike}, expiry:{position.expiry}, option_type:{position.option_type}, conId={contract.conId}, "
-                        f"secType={contract.secType}, exchange={contract.exchange}")
+            logger.debug(f"Requesting Greeks for {position.symbol}, asset_type:{position.asset_type}, "
+                         f"underlying:{position.underlying}, strike:{position.strike}, expiry:{position.expiry}, "
+                         f"option_type:{position.option_type}, conId={contract.conId}, "
+                         f"secType={contract.secType}, exchange={contract.exchange}")
 
             # Request market data with Greeks
             # Generic tick types: 100=Option Volume, 101=Open Interest, 104=Historical Volatility

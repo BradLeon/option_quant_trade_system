@@ -566,7 +566,7 @@ def main():
 
     # Initialize provider
     if args.provider == "ibkr":
-        provider = IBKRProvider()
+        provider = IBKRProvider(account_type="real")
         try:
             provider.connect()
         except Exception as e:
