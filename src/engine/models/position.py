@@ -30,6 +30,7 @@ class Position:
         contract_multiplier: Shares per contract (US equity = 100, HK varies e.g. 500).
         margin: Margin requirement for this position.
         dte: Days to expiration. Used for PREI calculation.
+        iv: Implied volatility as decimal (e.g., 0.30 for 30%). Used for TGR calculation.
 
     Example:
         >>> pos = Position(
@@ -53,6 +54,7 @@ class Position:
         margin: float | None = None,
         dte: int | None = None,
         currency: str = "USD",
+        iv: float | None = None,
     ):
         """Initialize Position.
 
@@ -67,6 +69,7 @@ class Position:
             margin: Margin requirement
             dte: Days to expiration
             currency: Currency for all price values (default USD)
+            iv: Implied volatility as decimal (e.g., 0.30 for 30%)
         """
         self.symbol = symbol
         self.quantity = quantity
@@ -77,6 +80,7 @@ class Position:
         self.margin = margin
         self.dte = dte
         self.currency = currency
+        self.iv = iv
         self._greeks = greeks if greeks is not None else Greeks()
 
     @property
@@ -176,7 +180,7 @@ class Position:
             f"greeks={self._greeks!r}, beta={self.beta}, "
             f"market_value={self.market_value}, underlying_price={self.underlying_price}, "
             f"contract_multiplier={self.contract_multiplier}, margin={self.margin}, "
-            f"dte={self.dte}, currency={self.currency!r})"
+            f"dte={self.dte}, currency={self.currency!r}, iv={self.iv})"
         )
 
     def __eq__(self, other: object) -> bool:
@@ -194,6 +198,7 @@ class Position:
             and self.margin == other.margin
             and self.dte == other.dte
             and self.currency == other.currency
+            and self.iv == other.iv
         )
 
     @classmethod
@@ -252,6 +257,9 @@ class Position:
         # Get DTE from contract
         dte = contract.days_to_expiry if contract else None
 
+        # Extract IV from option quote
+        iv = option_quote.iv if option_quote.iv else None
+
         return cls(
             symbol=contract.symbol,
             quantity=quantity,
@@ -262,4 +270,5 @@ class Position:
             contract_multiplier=contract.lot_size,
             margin=margin,
             dte=dte,
+            iv=iv,
         )

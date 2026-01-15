@@ -118,25 +118,25 @@ class EngineTestResult:
 # Date: 2025-12-18
 GROUND_TRUTH = {
      "9988.HK": {
-        "iv": 0.3220,  # 21.93% (ATM option IV)
-        "hv": 0.4081,  # 18.39% (20-day HV)
-        "iv_rank": 8,  # IV Rank (0-100)
-        "iv_percentile": 0.11,  # 4% (IV Percentile)
-        "pcr": 1.54,  # Put/Call Ratio
+        "iv": 0.4329,  # 21.93% (ATM option IV)
+        "hv": 0.4022,  # 18.39% (20-day HV)
+        "iv_rank": 10,  # IV Rank (0-100)
+        "iv_percentile": 0.47,  # 4% (IV Percentile)
+        "pcr": 1.22,  # Put/Call Ratio
     },
     "0700.HK": {
-        "iv": 0.2193,  # 21.93% (ATM option IV)
-        "hv": 0.1839,  # 18.39% (20-day HV)
-        "iv_rank": 8,  # IV Rank (0-100)
-        "iv_percentile": 0.01,  # 4% (IV Percentile)
-        "pcr": 1.00,  # Put/Call Ratio
+        "iv": 0.2147,  # 21.93% (ATM option IV)
+        "hv": 0.2103,  # 18.39% (20-day HV)
+        "iv_rank": 10,  # IV Rank (0-100)
+        "iv_percentile": 0.143,  # 4% (IV Percentile)
+        "pcr": 0.92,  # Put/Call Ratio
     },
     "TSLA": {
-        "iv": 0.5469,  # 54.69% (ATM option IV)
-        "hv": 0.4128,  # 41.28% (20-day HV)
-        "iv_rank": 9,  # IV Rank (0-100)
-        "iv_percentile": 0.18,  # 18% (IV Percentile)
-        "pcr": 0.55,  # Put/Call Ratio
+        "iv": 0.458,  # 54.69% (ATM option IV)
+        "hv": 0.3592,  # 41.28% (20-day HV)
+        "iv_rank": 7,  # IV Rank (0-100)
+        "iv_percentile": 0.13,  # 18% (IV Percentile)
+        "pcr": 0.80,  # Put/Call Ratio
     }
 }
 

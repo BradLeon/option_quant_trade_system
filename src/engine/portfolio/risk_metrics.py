@@ -12,44 +12,67 @@ from src.engine.portfolio.greeks_agg import (
 
 
 def calc_portfolio_tgr(positions: list[Position]) -> float | None:
-    """Calculate Portfolio Theta/Gamma Ratio (TGR) in dollar terms.
+    """Calculate standardized Portfolio Theta/Gamma Ratio (TGR).
 
-    TGR measures the ratio of daily theta income to gamma risk, both in dollars.
-    Higher TGR indicates more favorable risk/reward for theta strategies.
+    Standardized TGR normalizes for stock price and volatility:
+        TGR = |Theta$| / Σ(|Gamma| × S² × σ_daily × qty × multiplier) × 100
 
-    Formula: TGR = |theta_dollars| / |gamma_dollars|
+    Where:
+        - Theta$ = Σ(|theta| × qty × multiplier) (theta dollars)
+        - S = underlying_price (spot price)
+        - σ_daily = IV / √252 (daily volatility from each position's IV)
+        - Gamma × S² = "Gamma Dollar" (normalizes gamma across different stock prices)
 
     Physical meaning:
     - Theta$ is daily income from time decay in dollars
-    - Gamma$ is the dollar gamma risk (delta change per 1% move)
-    - High TGR = more theta income per dollar of gamma risk
-    - Using dollars normalizes across different underlyings and multipliers
-    - Typical target: TGR > 0.5-1.0 for income strategies
+    - Gamma$ (volatility-adjusted) is the dollar gamma risk considering actual IV
+    - High TGR = more theta income per unit of volatility-adjusted gamma risk
+    - Target: TGR > 1.0 for good theta strategies
 
     Args:
-        positions: List of Position objects with theta, gamma, and underlying_price.
+        positions: List of Position objects with theta, gamma, underlying_price, and iv.
 
     Returns:
-        TGR value. Higher is better for theta strategies.
+        Standardized TGR value. Higher is better for theta strategies.
         Returns None if gamma_dollars is zero or no valid positions.
 
     Example:
-        # Short put: theta=$50/day, gamma risk=$100
-        # TGR = 50/100 = 0.5 (earn $0.50 theta per $1 gamma risk)
+        # Short put: theta=$50/day, gamma_dollar_vol=$40
+        # TGR = (50/40) * 100 = 125 (earn $1.25 theta per $1 gamma risk)
     """
+    import math
+
     if not positions:
         return None
 
-    # portfolio_theta is already in USD (converted by AccountAggregator)
-    # portfolio_gamma is now in gamma_dollars format (Γ × S² × 0.01) after currency conversion
+    # Calculate theta dollars
     theta_usd = calc_portfolio_theta(positions)
-    gamma_dollars = calc_portfolio_gamma(positions)
 
-    if gamma_dollars == 0:
+    # Calculate standardized gamma dollars using each position's IV
+    gamma_dollar_sum = 0.0
+    for pos in positions:
+        if pos.gamma is None or pos.underlying_price is None:
+            continue
+
+        # Use position's IV if available, otherwise fall back to 1% (0.01) for legacy behavior
+        iv = pos.iv if pos.iv and pos.iv > 0 else 0.01
+        sigma_daily = iv / math.sqrt(252)
+
+        # Gamma Dollar = |Gamma| × S² × σ_daily
+        gamma_dollar = (
+            abs(pos.gamma)
+            * (pos.underlying_price**2)
+            * sigma_daily
+            * pos.contract_multiplier
+            * abs(pos.quantity)
+        )
+        gamma_dollar_sum += gamma_dollar
+
+    if gamma_dollar_sum == 0:
         return None
 
-    # Use absolute values as theta is typically negative for short options
-    return abs(theta_usd) / abs(gamma_dollars)
+    # Standardized TGR = |Theta$| / Gamma$ × 100
+    return (abs(theta_usd) / gamma_dollar_sum) * 100
 
 
 def calc_portfolio_var(

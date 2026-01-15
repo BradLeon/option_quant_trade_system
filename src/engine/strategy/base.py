@@ -110,19 +110,28 @@ class OptionStrategy(ABC):
 
         return (e_pi - rf) / std_pi
 
-    def calc_sharpe_ratio_annualized(self) -> float | None:
-        """Calculate annualized Sharpe ratio.
+    def calc_sharpe_ratio_annual(self) -> float | None:
+        """Calculate annualized Sharpe ratio using DTE-based formula.
 
-        SR_annual = SR / sqrt(T)
+        Formula: SR_annual = SR × √(365 / DTE)
+
+        Where SR = (E[R] - Rf) / Std from calc_sharpe_ratio()
+
+        This annualizes the single-trade Sharpe ratio to represent
+        the risk-adjusted return if the strategy were repeated annually.
 
         Returns:
-            Annualized Sharpe ratio, or None if not calculable.
+            Annualized Sharpe ratio, or None if insufficient data.
         """
         sr = self.calc_sharpe_ratio()
-        if sr is None or self.params.time_to_expiry <= 0:
+        dte = self.params.dte
+
+        if sr is None or dte is None or dte <= 0:
             return None
 
-        return sr / math.sqrt(self.params.time_to_expiry)
+        # SR_annual = SR × √(365 / DTE)
+        annualization_factor = math.sqrt(365 / dte)
+        return sr * annualization_factor
 
     def calc_kelly_fraction(self) -> float:
         """Calculate Kelly fraction for optimal position sizing.
@@ -251,13 +260,19 @@ class OptionStrategy(ABC):
         return calc_sas(iv, hv, sharpe_ratio, win_probability)
 
     def calc_tgr(self) -> float | None:
-        """Calculate Theta/Gamma Ratio (TGR).
+        """Calculate standardized Theta/Gamma Ratio (TGR).
 
-        TGR measures theta income per unit of gamma risk.
-        Requires: leg.theta, leg.gamma
+        TGR measures theta income per unit of gamma risk, normalized for
+        stock price and volatility.
+
+        Standardized TGR = |Theta| / (|Gamma| × S² × σ_daily) × 100
+        where σ_daily = IV / √252
+
+        Requires: leg.theta, leg.gamma, params.spot_price, params.volatility
 
         Returns:
-            TGR value, or None if insufficient data.
+            Standardized TGR value. Target: > 1.0.
+            Returns None if insufficient data.
         """
         from src.engine.models.position import Position
         from src.engine.position.risk_return import calc_tgr
@@ -268,11 +283,13 @@ class OptionStrategy(ABC):
         if theta is None or gamma is None:
             return None
 
-        # Create temporary Position for calculation
+        # Create temporary Position with spot_price and iv for standardized TGR
         temp_position = Position(
             symbol="strategy",
             quantity=1,
             greeks=Greeks(theta=theta, gamma=gamma),
+            underlying_price=self.params.spot_price,
+            iv=self.params.volatility,
         )
         return calc_tgr(temp_position)
 
@@ -344,6 +361,23 @@ class OptionStrategy(ABC):
 
         return calc_roc_from_dte(expected_return, capital, dte)
 
+    def calc_premium_rate(self) -> float | None:
+        """Calculate premium rate (Premium / Strike).
+
+        类似保险公司的保费/赔付金比率。
+        对于 Short Put/Call: 费率 = Premium / K
+
+        Returns:
+            Premium rate as decimal (0.01 = 1%), or None if insufficient data.
+        """
+        if not self.leg:
+            return None
+        strike = self.leg.strike
+        premium = self.leg.premium
+        if strike <= 0 or premium <= 0:
+            return None
+        return premium / strike
+
     def calc_metrics(self) -> StrategyMetrics:
         """Calculate all metrics for the strategy.
 
@@ -362,10 +396,12 @@ class OptionStrategy(ABC):
             breakeven=self.calc_breakeven(),
             win_probability=self.calc_win_probability(),
             sharpe_ratio=self.calc_sharpe_ratio(),
+            sharpe_ratio_annual=self.calc_sharpe_ratio_annual(),
             kelly_fraction=self.calc_kelly_fraction(),
             prei=self.calc_prei(),
             sas=self.calc_sas(),
             tgr=self.calc_tgr(),
             roc=self.calc_roc(),
             expected_roc=self.calc_expected_roc(),
+            premium_rate=self.calc_premium_rate(),
         )

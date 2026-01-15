@@ -201,7 +201,7 @@ def screen(
                     click.echo(f"   ✅ 发现 {len(qualified)} 个机会")
                     for opp in qualified[:3]:
                         click.echo(f"      - {opp.symbol} {opp.option_type.upper()}{opp.strike:.0f} "
-                                   f"DTE={opp.dte} ROC={opp.expected_roc:.1%}" if opp.expected_roc else "")
+                                   f"DTE={opp.dte} Expected ROC={opp.expected_roc:.1%}" if opp.expected_roc else "")
                     if len(qualified) > 3:
                         click.echo(f"      ... 还有 {len(qualified) - 3} 个")
                 else:
@@ -451,15 +451,7 @@ def _output_json_all(all_results: list[dict]) -> None:
             "strategy": item["strategy"],
             "opportunities_count": len(qualified),
             "opportunities": [
-                {
-                    "symbol": opp.symbol,
-                    "strike": opp.strike,
-                    "expiry": opp.expiry,
-                    "dte": opp.dte,
-                    "option_type": opp.option_type,
-                    "delta": opp.delta,
-                    "expected_roc": opp.expected_roc,
-                }
+                _opportunity_to_dict(opp)
                 for opp in qualified
             ],
         })
@@ -467,12 +459,63 @@ def _output_json_all(all_results: list[dict]) -> None:
     click.echo(json.dumps(output_data, indent=2, ensure_ascii=False))
 
 
+def _opportunity_to_dict(opp) -> dict:
+    """将 ContractOpportunity 转换为字典"""
+    return {
+        # 基本信息
+        "symbol": opp.symbol,
+        "strike": opp.strike,
+        "expiry": opp.expiry,
+        "dte": opp.dte,
+        "option_type": opp.option_type,
+        # 策略指标 (按重要性排序)
+        "strategy_metrics": {
+            "recommended_position": opp.recommended_position,
+            "expected_roc": opp.expected_roc,
+            "sharpe_ratio_annual": opp.sharpe_ratio_annual,
+            "premium_rate": opp.premium_rate,
+            "win_probability": opp.win_probability,
+            "annual_roc": opp.annual_roc,
+            "tgr": opp.tgr,
+            "sas": opp.sas,
+            "prei": opp.prei,
+            "kelly_fraction": opp.kelly_fraction,
+            "sharpe_ratio": opp.sharpe_ratio,
+            "expected_return": opp.expected_return,
+            "return_std": opp.return_std,
+            "theta_premium_ratio": opp.theta_premium_ratio,
+        },
+        # 合约行情
+        "market_data": {
+            "underlying_price": opp.underlying_price,
+            "premium": opp.mid_price,
+            "moneyness": opp.moneyness,
+            "otm_percent": opp.otm_percent,
+            "bid": opp.bid,
+            "ask": opp.ask,
+            "mid_price": opp.mid_price,
+            "volume": opp.volume,
+            "open_interest": opp.open_interest,
+            "iv": opp.iv,
+        },
+        # Greeks
+        "greeks": {
+            "delta": opp.delta,
+            "gamma": opp.gamma,
+            "theta": opp.theta,
+            "vega": opp.vega,
+        },
+        # 警告
+        "warnings": opp.warnings,
+    }
+
+
 def _output_text_summary(all_results: list[dict]) -> None:
     """文本格式汇总输出"""
     click.echo()
-    click.echo("=" * 80)
+    click.echo("=" * 90)
     click.echo(" ✅ 开仓机会汇总")
-    click.echo("=" * 80)
+    click.echo("=" * 90)
 
     for item in all_results:
         qualified = item["qualified"]
@@ -481,33 +524,75 @@ def _output_text_summary(all_results: list[dict]) -> None:
 
         click.echo()
         click.echo(f"📌 {item['market'].upper()} | {item['strategy']}")
-        click.echo("-" * 80)
-        click.echo(f"{'标的':<8} {'到期':<10} {'类型':<6} {'行权价':<10} {'DTE':<5} {'Delta':<7} {'ROC':<8}")
-        click.echo("-" * 80)
+        click.echo("=" * 90)
 
         # 按 ROC 排序
         sorted_opps = sorted(qualified, key=lambda x: x.expected_roc or 0, reverse=True)
 
-        for opp in sorted_opps[:10]:
-            exp_str = opp.expiry if opp.expiry else "N/A"
-            opt_type = "PUT" if opp.option_type == "put" else "CALL"
-            delta_str = f"{opp.delta:.2f}" if opp.delta else "N/A"
-            roc_str = f"{opp.expected_roc:.1%}" if opp.expected_roc else "N/A"
-
-            click.echo(
-                f"{opp.symbol:<8} "
-                f"{exp_str:<10} "
-                f"{opt_type:<6} "
-                f"{opp.strike:<10.0f} "
-                f"{opp.dte:<5} "
-                f"{delta_str:<7} "
-                f"{roc_str:<8}"
-            )
+        for i, opp in enumerate(sorted_opps[:10], 1):
+            _print_opportunity_card(opp, i)
 
         if len(qualified) > 10:
-            click.echo(f"... 还有 {len(qualified) - 10} 个")
+            click.echo(f"\n... 还有 {len(qualified) - 10} 个机会")
 
     click.echo()
+
+
+def _print_opportunity_card(opp, index: int) -> None:
+    """打印单个机会的详细卡片"""
+    opt_type = "CALL" if opp.option_type == "call" else "PUT"
+    exp_str = opp.expiry if opp.expiry else "N/A"
+
+    # 标题行
+    click.echo()
+    click.echo(f"┌─ #{index} {opp.symbol} {opt_type} {opp.strike:.0f} @ {exp_str} (DTE={opp.dte})")
+    click.echo("├" + "─" * 89)
+
+    # 策略指标行 (重要的放前面)
+    pos_str = f"{opp.recommended_position:.2f}" if opp.recommended_position else "N/A"
+    roc_str = f"{opp.expected_roc:.1%}" if opp.expected_roc else "N/A"
+    sr_str = f"{opp.sharpe_ratio_annual:.2f}" if opp.sharpe_ratio_annual else "N/A"
+    rate_str = f"{opp.premium_rate:.2%}" if opp.premium_rate else "N/A"
+    win_str = f"{opp.win_probability:.1%}" if opp.win_probability else "N/A"
+    annual_roc_str = f"{opp.annual_roc:.1%}" if opp.annual_roc else "N/A"
+
+    click.echo(f"│ 策略: Pos={pos_str}  ExpROC={roc_str}  SR={sr_str}  Rate={rate_str}  WinP={win_str}  AnnROC={annual_roc_str}")
+
+    # 其他策略指标
+    tgr_str = f"{opp.tgr:.2f}" if opp.tgr else "N/A"
+    sas_str = f"{opp.sas:.1f}" if opp.sas else "N/A"
+    prei_str = f"{opp.prei:.1f}" if opp.prei else "N/A"
+    kelly_str = f"{opp.kelly_fraction:.2f}" if opp.kelly_fraction else "N/A"
+    tp_ratio_str = f"{opp.theta_premium_ratio:.3f}" if opp.theta_premium_ratio else "N/A"
+
+    click.echo(f"│ 指标: TGR={tgr_str}  SAS={sas_str}  PREI={prei_str}  Kelly={kelly_str}  Θ/P={tp_ratio_str}")
+
+    # 合约行情
+    price_str = f"{opp.underlying_price:.2f}" if opp.underlying_price else "N/A"
+    premium_str = f"{opp.mid_price:.2f}" if opp.mid_price else "N/A"
+    moneyness_str = f"{opp.moneyness:.2%}" if opp.moneyness else "N/A"
+    bid_str = f"{opp.bid:.2f}" if opp.bid else "N/A"
+    ask_str = f"{opp.ask:.2f}" if opp.ask else "N/A"
+    vol_str = f"{opp.volume}" if opp.volume else "N/A"
+    iv_str = f"{opp.iv:.1%}" if opp.iv else "N/A"
+
+    click.echo(f"│ 行情: S={price_str}  Premium={premium_str}  Moneyness={moneyness_str}  Bid/Ask={bid_str}/{ask_str}  Vol={vol_str}  IV={iv_str}")
+
+    # Greeks
+    delta_str = f"{opp.delta:.3f}" if opp.delta else "N/A"
+    gamma_str = f"{opp.gamma:.4f}" if opp.gamma else "N/A"
+    theta_str = f"{opp.theta:.3f}" if opp.theta else "N/A"
+    vega_str = f"{opp.vega:.3f}" if opp.vega else "N/A"
+    oi_str = f"{opp.open_interest}" if opp.open_interest else "N/A"
+    otm_str = f"{opp.otm_percent:.1%}" if opp.otm_percent else "N/A"
+
+    click.echo(f"│ Greeks: Δ={delta_str}  Γ={gamma_str}  Θ={theta_str}  V={vega_str}  OI={oi_str}  OTM={otm_str}")
+
+    # 警告信息
+    if opp.warnings:
+        click.echo(f"│ ⚠️  {opp.warnings[0]}")
+
+    click.echo("└" + "─" * 89)
 
 
 def _push_result(result) -> None:
