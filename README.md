@@ -64,10 +64,48 @@ option_quant_trade_system/
 
 ## 快速开始
 
-### 安装依赖
+### 环境要求
+
+- Python 3.11+
+- [uv](https://docs.astral.sh/uv/) (推荐) 或 pip
+
+### 安装与激活环境
+
+**方式一：使用 uv（推荐）**
 
 ```bash
+# 安装 uv（如未安装）
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 克隆项目
+git clone https://github.com/BradLeon/option_quant_trade_system.git
+cd option_quant_trade_system
+
+# 安装依赖并创建虚拟环境（自动创建 .venv）
+uv sync
+
+# 激活虚拟环境
+source .venv/bin/activate
+
+# 或者使用 uv run 直接运行命令（无需手动激活）
+uv run python -m src.business.cli.main --help
+```
+
+**方式二：使用 pip**
+
+```bash
+# 创建虚拟环境
+python -m venv .venv
+
+# 激活虚拟环境
+source .venv/bin/activate  # Linux/macOS
+# .venv\Scripts\activate   # Windows
+
+# 安装依赖
 pip install -r requirements.txt
+
+# 以开发模式安装项目
+pip install -e .
 ```
 
 ### 运行示例
@@ -82,6 +120,267 @@ python examples/data_layer_demo.py --futu
 # IBKR TWS 数据测试 (需要运行 TWS)
 python examples/data_layer_demo.py --ibkr
 ```
+
+---
+
+## 用户操作手册
+
+### CLI 命令行工具
+
+项目提供 `optrade` 命令行工具，用于开仓筛选、持仓监控、实时仪表盘等功能。
+
+#### 运行方式
+
+```bash
+# 方式一：使用 uv run（推荐，无需激活环境）
+uv run optrade --help
+
+# 方式二：激活环境后直接运行
+source .venv/bin/activate
+optrade --help
+
+# 方式三：使用 python -m
+python -m src.business.cli.main --help
+```
+
+#### 命令列表
+
+| 命令 | 说明 | 典型用法 |
+|------|------|---------|
+| `screen` | 开仓筛选 | 筛选符合条件的期权机会 |
+| `monitor` | 持仓监控 | 三层风险预警（组合级/持仓级/资金级） |
+| `dashboard` | 实时仪表盘 | 可视化监控面板 |
+| `notify` | 通知测试 | 测试飞书推送 |
+
+---
+
+### screen - 开仓筛选
+
+筛选符合条件的期权交易机会。
+
+```bash
+# 查看帮助
+uv run optrade screen --help
+
+# 默认：筛选所有市场（US+HK）、所有策略、所有股票池
+uv run optrade screen
+
+# 只筛选美股
+uv run optrade screen -m us
+
+# 只筛选港股
+uv run optrade screen -m hk
+
+# 只筛选 Short Put 策略
+uv run optrade screen -s short_put
+
+# 只筛选 Covered Call 策略
+uv run optrade screen -s covered_call
+
+# 指定单个标的
+uv run optrade screen -S AAPL
+
+# 指定多个标的
+uv run optrade screen -S AAPL -S MSFT -S NVDA
+
+# 组合使用：港股 + Covered Call + 指定标的
+uv run optrade screen -m hk -s covered_call -S 9988.HK
+
+# 列出所有可用股票池
+uv run optrade screen --list-pools
+
+# 指定股票池
+uv run optrade screen -m us -p us_tech
+
+# 显示详细日志
+uv run optrade screen -v
+
+# 跳过市场环境检查（调试用）
+uv run optrade screen --skip-market-check
+
+# 输出 JSON 格式
+uv run optrade screen -o json
+
+# 推送结果到飞书
+uv run optrade screen --push
+```
+
+**参数说明**：
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `-m, --market` | 市场：`us`, `hk`, `all` | `all` |
+| `-s, --strategy` | 策略：`short_put`, `covered_call`, `all` | `all` |
+| `-S, --symbol` | 指定标的（可多次指定） | 使用股票池 |
+| `-p, --pool` | 股票池名称 | 市场默认池 |
+| `--list-pools` | 列出可用股票池 | - |
+| `--push/--no-push` | 是否推送到飞书 | 不推送 |
+| `-o, --output` | 输出格式：`text`, `json` | `text` |
+| `-v, --verbose` | 显示详细日志 | 否 |
+| `--skip-market-check` | 跳过市场环境检查 | 否 |
+
+---
+
+### monitor - 持仓监控
+
+三层持仓监控，生成风险预警和调整建议。
+
+```bash
+# 查看帮助
+uv run optrade monitor --help
+
+# 从 Paper 账户监控（需要连接券商）
+uv run optrade monitor -a paper
+
+# 从真实账户监控
+uv run optrade monitor -a real
+
+# 仅使用 IBKR 账户
+uv run optrade monitor -a paper --ibkr-only
+
+# 仅使用 Futu 账户
+uv run optrade monitor -a paper --futu-only
+
+# 从 JSON 文件加载持仓数据
+uv run optrade monitor -p positions.json -C capital.json
+
+# 只显示红色预警
+uv run optrade monitor -a paper -l red
+
+# 只显示黄色预警
+uv run optrade monitor -a paper -l yellow
+
+# 推送预警到飞书
+uv run optrade monitor -a paper --push
+
+# 输出 JSON 格式
+uv run optrade monitor -a paper -o json
+
+# 显示详细日志
+uv run optrade monitor -a paper -v
+```
+
+**参数说明**：
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `-a, --account-type` | 账户类型：`paper`, `real` | - |
+| `--ibkr-only` | 仅使用 IBKR 账户 | 否 |
+| `--futu-only` | 仅使用 Futu 账户 | 否 |
+| `-p, --positions` | 持仓数据 JSON 文件 | - |
+| `-C, --capital` | 资金数据 JSON 文件 | - |
+| `-c, --config` | 监控配置文件 | 默认配置 |
+| `--push/--no-push` | 是否推送到飞书 | 不推送 |
+| `-l, --level` | 预警级别：`all`, `red`, `yellow`, `green` | `all` |
+| `-o, --output` | 输出格式：`text`, `json` | `text` |
+| `-v, --verbose` | 显示详细日志 | 否 |
+
+**监控层级**：
+
+| 层级 | 监控内容 | 关键指标 |
+|------|---------|---------|
+| Portfolio级 | 组合整体风险 | Beta加权Delta, 组合TGR, 集中度HHI |
+| Position级 | 单个持仓风险 | DTE, PREI, SAS, TGR |
+| Capital级 | 资金层面风险 | Margin使用率, Kelly使用率, Drawdown |
+
+---
+
+### dashboard - 实时仪表盘
+
+实时可视化监控面板，显示组合健康度、资金管理、风险热力图和持仓明细。
+
+```bash
+# 查看帮助
+uv run optrade dashboard --help
+
+# 使用示例数据（无需连接券商）
+uv run optrade dashboard
+
+# 从 Paper 账户获取真实数据
+uv run optrade dashboard -a paper
+
+# 从真实账户获取数据
+uv run optrade dashboard -a real
+
+# 自动刷新（每30秒）
+uv run optrade dashboard -a paper -r 30
+
+# 自动刷新（每60秒）
+uv run optrade dashboard -a paper --refresh 60
+
+# 仅使用 IBKR 账户
+uv run optrade dashboard -a paper --ibkr-only
+
+# 仅使用 Futu 账户
+uv run optrade dashboard -a paper --futu-only
+
+# 显示详细日志
+uv run optrade dashboard -a paper -v
+```
+
+**参数说明**：
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `-a, --account-type` | 账户类型：`paper`, `real` | 使用示例数据 |
+| `--ibkr-only` | 仅使用 IBKR 账户 | 否 |
+| `--futu-only` | 仅使用 Futu 账户 | 否 |
+| `-r, --refresh` | 自动刷新间隔（秒），0=不刷新 | `0` |
+| `-v, --verbose` | 显示详细日志 | 否 |
+
+---
+
+### notify - 通知测试
+
+测试飞书通知推送功能。
+
+```bash
+# 发送测试通知
+uv run optrade notify
+```
+
+---
+
+### 常用工作流
+
+**每日开盘前筛选**：
+
+```bash
+# 1. 检查市场环境，筛选今日机会
+uv run optrade screen -m us -v
+
+# 2. 筛选港股机会（港股先开盘）
+uv run optrade screen -m hk
+```
+
+**盘中监控**：
+
+```bash
+# 启动实时仪表盘，每30秒刷新
+uv run optrade dashboard -a paper -r 30
+```
+
+**收盘后风险检查**：
+
+```bash
+# 检查所有持仓风险预警
+uv run optrade monitor -a paper
+
+# 只关注红色预警
+uv run optrade monitor -a paper -l red
+```
+
+**推送到飞书**：
+
+```bash
+# 筛选结果推送
+uv run optrade screen -m us --push
+
+# 风险预警推送
+uv run optrade monitor -a paper --push
+```
+
+---
 
 ## 数据提供者 (Data Providers)
 

@@ -556,7 +556,7 @@ def _print_opportunity_card(opp, index: int) -> None:
     win_str = f"{opp.win_probability:.1%}" if opp.win_probability else "N/A"
     annual_roc_str = f"{opp.annual_roc:.1%}" if opp.annual_roc else "N/A"
 
-    click.echo(f"│ 策略: Pos={pos_str}  ExpROC={roc_str}  SR={sr_str}  Rate={rate_str}  WinP={win_str}  AnnROC={annual_roc_str}")
+    click.echo(f"│ 策略: Pos={pos_str}  ExpROC={roc_str}  Sharpe Ratio={sr_str}  Premium Rate={rate_str}  WinP={win_str}  Annual ROC={annual_roc_str}")
 
     # 其他策略指标
     tgr_str = f"{opp.tgr:.2f}" if opp.tgr else "N/A"
