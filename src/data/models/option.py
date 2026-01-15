@@ -55,10 +55,11 @@ class OptionContract:
     strike_price: float
     expiry_date: date
     lot_size: int = 100  # Shares per contract
+    trading_class: str | None = None  # IBKR trading class (e.g., "TCH" for HK 700)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
-        return {
+        result = {
             "symbol": self.symbol,
             "underlying": self.underlying,
             "option_type": self.option_type.value,
@@ -66,6 +67,9 @@ class OptionContract:
             "expiry_date": self.expiry_date.isoformat(),
             "lot_size": self.lot_size,
         }
+        if self.trading_class:
+            result["trading_class"] = self.trading_class
+        return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "OptionContract":
@@ -85,6 +89,7 @@ class OptionContract:
             strike_price=data["strike_price"],
             expiry_date=expiry,
             lot_size=data.get("lot_size", 100),
+            trading_class=data.get("trading_class"),
         )
 
     @property

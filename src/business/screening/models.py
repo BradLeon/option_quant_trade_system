@@ -9,9 +9,11 @@ Screening Models - 筛选系统数据模型
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from typing import Optional
+
+from src.data.models.event import EconomicEvent
 
 
 class MarketType(str, Enum):
@@ -94,6 +96,20 @@ class PCRStatus:
 
 
 @dataclass
+class MacroEventStatus:
+    """宏观事件状态"""
+
+    is_in_blackout: bool = False
+    upcoming_events: list[EconomicEvent] = field(default_factory=list)
+    blackout_days: int = 2
+
+    @property
+    def event_names(self) -> list[str]:
+        """获取即将发生的事件名称"""
+        return [e.name for e in self.upcoming_events]
+
+
+@dataclass
 class MarketStatus:
     """市场环境状态"""
 
@@ -113,6 +129,9 @@ class MarketStatus:
 
     # PCR
     pcr: Optional[PCRStatus] = None
+
+    # 宏观事件
+    macro_events: Optional[MacroEventStatus] = None
 
     # 不利因素
     unfavorable_reasons: list[str] = field(default_factory=list)
@@ -184,8 +203,17 @@ class UnderlyingScore:
     # 基本面评分
     fundamental: Optional[FundamentalScore] = None
 
-    # 不合格原因
+    # 事件日历
+    earnings_date: Optional[date] = None  # 下一次财报日
+    ex_dividend_date: Optional[date] = None  # 下一次除息日
+    days_to_earnings: Optional[int] = None  # 距财报天数
+    days_to_ex_dividend: Optional[int] = None  # 距除息日天数
+
+    # 不合格原因 (P0/P1 阻塞条件)
     disqualify_reasons: list[str] = field(default_factory=list)
+
+    # 警告信息 (P2/P3 不阻塞条件)
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def composite_score(self) -> float:
@@ -263,6 +291,7 @@ class ContractOpportunity:
     expected_return: Optional[float] = None
     return_std: Optional[float] = None
     sharpe_ratio: Optional[float] = None
+    sharpe_ratio_annual: Optional[float] = None  # 年化 Sharpe = SR × √(365/DTE)
     win_probability: Optional[float] = None
     sas: Optional[float] = None  # 策略吸引力评分
     prei: Optional[float] = None  # 风险暴露指数
@@ -272,6 +301,22 @@ class ContractOpportunity:
     # 标的信息
     underlying_price: Optional[float] = None
     moneyness: Optional[float] = None  # (S-K)/K
+    otm_percent: Optional[float] = None  # OTM百分比
+    theta_premium_ratio: Optional[float] = None  # Theta/Premium比率
+
+    # 期望收益指标
+    expected_roc: Optional[float] = None  # 期望收益率
+    annual_roc: Optional[float] = None  # 年化收益率
+    premium_rate: Optional[float] = None  # 费率 = Premium / K
+
+    # 优先级机制
+    disqualify_reasons: list[str] = field(default_factory=list)  # P0/P1 阻塞原因
+    warnings: list[str] = field(default_factory=list)  # P2/P3 警告信息
+    passed: bool = True  # 是否通过所有 P0/P1 检查
+
+    # 通过信息（仅 passed=True 时填充）
+    pass_reasons: list[str] = field(default_factory=list)  # 通过原因（关键指标摘要）
+    recommended_position: Optional[float] = None  # 推荐仓位（1/4 Kelly）
 
     @property
     def bid_ask_spread(self) -> Optional[float]:

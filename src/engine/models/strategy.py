@@ -301,12 +301,14 @@ class StrategyMetrics:
         max_loss: Maximum possible loss (as positive number)
         breakeven: Breakeven price(s)
         win_probability: Probability of profit
-        sharpe_ratio: Risk-adjusted return (optional)
+        sharpe_ratio: Risk-adjusted return for single trade (optional)
+        sharpe_ratio_annual: Annualized Sharpe Ratio = E[R]/Std × √(365/DTE)
         kelly_fraction: Optimal position size (optional)
         prei: Position Risk Exposure Index (0-100, higher = more risk)
         sas: Strategy Attractiveness Score (0-100, higher = more attractive)
         tgr: Theta/Gamma Ratio (higher = better for theta strategies)
         roc: Annualized Return on Capital
+        expected_roc: Annualized Expected Return on Capital
     """
 
     expected_return: float
@@ -317,9 +319,11 @@ class StrategyMetrics:
     breakeven: float | list[float]
     win_probability: float
     sharpe_ratio: float | None = None
+    sharpe_ratio_annual: float | None = None
     kelly_fraction: float | None = None
     prei: float | None = None
     sas: float | None = None
     tgr: float | None = None
     roc: float | None = None
     expected_roc: float | None = None
+    premium_rate: float | None = None  # Premium / Strike (费率)

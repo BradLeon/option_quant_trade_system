@@ -9,6 +9,12 @@ from src.data.models.account import (
     ConsolidatedPortfolio,
 )
 from src.data.models.enums import DataType, Market
+from src.data.models.event import (
+    EconomicEvent,
+    EconomicEventType,
+    EventCalendar,
+    EventImpact,
+)
 from src.data.models.fundamental import Fundamental
 from src.data.models.macro import MacroData
 from src.data.models.option import OptionChain, OptionContract, OptionQuote
@@ -35,6 +41,11 @@ __all__ = [
     "OptionQuote",
     "OptionChain",
     "OptionContract",
+    # Event models
+    "EconomicEvent",
+    "EconomicEventType",
+    "EventCalendar",
+    "EventImpact",
     # Other models
     "Fundamental",
     "MacroData",

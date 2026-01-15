@@ -3,6 +3,7 @@
 import logging
 import math
 import os
+from re import S
 import time
 from datetime import date, datetime, timedelta
 from threading import Lock
@@ -392,6 +393,9 @@ class IBKRProvider(DataProvider, AccountProvider):
         strike_range_pct: float | None = 0.20,
         strike_min: float | None = None,
         strike_max: float | None = None,
+        # ===== 统一过滤参数（后处理实现） =====
+        option_type: str | None = None,  # "call" / "put" / None
+        option_cond_type: str | None = None,  # "otm" / "itm" / None
     ) -> OptionChain | None:
         """Get option chain structure for an underlying asset.
 
@@ -407,6 +411,8 @@ class IBKRProvider(DataProvider, AccountProvider):
             strike_range_pct: Filter strikes within ±X% of underlying price (default 20%)
             strike_min: Minimum strike price (overrides strike_range_pct)
             strike_max: Maximum strike price (overrides strike_range_pct)
+            option_type: "call" / "put" / None (None = all) - 后处理过滤
+            option_cond_type: "otm" (虚值) / "itm" (实值) / None - 后处理过滤
 
         Returns:
             OptionChain with contract structure (no market data)
@@ -432,14 +438,51 @@ class IBKRProvider(DataProvider, AccountProvider):
                 logger.warning(f"No option chain found for {underlying}")
                 return None
 
-            # Find the chain for SMART exchange
+            # Detect market for exchange selection
+            market = SymbolFormatter.detect_market(underlying)
+
+            # Debug: log all available chains
+            logger.debug(f"IBKR {underlying} found {len(chains)} chains:")
+            for i, c in enumerate(chains):
+                tc = getattr(c, 'tradingClass', 'N/A')
+                exp_count = len(c.expirations) if c.expirations else 0
+                exp_sample = c.expirations[:3] if c.expirations else []
+                logger.debug(f"  Chain[{i}]: exchange={c.exchange}, tradingClass={tc}, "
+                            f"expirations={exp_count} (sample: {exp_sample})")
+
+            # Find the chain with the most expirations for US stocks (weekly options)
+            # For HK stocks, still prefer SEHK exchange
             chain = None
-            for c in chains:
-                if c.exchange == "SMART":
-                    chain = c
-                    break
+            preferred_exchange = "SEHK" if market == Market.HK else "SMART"
+
+            if market != Market.HK:
+                # US stocks: find chain with most expirations (to include weeklies)
+                best_chain = None
+                max_expirations = 0
+                for c in chains:
+                    exp_count = len(c.expirations) if c.expirations else 0
+                    if exp_count > max_expirations:
+                        max_expirations = exp_count
+                        best_chain = c
+                if best_chain:
+                    chain = best_chain
+                    logger.debug(f"Selected chain with most expirations: "
+                                f"tradingClass={getattr(chain, 'tradingClass', 'N/A')}, "
+                                f"expirations={max_expirations}")
+            else:
+                # HK stocks: prefer SEHK exchange
+                for c in chains:
+                    if c.exchange == preferred_exchange:
+                        chain = c
+                        break
+
             if chain is None:
                 chain = chains[0]
+
+            # Extract trading class (important for HK options like "TCH" for 700)
+            trading_class = getattr(chain, 'tradingClass', None)
+            if trading_class:
+                logger.debug(f"Trading class for {underlying}: {trading_class}")
 
             # Convert expiry_min_days/max_days to dates
             # ONLY apply min/max days defaults if expiry_start/expiry_end are not provided
@@ -451,6 +494,11 @@ class IBKRProvider(DataProvider, AccountProvider):
 
             # Filter expirations by date range
             expirations = []
+
+            # Debug: log available expirations and filter range
+            logger.debug(f"IBKR {underlying} available expirations: {chain.expirations[:10]}...")
+            logger.debug(f"IBKR filter range: {expiry_start} to {expiry_end} (today={today})")
+
             for exp in chain.expirations:
                 exp_date = datetime.strptime(exp, "%Y%m%d").date()
                 if expiry_start and exp_date < expiry_start:
@@ -460,7 +508,8 @@ class IBKRProvider(DataProvider, AccountProvider):
                 expirations.append(exp_date)
 
             if not expirations:
-                logger.warning(f"No expirations found in specified range for {underlying}")
+                logger.warning(f"No expirations found in specified range for {underlying}. "
+                              f"Available: {chain.expirations[:5]}, Range: {expiry_start} to {expiry_end}")
                 return None
 
             # Get underlying price for strike filtering
@@ -506,6 +555,7 @@ class IBKRProvider(DataProvider, AccountProvider):
                                 strike_price=strike,
                                 expiry_date=expiry,
                                 lot_size=100,
+                                trading_class=trading_class,  # For HK options (e.g., "TCH")
                             )
                             # Create OptionQuote with contract info only (no market data)
                             quote = OptionQuote(
@@ -519,6 +569,40 @@ class IBKRProvider(DataProvider, AccountProvider):
                                 puts.append(quote)
                         except Exception as e:
                             logger.debug(f"Error creating option contract: {e}")
+
+            # ===== 后处理：option_type 过滤 =====
+            if option_type:
+                opt_type_lower = option_type.lower()
+                if opt_type_lower == "call":
+                    puts = []
+                elif opt_type_lower == "put":
+                    calls = []
+
+            # ===== 后处理：option_cond_type 过滤 (OTM/ITM) =====
+            if option_cond_type:
+                cond_lower = option_cond_type.lower()
+                if cond_lower == "otm":
+                    # PUT OTM: strike < underlying_price
+                    # CALL OTM: strike > underlying_price
+                    puts = [
+                        q for q in puts
+                        if q.contract.strike_price < underlying_price
+                    ]
+                    calls = [
+                        q for q in calls
+                        if q.contract.strike_price > underlying_price
+                    ]
+                elif cond_lower == "itm":
+                    # PUT ITM: strike > underlying_price
+                    # CALL ITM: strike < underlying_price
+                    puts = [
+                        q for q in puts
+                        if q.contract.strike_price > underlying_price
+                    ]
+                    calls = [
+                        q for q in calls
+                        if q.contract.strike_price < underlying_price
+                    ]
 
             logger.info(f"Option chain for {underlying}: {len(expiry_dates)} expiries, "
                        f"{len(calls)} calls, {len(puts)} puts (underlying=${underlying_price:.2f})")
@@ -542,16 +626,18 @@ class IBKRProvider(DataProvider, AccountProvider):
         min_volume: int | None = None,
         request_delay: float = 0.5,
     ) -> list[OptionQuote]:
-        """Fetch market data for multiple option contracts.
+        """Fetch market data for multiple option contracts using batch parallel processing.
 
-        Note: min_volume filter is applied AFTER fetching market data, as volume
-        is only available from the API response. Contract qualification failures
-        (Error 200) are logged and skipped gracefully.
+        Optimized for IBKR: subscribes to underlying + option contracts simultaneously,
+        waits for Greeks to populate, then extracts all data.
+
+        IMPORTANT: IBKR requires market data subscriptions for BOTH the option AND
+        the underlying contract to receive live Greek values.
 
         Args:
             contracts: List of OptionContract to fetch quotes for
             min_volume: Filter out options with volume below this (post-fetch filter)
-            request_delay: Delay between requests in seconds (rate limiting)
+            request_delay: Unused, kept for API compatibility
 
         Returns:
             List of OptionQuote with market data (Greeks, prices, volume, etc.)
@@ -564,116 +650,235 @@ class IBKRProvider(DataProvider, AccountProvider):
         results = []
         skipped_contracts = 0
         filtered_by_volume = 0
+        api_greeks_count = 0
+        bs_fallback_count = 0
 
-        logger.info(f"Fetching quotes for {len(contracts)} contracts...")
+        # Batch size: 30 contracts per batch for reasonable throughput
+        # Higher batch sizes may overwhelm IBKR's streaming capacity
+        BATCH_SIZE = 30
+        WAIT_SECONDS = 5  # Wait time for Greeks to populate
 
-        for i, contract in enumerate(contracts):
-            try:
-                # Create IBKR Option contract
-                opt = Option(
-                    contract.underlying,
-                    contract.expiry_date.strftime("%Y%m%d"),
-                    contract.strike_price,
-                    "C" if contract.option_type == OptionType.CALL else "P",
-                    "SMART",
-                )
+        logger.info(f"Fetching quotes for {len(contracts)} contracts in batches of {BATCH_SIZE}...")
 
-                # Qualify contract - this may fail for non-existent strikes
-                qualified = self._ib.qualifyContracts(opt)
-                # Check if qualification succeeded (conId should be populated)
-                if not qualified or not hasattr(opt, 'conId') or not opt.conId:
-                    logger.debug(f"Contract not found (skipping): {contract.symbol} "
-                                f"(strike={contract.strike_price}, expiry={contract.expiry_date})")
+        # NOTE: Underlying subscription disabled - testing showed it may interfere with
+        # option data retrieval during non-market hours. Greeks can still be computed
+        # via Black-Scholes fallback when API Greeks unavailable.
+        underlying_tickers: dict[str, tuple[any, any]] = {}
+
+        for batch_start in range(0, len(contracts), BATCH_SIZE):
+            batch_contracts = contracts[batch_start:batch_start + BATCH_SIZE]
+            batch_num = batch_start // BATCH_SIZE + 1
+            total_batches = (len(contracts) + BATCH_SIZE - 1) // BATCH_SIZE
+
+            logger.debug(f"Processing batch {batch_num}/{total_batches}: {len(batch_contracts)} contracts")
+
+            # Phase 1: Create and qualify all IBKR Option contracts
+            qualified_items: list[tuple[OptionContract, Option]] = []
+
+            for contract in batch_contracts:
+                try:
+                    market = SymbolFormatter.detect_market(contract.underlying)
+                    underlying_symbol = SymbolFormatter.to_ibkr_symbol(contract.underlying)
+
+                    if market == Market.HK:
+                        trading_class = contract.trading_class
+                        if not trading_class:
+                            logger.debug(f"No trading class for {contract.symbol}, skipping")
+                            skipped_contracts += 1
+                            continue
+
+                        expiry_str = contract.expiry_date.strftime("%Y%m%d")
+                        right = "C" if contract.option_type == OptionType.CALL else "P"
+
+                        opt = Option(
+                            underlying_symbol,
+                            expiry_str,
+                            contract.strike_price,
+                            right,
+                            "SEHK",
+                            currency="HKD",
+                        )
+                        opt.tradingClass = trading_class
+                    else:
+                        # US options
+                        opt = Option(
+                            underlying_symbol,
+                            contract.expiry_date.strftime("%Y%m%d"),
+                            contract.strike_price,
+                            "C" if contract.option_type == OptionType.CALL else "P",
+                            "SMART",
+                        )
+                        # Set tradingClass if available (important for weeklies vs standard)
+                        if contract.trading_class:
+                            opt.tradingClass = contract.trading_class
+                            logger.debug(f"Using tradingClass={contract.trading_class} for {contract.symbol}")
+
+                    # Qualify contract
+                    qualified = self._ib.qualifyContracts(opt)
+                    if not qualified or not hasattr(opt, 'conId') or not opt.conId:
+                        logger.debug(f"Contract not found: {contract.symbol}")
+                        skipped_contracts += 1
+                        continue
+
+                    # Log qualified contract details for debugging
+                    if batch_num == 1 and len(qualified_items) < 3:
+                        logger.debug(
+                            f"Qualified: {opt.localSymbol}, conId={opt.conId}, "
+                            f"exchange={opt.exchange}, tradingClass={opt.tradingClass}, "
+                            f"multiplier={opt.multiplier}"
+                        )
+
+                    qualified_items.append((contract, opt))
+
+                except Exception as e:
+                    logger.warning(f"Error qualifying {contract.symbol}: {e}")
                     skipped_contracts += 1
-                    continue
 
-                # Request market data with Greeks (streaming mode)
-                # Generic tick types: 100=Option Volume, 101=Open Interest, 104=Historical Volatility, 106=IV
-                # Note: snapshot=True does NOT work with generic tick types for options
-                ticker = self._ib.reqMktData(opt, "100,101,104,106", snapshot=False, regulatorySnapshot=False)
-
-                # Wait for streaming data - check periodically for up to 2 seconds
-                for _ in range(4):
-                    self._ib.sleep(0.5)
-                    # Check if we got any meaningful data
-                    has_price = (ticker.bid == ticker.bid and ticker.bid > 0) or \
-                                (ticker.ask == ticker.ask and ticker.ask > 0) or \
-                                (ticker.last == ticker.last and ticker.last > 0)
-                    has_greeks = ticker.modelGreeks is not None
-                    if has_price or has_greeks:
-                        break
-
-                # Debug: Log raw ticker values
-                logger.debug(f"Raw ticker for {contract.symbol}: "
-                            f"last={ticker.last}, bid={ticker.bid}, ask={ticker.ask}, "
-                            f"close={ticker.close}, volume={ticker.volume}, "
-                            f"modelGreeks={ticker.modelGreeks}")
-
-                # Extract Greeks
-                greeks = None
-                model_greeks = ticker.modelGreeks
-                iv = None
-                if model_greeks:
-                    greeks = Greeks(
-                        delta=model_greeks.delta if model_greeks.delta == model_greeks.delta else None,
-                        gamma=model_greeks.gamma if model_greeks.gamma == model_greeks.gamma else None,
-                        theta=model_greeks.theta if model_greeks.theta == model_greeks.theta else None,
-                        vega=model_greeks.vega if model_greeks.vega == model_greeks.vega else None,
-                    )
-                    if model_greeks.impliedVol == model_greeks.impliedVol:
-                        iv = model_greeks.impliedVol
-
-                # Extract values, checking for NaN and invalid values (-1 = no data in IBKR)
-                last_price = ticker.last if ticker.last == ticker.last and ticker.last > 0 else None
-                bid = ticker.bid if ticker.bid == ticker.bid and ticker.bid > 0 else None
-                ask = ticker.ask if ticker.ask == ticker.ask and ticker.ask > 0 else None
-                volume = int(ticker.volume) if ticker.volume == ticker.volume and ticker.volume >= 0 else None
-
-                # Try close price if no real-time data
-                if last_price is None and ticker.close == ticker.close and ticker.close > 0:
-                    last_price = ticker.close
-
-                # Debug logging for each contract
-                iv_str = f"{iv:.4f}" if iv is not None else "N/A"
-                delta_str = f"{greeks.delta:.4f}" if greeks and greeks.delta is not None else "N/A"
-                logger.debug(f"Processed quote for {contract.symbol}: last={last_price}, bid={bid}, ask={ask}, "
-                            f"vol={volume}, iv={iv_str}, delta={delta_str}")
-
-                quote = OptionQuote(
-                    contract=contract,
-                    timestamp=datetime.now(),
-                    last_price=last_price,
-                    bid=bid,
-                    ask=ask,
-                    volume=volume,
-                    open_interest=None,  # Not available in snapshot
-                    iv=iv,
-                    greeks=greeks if greeks else Greeks(),
-                    source=self.name,
-                )
-
-                # Cancel streaming subscription
-                self._ib.cancelMktData(opt)
-
-                # Apply volume filter (post-fetch)
-                if min_volume is not None and (quote.volume is None or quote.volume < min_volume):
-                    logger.debug(f"Filtered by volume: {contract.symbol} (vol={quote.volume}, min={min_volume})")
-                    filtered_by_volume += 1
-                    continue
-
-                results.append(quote)
-
-                # Rate limiting between requests
-                if request_delay > 0 and i < len(contracts) - 1:
-                    self._ib.sleep(request_delay)
-
-            except Exception as e:
-                logger.warning(f"Error fetching quote for {contract.symbol}: {e}")
-                skipped_contracts += 1
+            if not qualified_items:
                 continue
 
-        logger.info(f"Fetched {len(results)} option quotes from {len(contracts)} contracts "
-                   f"(skipped={skipped_contracts}, filtered_by_volume={filtered_by_volume})")
+            # Phase 2: Subscribe to all contracts in batch (parallel)
+            tickers: list[tuple[OptionContract, Option, any]] = []
+            for contract, opt in qualified_items:
+                ticker = self._ib.reqMktData(opt, "100,101,104,106", snapshot=False, regulatorySnapshot=False)
+                tickers.append((contract, opt, ticker))
+
+            # Phase 3: Wait once for all Greeks to populate
+            logger.debug(f"Waiting {WAIT_SECONDS}s for Greeks on {len(tickers)} contracts...")
+            for _ in range(WAIT_SECONDS):
+                self._ib.sleep(1)
+                # Check if most have Greeks
+                greeks_count = sum(1 for _, _, t in tickers if t.modelGreeks or t.bidGreeks or t.askGreeks)
+                if greeks_count >= len(tickers) * 0.8:  # 80% threshold
+                    logger.debug(f"Early exit: {greeks_count}/{len(tickers)} have Greeks")
+                    break
+
+            # Phase 4: Log Greeks status for first few contracts
+            greeks_status = []
+            for _, opt, ticker in tickers[:3]:
+                has_model = ticker.modelGreeks is not None
+                has_bid = ticker.bidGreeks is not None
+                has_ask = ticker.askGreeks is not None
+                # Also log price data to verify we're getting any data at all
+                bid = ticker.bid if ticker.bid == ticker.bid else None
+                ask = ticker.ask if ticker.ask == ticker.ask else None
+                last = ticker.last if ticker.last == ticker.last else None
+                # Check for market data errors
+                has_error = hasattr(ticker, 'marketDataType') or hasattr(ticker, 'errorCode')
+                error_info = ""
+                if hasattr(ticker, 'marketDataType'):
+                    error_info += f",mktType={ticker.marketDataType}"
+                greeks_status.append(
+                    f"{opt.localSymbol}(M={has_model},B={has_bid},A={has_ask},"
+                    f"bid={bid},ask={ask},last={last}{error_info})"
+                )
+            logger.debug(f"Ticker data: {'; '.join(greeks_status)}")
+
+            # Phase 4: Extract data from all tickers
+            for contract, opt, ticker in tickers:
+                try:
+                    # Extract Greeks
+                    greeks = None
+                    iv = None
+                    mg = ticker.modelGreeks or ticker.bidGreeks or ticker.askGreeks
+
+                    if mg and mg.delta == mg.delta:
+                        greeks = Greeks(
+                            delta=mg.delta if mg.delta == mg.delta else None,
+                            gamma=mg.gamma if mg.gamma == mg.gamma else None,
+                            theta=mg.theta if mg.theta == mg.theta else None,
+                            vega=mg.vega if mg.vega == mg.vega else None,
+                        )
+                        if mg.impliedVol == mg.impliedVol:
+                            iv = mg.impliedVol
+                        api_greeks_count += 1
+                        logger.debug(f"Have API Greeks for {contract.symbol}: delta={greeks.delta:.4f}, iv={iv:.4f}")
+                    else:
+                        # Fallback to Black-Scholes
+                        logger.debug(f"No API Greeks for {contract.symbol}, using BS fallback")
+                        bs_result = self._calculate_greeks_from_params(
+                            underlying=contract.underlying,
+                            strike=contract.strike_price,
+                            expiry=contract.expiry_date.strftime("%Y%m%d"),
+                            option_type="call" if contract.option_type == OptionType.CALL else "put",
+                            ticker=ticker
+                        )
+                        if bs_result and bs_result.get("delta") is not None:
+                            greeks = Greeks(
+                                delta=bs_result.get("delta"),
+                                gamma=bs_result.get("gamma"),
+                                theta=bs_result.get("theta"),
+                                vega=bs_result.get("vega"),
+                            )
+                            iv = bs_result.get("iv")
+                            bs_fallback_count += 1
+                        else:
+                            logger.debug(f"No Greeks for {contract.symbol}, skipping")
+                            skipped_contracts += 1
+                            continue
+
+                    # Extract price data
+                    last_price = ticker.last if ticker.last == ticker.last and ticker.last > 0 else None
+                    bid = ticker.bid if ticker.bid == ticker.bid and ticker.bid > 0 else None
+                    ask = ticker.ask if ticker.ask == ticker.ask and ticker.ask > 0 else None
+                    volume = int(ticker.volume) if ticker.volume == ticker.volume and ticker.volume >= 0 else None
+
+                    if last_price is None and ticker.close == ticker.close and ticker.close > 0:
+                        last_price = ticker.close
+
+                    # Extract Open Interest
+                    open_interest = None
+                    if contract.option_type == OptionType.PUT:
+                        oi = getattr(ticker, 'putOpenInterest', None)
+                    else:
+                        oi = getattr(ticker, 'callOpenInterest', None)
+                    if oi is not None and oi == oi and oi >= 0:
+                        open_interest = int(oi)
+
+                    quote = OptionQuote(
+                        contract=contract,
+                        timestamp=datetime.now(),
+                        last_price=last_price,
+                        bid=bid,
+                        ask=ask,
+                        volume=volume,
+                        open_interest=open_interest,
+                        iv=iv,
+                        greeks=greeks if greeks else Greeks(),
+                        source=self.name,
+                    )
+
+                    # Apply volume filter
+                    if min_volume is not None and (quote.volume is None or quote.volume < min_volume):
+                        filtered_by_volume += 1
+                        continue
+
+                    results.append(quote)
+
+                except Exception as e:
+                    logger.warning(f"Error processing {contract.symbol}: {e}")
+                    skipped_contracts += 1
+
+            # Phase 5: Cancel all subscriptions in batch
+            for _, opt, _ in tickers:
+                try:
+                    self._ib.cancelMktData(opt)
+                except Exception:
+                    pass
+
+        # Phase 6: Cancel underlying subscriptions
+        for underlying, (stock, _) in underlying_tickers.items():
+            try:
+                self._ib.cancelMktData(stock)
+                logger.debug(f"Cancelled underlying subscription: {underlying}")
+            except Exception:
+                pass
+
+        logger.info(
+            f"Fetched {len(results)} quotes from {len(contracts)} contracts "
+            f"(API Greeks: {api_greeks_count}, BS fallback: {bs_fallback_count}, "
+            f"skipped: {skipped_contracts}, filtered: {filtered_by_volume})"
+        )
         return results
 
     def get_option_quote(self, symbol: str) -> OptionQuote | None:
@@ -1051,8 +1256,8 @@ class IBKRProvider(DataProvider, AccountProvider):
             pcr_str = f"{pcr:.2f}" if pcr is not None else "N/A"
             ivr_str = f"{iv_rank:.1f}" if iv_rank is not None else "N/A"
             ivp_str = f"{iv_percentile:.1f}%" if iv_percentile is not None else "N/A"
-            logger.info(f"Volatility for {normalized}: IV={iv_str}, HV={hv_str}, "
-                       f"PCR={pcr_str}, IV Rank={ivr_str}, IV Pctl={ivp_str}")
+            logger.debug(f"Volatility for {normalized}: IV={iv_str}, HV={hv_str}, "
+                        f"PCR={pcr_str}, IV Rank={ivr_str}, IV Pctl={ivp_str}")
 
             return StockVolatility(
                 symbol=normalized,
@@ -1482,8 +1687,10 @@ class IBKRProvider(DataProvider, AccountProvider):
                 logger.warning(f"Could not qualify contract for {position.symbol}")
                 return
 
-            logger.info(f"Requesting Greeks for {position.symbol}, conId={contract.conId}, "
-                        f"secType={contract.secType}, exchange={contract.exchange}")
+            logger.debug(f"Requesting Greeks for {position.symbol}, asset_type:{position.asset_type}, "
+                         f"underlying:{position.underlying}, strike:{position.strike}, expiry:{position.expiry}, "
+                         f"option_type:{position.option_type}, conId={contract.conId}, "
+                         f"secType={contract.secType}, exchange={contract.exchange}")
 
             # Request market data with Greeks
             # Generic tick types: 100=Option Volume, 101=Open Interest, 104=Historical Volatility
@@ -1517,7 +1724,7 @@ class IBKRProvider(DataProvider, AccountProvider):
                 # Fallback: If undPrice not available from Greeks, fetch stock quote
                 if position.underlying_price is None:
                     underlying_code = position.underlying or position.symbol.split()[0]
-                    logger.info(f"undPrice not in Greeks for {position.symbol}, fetching stock quote for {underlying_code}")
+                    logger.debug(f"undPrice not in Greeks for {position.symbol}, fetching stock quote for {underlying_code}")
                     try:
                         # Convert to standard format for quote fetching
                         std_symbol = SymbolFormatter.to_standard(underlying_code)
@@ -1528,7 +1735,7 @@ class IBKRProvider(DataProvider, AccountProvider):
                                 try:
                                     if not math.isnan(stock_quote.close):
                                         position.underlying_price = stock_quote.close
-                                        logger.info(f"Got undPrice from stock quote for {position.symbol}: {position.underlying_price}")
+                                        logger.debug(f"Got undPrice from stock quote for {position.symbol}: {position.underlying_price}")
                                 except (TypeError, ValueError):
                                     pass
                             # Try bid/ask midpoint if close is nan
@@ -1537,19 +1744,20 @@ class IBKRProvider(DataProvider, AccountProvider):
                                 ask = getattr(stock_quote, '_ask', None)
                                 if bid is not None and ask is not None and bid > 0 and ask > 0:
                                     position.underlying_price = (bid + ask) / 2
-                                    logger.info(f"Got undPrice from bid/ask midpoint for {position.symbol}: {position.underlying_price}")
+                                    logger.debug(f"Got undPrice from bid/ask midpoint for {position.symbol}: {position.underlying_price}")
                     except Exception as e:
                         logger.debug(f"Could not fetch stock quote for {underlying_code}: {e}")
 
-                logger.debug(f"Fetched Greeks for {position.symbol}: delta={position.delta}, "
+
+                logger.debug(f"Fetched Greeks for {position.symbol} asset_type:{position.asset_type},  underlying:{position.underlying}, strike:{position.strike}, expiry:{position.expiry}, option_type:{position.option_type}: delta={position.delta}, "
                            f"iv={position.iv}, undPrice={position.underlying_price}")
             else:
                 # Log what we got from ticker for debugging
-                logger.warning(f"No Greeks available for {position.symbol}. "
+                logger.warning(f"No Greeks available for {position.symbol}, asset_type:{position.asset_type},  underlying:{position.underlying}, strike:{position.strike}, expiry:{position.expiry}, option_type:{position.option_type}"
                              f"Ticker: bid={ticker.bid}, ask={ticker.ask}, last={ticker.last}")
 
                 # Fallback: Calculate Greeks using Black-Scholes if we have enough data
-                logger.info(f"Attempting to calculate Greeks using Black-Scholes for {position.symbol}")
+                logger.debug(f"Attempting to calculate Greeks using Black-Scholes for {position.symbol}")
                 self._calculate_greeks_fallback(position, ticker)
 
             self._ib.cancelMktData(contract)
@@ -1588,10 +1796,10 @@ class IBKRProvider(DataProvider, AccountProvider):
                 position.iv = result.get("iv")
                 position.underlying_price = result.get("underlying_price")
 
-                logger.info(f"Calculated Greeks for {position.symbol} using Black-Scholes: "
-                           f"delta={position.delta:.4f}, gamma={position.gamma:.4f}, "
-                           f"theta={position.theta:.4f}, vega={position.vega:.4f}, "
-                           f"iv={position.iv:.4f}, underlying_price={position.underlying_price:.2f}")
+                logger.debug(f"Calculated Greeks for {position.symbol} using Black-Scholes: "
+                            f"delta={position.delta:.4f}, gamma={position.gamma:.4f}, "
+                            f"theta={position.theta:.4f}, vega={position.vega:.4f}, "
+                            f"iv={position.iv:.4f}, underlying_price={position.underlying_price:.2f}")
             else:
                 logger.warning(f"Could not calculate Greeks for {position.symbol}")
 
@@ -1708,10 +1916,10 @@ class IBKRProvider(DataProvider, AccountProvider):
                 "underlying_price": underlying_price,
             }
 
-            logger.info(f"Calculated Greeks for {underlying} using Black-Scholes: "
-                       f"delta={result['delta']:.4f}, gamma={result['gamma']:.4f}, "
-                       f"theta={result['theta']:.4f}, vega={result['vega']:.4f}, "
-                       f"iv={result['iv']:.4f}, underlying_price={result['underlying_price']:.2f}")
+            logger.debug(f"Calculated Greeks for {underlying} using Black-Scholes: "
+                        f"delta={result['delta']:.4f}, gamma={result['gamma']:.4f}, "
+                        f"theta={result['theta']:.4f}, vega={result['vega']:.4f}, "
+                        f"iv={result['iv']:.4f}, underlying_price={result['underlying_price']:.2f}")
 
             return result
 
@@ -1749,8 +1957,8 @@ class IBKRProvider(DataProvider, AccountProvider):
             # Convert option_type to IBKR right format
             right = "C" if option_type.lower() == "call" else "P"
 
-            logger.info(f"Fetching Greeks for HK option: symbol={underlying_code}, "
-                       f"expiry={expiry}, strike={strike}, right={right}")
+            logger.debug(f"Fetching Greeks for HK option: symbol={underlying_code}, "
+                        f"expiry={expiry}, strike={strike}, right={right}")
 
             # Build Contract for HK option
             # HK options: SEHK exchange, HKD currency, multiplier 500
@@ -1796,7 +2004,7 @@ class IBKRProvider(DataProvider, AccountProvider):
 
                 # Fallback: If undPrice not available from Greeks, fetch stock quote
                 if und_price is None:
-                    logger.info(f"undPrice not in Greeks, fetching stock quote for {underlying_code}")
+                    logger.debug(f"undPrice not in Greeks, fetching stock quote for {underlying_code}")
                     try:
                         # Convert to standard format for quote fetching
                         std_symbol = SymbolFormatter.to_standard(underlying_code)  # "700" → "0700.HK"
@@ -1807,7 +2015,7 @@ class IBKRProvider(DataProvider, AccountProvider):
                                 try:
                                     if not math.isnan(stock_quote.close):
                                         und_price = stock_quote.close
-                                        logger.info(f"Got undPrice from stock quote: {und_price}")
+                                        logger.debug(f"Got undPrice from stock quote: {und_price}")
                                 except (TypeError, ValueError):
                                     pass
                             # Try bid/ask midpoint if close is nan
@@ -1816,7 +2024,7 @@ class IBKRProvider(DataProvider, AccountProvider):
                                 ask = getattr(stock_quote, '_ask', None)
                                 if bid is not None and ask is not None and bid > 0 and ask > 0:
                                     und_price = (bid + ask) / 2
-                                    logger.info(f"Got undPrice from bid/ask midpoint: {und_price}")
+                                    logger.debug(f"Got undPrice from bid/ask midpoint: {und_price}")
                     except Exception as e:
                         logger.debug(f"Could not fetch stock quote for {underlying_code}: {e}")
 
@@ -1828,14 +2036,14 @@ class IBKRProvider(DataProvider, AccountProvider):
                     "iv": mg.impliedVol if mg.impliedVol == mg.impliedVol else None,
                     "underlying_price": und_price,
                 }
-                logger.info(f"Got Greeks for {underlying_code} {expiry} {right}@{strike}: "
-                           f"delta={result['delta']}, iv={result['iv']}, undPrice={und_price}")
+                logger.debug(f"Got Greeks for {underlying_code} {expiry} {right}@{strike}: "
+                            f"delta={result['delta']}, iv={result['iv']}, undPrice={und_price}")
                 return result
             else:
                 logger.warning(f"No Greeks available for HK option: {underlying_code} {expiry} {right} @ {strike}")
 
                 # Fallback: Calculate Greeks using Black-Scholes
-                logger.info(f"Attempting to calculate Greeks using Black-Scholes for HK option: {underlying_code}")
+                logger.debug(f"Attempting to calculate Greeks using Black-Scholes for HK option: {underlying_code}")
                 return self._calculate_greeks_from_params(
                     underlying=underlying_code,
                     strike=strike,

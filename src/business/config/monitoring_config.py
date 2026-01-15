@@ -18,7 +18,7 @@ Monitoring Configuration - 监控配置管理
 | Portfolio Theta     | ≥0            | (-50, 0)       | <-100             | 日 theta 收入（美元） | 减少买方头寸或增加卖方头寸            |
 | Portfolio Vega      | (-500, 500)   | (-1000, 1000)  | >1500 或 <-1500   | IV 变化 1% 的损益     | 减少 Vega 暴露 / Vega 空头过大        |
 | Portfolio Gamma     | (-30, 0)      | (-50, -30)     | <-50              | Gamma 空头风险        | Gamma 空头风险高，大幅波动时亏损加速  |
-| TGR                 | ≥0.15         | (0.05, 0.15)   | <0.05             | Theta/Gamma 效率      | 时间衰减效率不足，考虑调整持仓        |
+| TGR                 | ≥1.5          | (1.0, 1.5)     | <1.0              | 标准化 Theta/Gamma 比 | 时间衰减效率不足，考虑调整持仓        |
 | HHI                 | <0.25         | (0.25, 0.5)    | >0.5              | 集中度指数            | 分散持仓，降低单一标的风险            |
 
 ### NLV 归一化百分比指标
@@ -40,7 +40,7 @@ Monitoring Configuration - 监控配置管理
 | DTE             | ≥14 天        | 7~14 天       | <7 天         | 到期天数                | 强制平仓或展期，绝不持有进入最后一周      |
 | P&L%            | ≥50%          | 0%~50%        | <0%           | 持仓盈亏                | 无条件止损，不要抗单                      |
 | Gamma Risk%     | ≤0.5%         | 0.5%~1%       | >1%           | Gamma/Margin 百分比     | 减仓或平仓，降低 Gamma 风险敞口           |
-| TGR             | ≥0.15         | 0.08~0.15     | <0.08         | Theta/Gamma 效率        | 平仓，换到更高效的合约                    |
+| TGR             | ≥1.5          | 1.0~1.5       | <1.0          | 标准化 Theta/Gamma 比   | 平仓，换到更高效的合约                    |
 | IV/HV           | ≥1.2          | 0.8~1.2       | <0.8          | 期权定价质量            | 如盈利可提前止盈，避免继续卖出            |
 | ROC             | ≥20%          | 10%~20%       | <10%          | 资金使用效率            | 考虑平仓，寻找更高效策略                  |
 | Expected ROC    | ≥10%          | 0%~10%        | <0%           | 预期资本回报率          | 立即平仓，策略已失效                      |
@@ -210,13 +210,13 @@ class PortfolioThresholds:
 
     portfolio_tgr: ThresholdRange = field(
         default_factory=lambda: ThresholdRange(
-            green=(0.15, float("inf")),
-            yellow=(0.05, 0.15),
-            red_below=0.05,
-            hysteresis=0.01,
+            green=(1.5, float("inf")),     # 标准化 TGR ≥ 1.5
+            yellow=(1.0, 1.5),             # 1.0 ~ 1.5
+            red_below=1.0,                 # TGR < 1.0
+            hysteresis=0.1,
             alert_type="TGR_LOW",
-            red_below_message="组合 TGR 过低: {value:.3f} < {threshold}",
-            yellow_message="组合 TGR 偏低: {value:.3f}",
+            red_below_message="组合 TGR 过低: {value:.2f} < {threshold}，时间收益/波动风险比不足",
+            yellow_message="组合 TGR 偏低: {value:.2f}",
             red_below_action="时间衰减效率不足，考虑调整持仓",
             yellow_action="关注时间衰减效率",
         )
@@ -404,16 +404,17 @@ class PositionThresholds:
         )
     )
 
-    # TGR (Theta/Gamma Ratio) - Position 级使用 POSITION_TGR，与 Portfolio 级 TGR_LOW 区分
+    # TGR (Theta/Gamma Ratio) - 标准化公式：|Theta| / (|Gamma| × S² × σ_daily) × 100
+    # Position 级使用 POSITION_TGR，与 Portfolio 级 TGR_LOW 区分
     tgr: ThresholdRange = field(
         default_factory=lambda: ThresholdRange(
-            green=(0.15, float("inf")),    # TGR ≥ 0.15
-            yellow=(0.08, 0.15),           # 0.08 ~ 0.15
-            red_below=0.08,                # TGR < 0.08
-            hysteresis=0.01,
+            green=(1.5, float("inf")),     # 标准化 TGR ≥ 1.5
+            yellow=(1.0, 1.5),             # 1.0 ~ 1.5
+            red_below=1.0,                 # TGR < 1.0
+            hysteresis=0.1,
             alert_type="POSITION_TGR",     # Position 级使用单独的 AlertType
-            red_below_message="TGR 过低: {value:.3f}，风险收益比极低",
-            yellow_message="TGR 偏低: {value:.3f}",
+            red_below_message="TGR 过低: {value:.2f}，时间收益/波动风险比不足",
+            yellow_message="TGR 偏低: {value:.2f}",
             red_below_action="平仓，换到更高效的合约",
             yellow_action="关注时间衰减效率",
         )

@@ -12,45 +12,48 @@ from typing import Optional
 
 import click
 
+from src.business.config.screening_config import ScreeningConfig
 from src.business.screening.models import MarketType
 from src.business.screening.pipeline import ScreeningPipeline
+from src.business.screening.stock_pool import StockPoolManager, StockPoolError
 from src.business.notification.dispatcher import MessageDispatcher
+from src.data.providers.unified_provider import UnifiedDataProvider
 
 
 logger = logging.getLogger(__name__)
-
-
-# 默认标的列表
-DEFAULT_US_SYMBOLS = ["SPY", "QQQ", "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"]
-DEFAULT_HK_SYMBOLS = ["2800.HK", "3033.HK", "0700.HK", "9988.HK", "9618.HK"]
 
 
 @click.command()
 @click.option(
     "--market",
     "-m",
-    type=click.Choice(["us", "hk"], case_sensitive=False),
-    default="us",
-    help="市场类型：us (美股) 或 hk (港股)",
+    type=click.Choice(["us", "hk", "all"], case_sensitive=False),
+    default="all",
+    help="市场：us, hk, 或 all (默认筛选所有市场)",
 )
 @click.option(
     "--strategy",
     "-s",
-    type=click.Choice(["short_put", "covered_call"], case_sensitive=False),
-    default="short_put",
-    help="策略类型：short_put 或 covered_call",
+    type=click.Choice(["short_put", "covered_call", "all"], case_sensitive=False),
+    default="all",
+    help="策略：short_put, covered_call, 或 all (默认筛选所有策略)",
 )
 @click.option(
-    "--symbols",
+    "--symbol",
     "-S",
     multiple=True,
-    help="要筛选的标的（可多次指定）。不指定则使用默认列表",
+    help="指定标的（可多次指定）。不指定则使用股票池",
 )
 @click.option(
-    "--config",
-    "-c",
-    type=click.Path(exists=True),
-    help="筛选配置文件路径",
+    "--pool",
+    "-p",
+    type=str,
+    help="股票池名称。不指定则使用对应市场的默认池",
+)
+@click.option(
+    "--list-pools",
+    is_flag=True,
+    help="列出所有可用的股票池",
 )
 @click.option(
     "--push/--no-push",
@@ -70,32 +73,42 @@ DEFAULT_HK_SYMBOLS = ["2800.HK", "3033.HK", "0700.HK", "9988.HK", "9618.HK"]
     is_flag=True,
     help="显示详细日志",
 )
+@click.option(
+    "--skip-market-check",
+    is_flag=True,
+    help="跳过市场环境检查（调试用）",
+)
 def screen(
     market: str,
     strategy: str,
-    symbols: tuple[str, ...],
-    config: Optional[str],
+    symbol: tuple[str, ...],
+    pool: Optional[str],
+    list_pools: bool,
     push: bool,
     output: str,
     verbose: bool,
+    skip_market_check: bool,
 ) -> None:
     """运行开仓筛选
 
-    三层漏斗筛选：市场环境 → 标的 → 合约
+    默认筛选所有市场 (US+HK)、所有策略 (Short Put + Covered Call)、所有股票池。
 
     \b
     示例：
-      # 使用默认配置筛选美股
+      # 默认：筛选所有市场、所有策略、所有股票池
       optrade screen
 
-      # 筛选港股 Short Put 机会
-      optrade screen -m hk -s short_put
+      # 只筛选美股
+      optrade screen -m us
 
-      # 指定标的并推送结果
-      optrade screen -S AAPL -S MSFT --push
+      # 只筛选 Short Put 策略
+      optrade screen -s short_put
 
-      # JSON 格式输出
-      optrade screen -o json
+      # 指定单个标的
+      optrade screen -S AAPL
+
+      # 组合使用
+      optrade screen -m hk -s covered_call -S 9988.HK
     """
     # 配置日志
     log_level = logging.DEBUG if verbose else logging.INFO
@@ -104,45 +117,116 @@ def screen(
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
-    # 解析参数
-    market_type = MarketType.US if market.lower() == "us" else MarketType.HK
+    # 创建股票池管理器
+    pool_manager = StockPoolManager()
 
-    # 确定标的列表
-    if symbols:
-        symbol_list = list(symbols)
-    else:
-        symbol_list = DEFAULT_US_SYMBOLS if market_type == MarketType.US else DEFAULT_HK_SYMBOLS
+    # 处理 --list-pools 选项
+    if list_pools:
+        _list_available_pools(pool_manager)
+        sys.exit(0)
 
-    click.echo(f"📊 开始筛选 - {market.upper()} 市场 | {strategy} 策略")
-    click.echo(f"📋 标的列表: {', '.join(symbol_list)}")
-    click.echo("-" * 50)
+    # 解析市场和策略列表
+    markets = ["us", "hk"] if market.lower() == "all" else [market.lower()]
+    strategies = ["short_put", "covered_call"] if strategy.lower() == "all" else [strategy.lower()]
+
+    click.echo("=" * 60)
+    click.echo(f"📊 开仓筛选")
+    click.echo(f"   市场: {', '.join(m.upper() for m in markets)}")
+    click.echo(f"   策略: {', '.join(strategies)}")
+    if skip_market_check:
+        click.echo("   ⏭️  跳过市场环境检查")
+    click.echo("=" * 60)
+
+    # 创建 Provider（共享）
+    provider = UnifiedDataProvider()
+
+    all_results = []
+    total_opportunities = 0
 
     try:
-        # 创建筛选管道
-        pipeline = ScreeningPipeline(config_path=config)
+        for mkt in markets:
+            market_type = MarketType.US if mkt == "us" else MarketType.HK
 
-        # 运行筛选
-        result = pipeline.run(
-            symbols=symbol_list,
-            market_type=market_type,
-            strategy_type=strategy,
-        )
+            # 确定标的列表
+            if symbol:
+                # 用户指定了标的，按市场过滤
+                symbol_list = [s for s in symbol if _is_market_symbol(s, mkt)]
+                if not symbol_list:
+                    continue
+                pool_name = None
+            elif pool:
+                try:
+                    symbol_list = pool_manager.load_pool(pool)
+                    pool_name = pool
+                except StockPoolError as e:
+                    click.echo(f"❌ 错误: {e}", err=True)
+                    continue
+            else:
+                # 使用默认股票池
+                pool_name = pool_manager.get_default_pool_name(market_type)
+                symbol_list = pool_manager.get_default_pool(market_type)
 
-        # 输出结果
+            for strat in strategies:
+                click.echo()
+                click.echo("-" * 60)
+                click.echo(f"🔍 {mkt.upper()} | {strat} | {len(symbol_list)} 只标的")
+                click.echo("-" * 60)
+
+                # 加载策略配置
+                screening_config = ScreeningConfig.load(strat)
+
+                # 创建筛选管道
+                pipeline = ScreeningPipeline(screening_config, provider)
+
+                # 运行筛选
+                result = pipeline.run(
+                    symbols=symbol_list,
+                    market_type=market_type,
+                    strategy_type=strat,
+                    skip_market_check=skip_market_check,
+                )
+
+                # 统计
+                qualified = [o for o in result.opportunities if o.passed] if result.opportunities else []
+                total_opportunities += len(qualified)
+                all_results.append({
+                    "market": mkt,
+                    "strategy": strat,
+                    "result": result,
+                    "qualified": qualified,
+                })
+
+                # 简要输出
+                if qualified:
+                    click.echo(f"   ✅ 发现 {len(qualified)} 个机会")
+                    for opp in qualified[:3]:
+                        click.echo(f"      - {opp.symbol} {opp.option_type.upper()}{opp.strike:.0f} "
+                                   f"DTE={opp.dte} Expected ROC={opp.expected_roc:.1%}" if opp.expected_roc else "")
+                    if len(qualified) > 3:
+                        click.echo(f"      ... 还有 {len(qualified) - 3} 个")
+                else:
+                    reason = result.rejection_reason or "无符合条件的合约"
+                    click.echo(f"   ❌ {reason}")
+
+        # 汇总输出
+        click.echo()
+        click.echo("=" * 60)
+        click.echo(f"📊 筛选完成 - 共发现 {total_opportunities} 个机会")
+        click.echo("=" * 60)
+
         if output == "json":
-            _output_json(result)
-        else:
-            _output_text(result)
+            _output_json_all(all_results)
+        elif total_opportunities > 0:
+            _output_text_summary(all_results)
 
         # 推送结果
-        if push:
-            _push_result(result)
+        if push and total_opportunities > 0:
+            for item in all_results:
+                if item["qualified"]:
+                    _push_result(item["result"])
 
         # 设置退出码
-        if result.passed and result.opportunities:
-            sys.exit(0)  # 有机会
-        else:
-            sys.exit(1)  # 无机会
+        sys.exit(0 if total_opportunities > 0 else 1)
 
     except Exception as e:
         logger.exception("筛选过程出错")
@@ -150,52 +234,166 @@ def screen(
         sys.exit(2)
 
 
+def _is_market_symbol(symbol: str, market: str) -> bool:
+    """判断标的是否属于指定市场"""
+    if market == "hk":
+        return symbol.endswith(".HK")
+    else:  # us
+        return not symbol.endswith(".HK")
+
+
 def _output_text(result) -> None:
     """文本格式输出"""
     click.echo()
+    click.echo("=" * 80)
+    click.echo(" 📊 筛选结果")
+    click.echo("=" * 80)
 
-    # 市场状态
+    # Layer 1: 市场状态
+    click.echo()
+    click.echo("-" * 40)
+    click.echo(" Layer 1: 市场环境")
+    click.echo("-" * 40)
     if result.market_status:
         ms = result.market_status
-        click.echo("📈 市场状态:")
+        status_icon = "✅" if ms.is_favorable else "❌"
+        click.echo(f"   状态: {status_icon} {'有利' if ms.is_favorable else '不利'}")
         if ms.volatility_index:
-            click.echo(f"   VIX: {ms.volatility_index.value:.1f}")
+            vi = ms.volatility_index
+            percentile_str = f" (百分位 {vi.percentile:.0%})" if vi.percentile else ""
+            click.echo(f"   波动率: {vi.symbol}={vi.value:.1f}{percentile_str}")
         click.echo(f"   趋势: {ms.overall_trend.value}")
-        click.echo()
+        if ms.term_structure:
+            ts = ms.term_structure
+            structure = "Contango" if ts.is_contango else "Backwardation"
+            click.echo(f"   期限结构: {structure} (ratio={ts.ratio:.3f})")
+        if ms.unfavorable_reasons:
+            click.echo("   不利因素:")
+            for reason in ms.unfavorable_reasons:
+                click.echo(f"     - {reason}")
+    else:
+        click.echo("   ⏭️  已跳过")
 
-    # 筛选统计
-    click.echo(f"📊 筛选统计:")
-    click.echo(f"   扫描标的: {result.scanned_underlyings}")
-    click.echo(f"   通过标的: {result.passed_underlyings}")
-    click.echo(f"   发现机会: {len(result.opportunities)}")
+    # Layer 2: 标的评估
     click.echo()
+    click.echo("-" * 40)
+    click.echo(" Layer 2: 标的评估")
+    click.echo("-" * 40)
+    click.echo(f"   扫描: {result.scanned_underlyings} 个")
+    click.echo(f"   通过: {result.passed_underlyings} 个 ({result.passed_underlyings/max(1,result.scanned_underlyings)*100:.1f}%)")
+
+    # 显示标的评分详情
+    if result.underlying_scores:
+        passed = [s for s in result.underlying_scores if s.passed]
+        failed = [s for s in result.underlying_scores if not s.passed]
+
+        if failed:
+            click.echo("   淘汰标的:")
+            for s in failed[:5]:
+                reasons = ", ".join(s.disqualify_reasons) if s.disqualify_reasons else "未知原因"
+                click.echo(f"     - {s.symbol}: {reasons}")
+            if len(failed) > 5:
+                click.echo(f"     ... 还有 {len(failed)-5} 个")
+
+        if passed:
+            click.echo("   通过标的 (按评分排序):")
+            sorted_passed = sorted(passed, key=lambda x: x.composite_score, reverse=True)
+            for i, s in enumerate(sorted_passed[:5], 1):
+                iv_rank_str = f"IV Rank={s.iv_rank:.0f}%" if s.iv_rank else "IV=N/A"
+                rsi_str = f"RSI={s.technical.rsi:.0f}" if s.technical and s.technical.rsi else ""
+                click.echo(f"     {i}. {s.symbol} (score={s.composite_score:.1f}) - {iv_rank_str} {rsi_str}")
+
+    # Layer 3: 合约筛选
+    click.echo()
+    click.echo("-" * 40)
+    click.echo(" Layer 3: 合约筛选")
+    click.echo("-" * 40)
+
+    qualified = [o for o in result.opportunities if o.passed] if result.opportunities else []
+    total_opps = len(result.opportunities) if result.opportunities else 0
+
+    click.echo(f"   评估: {result.total_contracts_evaluated} 个合约")
+    click.echo(f"   合格: {len(qualified)} 个")
 
     # 机会列表
-    if result.opportunities:
-        click.echo("✅ 开仓机会:")
-        click.echo("-" * 80)
-        click.echo(f"{'标的':<10} {'行权价':<10} {'到期日':<12} {'DTE':<6} {'SAS':<8} {'Delta':<8} {'Sharpe':<8}")
+    if qualified:
+        click.echo()
+        click.echo("=" * 80)
+        click.echo(" ✅ 开仓机会 (按 ROC 排序)")
+        click.echo("=" * 80)
+        click.echo(f"{'标的':<8} {'到期':<8} {'类型':<6} {'行权价':<10} {'DTE':<5} {'OTM%':<7} {'Delta':<7} {'ROC':<8} {'SR':<6}")
         click.echo("-" * 80)
 
-        for opp in result.opportunities:
+        # 按 expected_roc 排序
+        sorted_opps = sorted(qualified, key=lambda x: x.expected_roc or 0, reverse=True)
+
+        for opp in sorted_opps[:15]:
+            exp_str = opp.expiry[5:] if opp.expiry else "N/A"
+            opt_type = "PUT" if opp.option_type == "put" else "CALL"
+            otm_str = f"{opp.otm_percent*100:.1f}%" if opp.otm_percent else "N/A"
+            delta_str = f"{opp.delta:.2f}" if opp.delta else "N/A"
+            roc_str = f"{opp.expected_roc*100:.1f}%" if opp.expected_roc else "N/A"
+            sr_str = f"{opp.sharpe_ratio_annual:.2f}" if opp.sharpe_ratio_annual else "N/A"
+
             click.echo(
-                f"{opp.symbol:<10} "
-                f"{opp.strike:<10.2f} "
-                f"{opp.expiry:<12} "
-                f"{opp.dte:<6} "
-                f"{(opp.sas or 0):<8.2f} "
-                f"{(opp.delta or 0):<8.3f} "
-                f"{(opp.sharpe_ratio or 0):<8.2f}"
+                f"{opp.symbol:<8} "
+                f"{exp_str:<8} "
+                f"{opt_type:<6} "
+                f"{opp.strike:<10.0f} "
+                f"{opp.dte:<5} "
+                f"{otm_str:<7} "
+                f"{delta_str:<7} "
+                f"{roc_str:<8} "
+                f"{sr_str:<6}"
             )
+
+            # 显示警告
+            if opp.warnings:
+                click.echo(f"         ⚠️ {opp.warnings[0]}")
+
+        if len(qualified) > 15:
+            click.echo(f"... 还有 {len(qualified)-15} 个机会")
+
         click.echo("-" * 80)
     else:
+        click.echo()
         click.echo("❌ 未发现符合条件的开仓机会")
         if result.rejection_reason:
             click.echo(f"   原因: {result.rejection_reason}")
 
+        # 显示淘汰原因统计
+        if result.opportunities:
+            rejected = [o for o in result.opportunities if not o.passed]
+            if rejected:
+                # 统计淘汰原因
+                reason_counts: dict[str, int] = {}
+                for opp in rejected:
+                    for reason in opp.disqualify_reasons:
+                        # 提取原因类别 (如 "[P1] Delta" -> "Delta")
+                        if "]" in reason:
+                            category = reason.split("]")[1].strip().split("=")[0].split(" ")[0]
+                        else:
+                            category = reason.split("=")[0].strip()
+                        reason_counts[category] = reason_counts.get(category, 0) + 1
+
+                click.echo(f"   淘汰原因分布 ({len(rejected)} 个合约):")
+                for reason, count in sorted(reason_counts.items(), key=lambda x: -x[1])[:8]:
+                    click.echo(f"     - {reason}: {count}")
+
+                # 显示几个具体例子
+                click.echo("   示例:")
+                for o in rejected[:3]:
+                    if o.disqualify_reasons:
+                        click.echo(f"     - {o.symbol} {o.option_type.upper()}{o.strike:.0f}: {o.disqualify_reasons[0]}")
+
+    click.echo()
+
 
 def _output_json(result) -> None:
     """JSON 格式输出"""
+    # 过滤出通过的机会
+    qualified = [o for o in result.opportunities if o.passed] if result.opportunities else []
+
     output_data = {
         "timestamp": datetime.now().isoformat(),
         "passed": result.passed,
@@ -203,7 +401,8 @@ def _output_json(result) -> None:
         "statistics": {
             "scanned_underlyings": result.scanned_underlyings,
             "passed_underlyings": result.passed_underlyings,
-            "opportunities_count": len(result.opportunities),
+            "total_evaluated": result.total_contracts_evaluated,
+            "opportunities_count": len(qualified),
         },
         "opportunities": [],
         "rejection_reason": result.rejection_reason,
@@ -221,8 +420,8 @@ def _output_json(result) -> None:
             } if ms.term_structure else None,
         }
 
-    # 机会列表
-    for opp in result.opportunities:
+    # 机会列表（只包含通过的）
+    for opp in qualified:
         output_data["opportunities"].append({
             "symbol": opp.symbol,
             "strike": opp.strike,
@@ -231,10 +430,169 @@ def _output_json(result) -> None:
             "sas": opp.sas,
             "delta": opp.delta,
             "sharpe_ratio": opp.sharpe_ratio,
-            "annual_return": opp.annual_return,
+            "expected_roc": opp.expected_roc,
         })
 
     click.echo(json.dumps(output_data, indent=2, ensure_ascii=False))
+
+
+def _output_json_all(all_results: list[dict]) -> None:
+    """JSON 格式输出所有结果"""
+    output_data = {
+        "timestamp": datetime.now().isoformat(),
+        "results": [],
+    }
+
+    for item in all_results:
+        result = item["result"]
+        qualified = item["qualified"]
+        output_data["results"].append({
+            "market": item["market"],
+            "strategy": item["strategy"],
+            "opportunities_count": len(qualified),
+            "opportunities": [
+                _opportunity_to_dict(opp)
+                for opp in qualified
+            ],
+        })
+
+    click.echo(json.dumps(output_data, indent=2, ensure_ascii=False))
+
+
+def _opportunity_to_dict(opp) -> dict:
+    """将 ContractOpportunity 转换为字典"""
+    return {
+        # 基本信息
+        "symbol": opp.symbol,
+        "strike": opp.strike,
+        "expiry": opp.expiry,
+        "dte": opp.dte,
+        "option_type": opp.option_type,
+        # 策略指标 (按重要性排序)
+        "strategy_metrics": {
+            "recommended_position": opp.recommended_position,
+            "expected_roc": opp.expected_roc,
+            "sharpe_ratio_annual": opp.sharpe_ratio_annual,
+            "premium_rate": opp.premium_rate,
+            "win_probability": opp.win_probability,
+            "annual_roc": opp.annual_roc,
+            "tgr": opp.tgr,
+            "sas": opp.sas,
+            "prei": opp.prei,
+            "kelly_fraction": opp.kelly_fraction,
+            "sharpe_ratio": opp.sharpe_ratio,
+            "expected_return": opp.expected_return,
+            "return_std": opp.return_std,
+            "theta_premium_ratio": opp.theta_premium_ratio,
+        },
+        # 合约行情
+        "market_data": {
+            "underlying_price": opp.underlying_price,
+            "premium": opp.mid_price,
+            "moneyness": opp.moneyness,
+            "otm_percent": opp.otm_percent,
+            "bid": opp.bid,
+            "ask": opp.ask,
+            "mid_price": opp.mid_price,
+            "volume": opp.volume,
+            "open_interest": opp.open_interest,
+            "iv": opp.iv,
+        },
+        # Greeks
+        "greeks": {
+            "delta": opp.delta,
+            "gamma": opp.gamma,
+            "theta": opp.theta,
+            "vega": opp.vega,
+        },
+        # 警告
+        "warnings": opp.warnings,
+    }
+
+
+def _output_text_summary(all_results: list[dict]) -> None:
+    """文本格式汇总输出"""
+    click.echo()
+    click.echo("=" * 90)
+    click.echo(" ✅ 开仓机会汇总")
+    click.echo("=" * 90)
+
+    for item in all_results:
+        qualified = item["qualified"]
+        if not qualified:
+            continue
+
+        click.echo()
+        click.echo(f"📌 {item['market'].upper()} | {item['strategy']}")
+        click.echo("=" * 90)
+
+        # 按 ROC 排序
+        sorted_opps = sorted(qualified, key=lambda x: x.expected_roc or 0, reverse=True)
+
+        for i, opp in enumerate(sorted_opps[:10], 1):
+            _print_opportunity_card(opp, i)
+
+        if len(qualified) > 10:
+            click.echo(f"\n... 还有 {len(qualified) - 10} 个机会")
+
+    click.echo()
+
+
+def _print_opportunity_card(opp, index: int) -> None:
+    """打印单个机会的详细卡片"""
+    opt_type = "CALL" if opp.option_type == "call" else "PUT"
+    exp_str = opp.expiry if opp.expiry else "N/A"
+
+    # 标题行
+    click.echo()
+    click.echo(f"┌─ #{index} {opp.symbol} {opt_type} {opp.strike:.0f} @ {exp_str} (DTE={opp.dte})")
+    click.echo("├" + "─" * 89)
+
+    # 策略指标行 (重要的放前面)
+    pos_str = f"{opp.recommended_position:.2f}" if opp.recommended_position else "N/A"
+    roc_str = f"{opp.expected_roc:.1%}" if opp.expected_roc else "N/A"
+    sr_str = f"{opp.sharpe_ratio_annual:.2f}" if opp.sharpe_ratio_annual else "N/A"
+    rate_str = f"{opp.premium_rate:.2%}" if opp.premium_rate else "N/A"
+    win_str = f"{opp.win_probability:.1%}" if opp.win_probability else "N/A"
+    annual_roc_str = f"{opp.annual_roc:.1%}" if opp.annual_roc else "N/A"
+
+    click.echo(f"│ 策略: Pos={pos_str}  ExpROC={roc_str}  SR={sr_str}  Rate={rate_str}  WinP={win_str}  AnnROC={annual_roc_str}")
+
+    # 其他策略指标
+    tgr_str = f"{opp.tgr:.2f}" if opp.tgr else "N/A"
+    sas_str = f"{opp.sas:.1f}" if opp.sas else "N/A"
+    prei_str = f"{opp.prei:.1f}" if opp.prei else "N/A"
+    kelly_str = f"{opp.kelly_fraction:.2f}" if opp.kelly_fraction else "N/A"
+    tp_ratio_str = f"{opp.theta_premium_ratio:.3f}" if opp.theta_premium_ratio else "N/A"
+
+    click.echo(f"│ 指标: TGR={tgr_str}  SAS={sas_str}  PREI={prei_str}  Kelly={kelly_str}  Θ/P={tp_ratio_str}")
+
+    # 合约行情
+    price_str = f"{opp.underlying_price:.2f}" if opp.underlying_price else "N/A"
+    premium_str = f"{opp.mid_price:.2f}" if opp.mid_price else "N/A"
+    moneyness_str = f"{opp.moneyness:.2%}" if opp.moneyness else "N/A"
+    bid_str = f"{opp.bid:.2f}" if opp.bid else "N/A"
+    ask_str = f"{opp.ask:.2f}" if opp.ask else "N/A"
+    vol_str = f"{opp.volume}" if opp.volume else "N/A"
+    iv_str = f"{opp.iv:.1%}" if opp.iv else "N/A"
+
+    click.echo(f"│ 行情: S={price_str}  Premium={premium_str}  Moneyness={moneyness_str}  Bid/Ask={bid_str}/{ask_str}  Vol={vol_str}  IV={iv_str}")
+
+    # Greeks
+    delta_str = f"{opp.delta:.3f}" if opp.delta else "N/A"
+    gamma_str = f"{opp.gamma:.4f}" if opp.gamma else "N/A"
+    theta_str = f"{opp.theta:.3f}" if opp.theta else "N/A"
+    vega_str = f"{opp.vega:.3f}" if opp.vega else "N/A"
+    oi_str = f"{opp.open_interest}" if opp.open_interest else "N/A"
+    otm_str = f"{opp.otm_percent:.1%}" if opp.otm_percent else "N/A"
+
+    click.echo(f"│ Greeks: Δ={delta_str}  Γ={gamma_str}  Θ={theta_str}  V={vega_str}  OI={oi_str}  OTM={otm_str}")
+
+    # 警告信息
+    if opp.warnings:
+        click.echo(f"│ ⚠️  {opp.warnings[0]}")
+
+    click.echo("└" + "─" * 89)
 
 
 def _push_result(result) -> None:
@@ -253,3 +611,34 @@ def _push_result(result) -> None:
 
     except Exception as e:
         click.echo(f"❌ 推送出错: {e}", err=True)
+
+
+def _list_available_pools(pool_manager: StockPoolManager) -> None:
+    """列出所有可用的股票池"""
+    click.echo("📦 可用股票池:")
+    click.echo("-" * 60)
+
+    # 美股池
+    click.echo("\n🇺🇸 美股 (US):")
+    us_pools = pool_manager.list_pools_by_market(MarketType.US)
+    for pool_name in us_pools:
+        try:
+            info = pool_manager.get_pool_info(pool_name)
+            default_marker = " (默认)" if pool_name == pool_manager.get_default_pool_name(MarketType.US) else ""
+            click.echo(f"   {pool_name:<20} - {info['count']:>3} 只 | {info['description']}{default_marker}")
+        except StockPoolError:
+            pass
+
+    # 港股池
+    click.echo("\n🇭🇰 港股 (HK):")
+    hk_pools = pool_manager.list_pools_by_market(MarketType.HK)
+    for pool_name in hk_pools:
+        try:
+            info = pool_manager.get_pool_info(pool_name)
+            default_marker = " (默认)" if pool_name == pool_manager.get_default_pool_name(MarketType.HK) else ""
+            click.echo(f"   {pool_name:<20} - {info['count']:>3} 只 | {info['description']}{default_marker}")
+        except StockPoolError:
+            pass
+
+    click.echo("\n" + "-" * 60)
+    click.echo("使用方式: optrade screen --pool <pool_name>")

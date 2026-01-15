@@ -1,5 +1,8 @@
-## ADDED Requirements
+# position-monitor-core Specification
 
+## Purpose
+TBD - created by archiving change implement-position-monitor. Update Purpose after archive.
+## Requirements
 ### Requirement: Data Bridge for Position Conversion
 
 系统 SHALL 实现数据转换桥接器，将账户持仓转换为监控输入数据。
@@ -120,8 +123,6 @@
   - 策略分类和指标详情
   - 数据获取日志
 
-## MODIFIED Requirements
-
 ### Requirement: PositionData Model Extension
 
 系统 SHALL 扩展 `PositionData` 模型，添加策略指标字段以支持增强监控。
@@ -145,3 +146,4 @@
   - `iv_hv_ratio: float | None` - IV/HV 比值
   - `volatility_score: float | None` - 波动率评分
   - `fundamental_score: float | None` - 基本面评分
+

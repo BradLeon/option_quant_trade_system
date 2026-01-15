@@ -25,7 +25,7 @@ class USMarketConfig:
 
     vix_symbol: str = "^VIX"
     vix_range: tuple[float, float] = (15.0, 28.0)
-    vix_percentile_range: tuple[float, float] = (0.3, 0.8)
+    vix_percentile_range: tuple[float, float] = (0.2, 0.8)
     vix3m_symbol: str = "^VIX3M"
     term_structure_threshold: float = 0.9
     trend_indices: list[TrendIndexConfig] = field(default_factory=list)
@@ -45,12 +45,23 @@ class USMarketConfig:
 class HKMarketConfig:
     """港股市场配置"""
 
+    # VHSI (恒生波动率指数) 配置 - 通过 Yahoo Finance 获取
+    vhsi_symbol: str = "^HSIL"  # Yahoo Finance 代码
+    vhsi_range: tuple[float, float] = (18.0, 32.0)
+    vhsi_percentile_range: tuple[float, float] = (0.2, 0.8)  # VHSI 分布较窄，放宽低位阈值
+
+    # 备选: 2800.HK IV (需要 IBKR 连接)
     volatility_source: str = "2800.HK"
     iv_calculation: str = "atm_weighted"
     iv_range: tuple[float, float] = (18.0, 32.0)
     iv_percentile_range: tuple[float, float] = (0.3, 0.8)
+
+    # 趋势指数配置
     trend_indices: list[TrendIndexConfig] = field(default_factory=list)
     trend_required: str = "bullish_or_neutral"
+
+    # 宏观事件检查 (FOMC 对全球市场有影响)
+    check_us_macro_events: bool = True
 
     def __post_init__(self) -> None:
         if not self.trend_indices:
@@ -61,11 +72,23 @@ class HKMarketConfig:
 
 
 @dataclass
+class MacroEventConfig:
+    """宏观事件配置"""
+
+    enabled: bool = True
+    blackout_days: int = 2  # 事件前禁止开仓天数
+    blackout_events: list[str] = field(
+        default_factory=lambda: ["FOMC", "CPI", "NFP"]
+    )  # 需要回避的事件类型
+
+
+@dataclass
 class MarketFilterConfig:
     """市场过滤器配置"""
 
     us_market: USMarketConfig = field(default_factory=USMarketConfig)
     hk_market: HKMarketConfig = field(default_factory=HKMarketConfig)
+    macro_events: MacroEventConfig = field(default_factory=MacroEventConfig)
 
 
 @dataclass
@@ -84,28 +107,42 @@ class TechnicalConfig:
 class FundamentalConfig:
     """基本面配置"""
 
-    enabled: bool = False
+    enabled: bool = True  # 默认启用基本面检查
     max_pe_percentile: float = 0.7
     min_recommendation: str = "hold"
+
+
+@dataclass
+class EventCalendarConfig:
+    """事件日历配置"""
+
+    enabled: bool = True
+    min_days_to_earnings: int = 7  # 距财报最小天数
+    min_days_to_ex_dividend: int = 7  # 距除息日最小天数（仅 Covered Call）
+    allow_earnings_if_before_expiry: bool = True  # 允许合约在财报前到期
 
 
 @dataclass
 class UnderlyingFilterConfig:
     """标的过滤器配置"""
 
-    min_iv_rank: float = 50.0
+    min_iv_rank: float = 30.0  # P2: 从 50% 降低到 30%，只警告不阻塞
     max_iv_hv_ratio: float = 2.0
     min_iv_hv_ratio: float = 0.8
     technical: TechnicalConfig = field(default_factory=TechnicalConfig)
     fundamental: FundamentalConfig = field(default_factory=FundamentalConfig)
+    event_calendar: EventCalendarConfig = field(default_factory=EventCalendarConfig)
 
 
 @dataclass
 class LiquidityConfig:
     """流动性配置"""
 
+    # P1: 目标合约 Bid-Ask Spread
     max_bid_ask_spread: float = 0.10
+    # P1: Open Interest
     min_open_interest: int = 100
+    # P3: Volume Today
     min_volume: int = 10
 
 
@@ -113,22 +150,46 @@ class LiquidityConfig:
 class MetricsConfig:
     """指标配置"""
 
-    min_sharpe_ratio: float = 1.0
+    # P1: 年化夏普比率 (SR_annual = SR × √(365/DTE))
+    min_sharpe_ratio: float = 0.5
+    # P2: 策略吸引力评分
     min_sas: float = 50.0
+    # P2: 风险暴露指数 (越低越好)
     max_prei: float = 75.0
-    min_tgr: float = 0.05
+    # P1: Theta/Gamma 比率（标准化公式：|Theta| / (|Gamma| × S² × σ_daily) × 100）
+    min_tgr: float = 0.5
+    # P3: Kelly 仓位上限
     max_kelly_fraction: float = 0.25
+    # P0: 期望收益率必须足够高
+    min_expected_roc: float = 0.10
+    # P2: 年化收益率
+    min_annual_roc: float = 0.15
+    # P3: 胜率
+    min_win_probability: float = 0.65
+    # P3: Theta/Premium 比率 (每天)
+    min_theta_premium_ratio: float = 0.01
+    # P1: 费率 (Premium / K × 100%)
+    min_premium_rate: float = 0.01
 
 
 @dataclass
 class ContractFilterConfig:
-    """合约过滤器配置"""
+    """合约过滤器配置
 
-    dte_range: tuple[int, int] = (25, 45)
-    optimal_dte_range: tuple[int, int] = (30, 35)
-    delta_range: tuple[float, float] = (-0.35, -0.15)
-    optimal_delta_range: tuple[float, float] = (-0.25, -0.20)
+    统一配置适用于 short_put 和 covered_call 策略。
+    """
+
+    # P1: DTE 范围（港股期权到期日稀疏，使用宽范围）
+    dte_range: tuple[int, int] = (14, 60)
+    optimal_dte_range: tuple[int, int] = (25, 45)
+    # P1: |Delta| 范围（绝对值，覆盖两种策略）
+    delta_range: tuple[float, float] = (0.10, 0.40)
+    optimal_delta_range: tuple[float, float] = (0.20, 0.30)
+    # P2: OTM 百分比范围
+    otm_range: tuple[float, float] = (0.05, 0.20)
+    # 流动性配置
     liquidity: LiquidityConfig = field(default_factory=LiquidityConfig)
+    # 指标配置
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
 
 
@@ -137,7 +198,7 @@ class OutputConfig:
     """输出配置"""
 
     max_opportunities: int = 10
-    sort_by: str = "sas"
+    sort_by: str = "expected_roc"
     sort_order: str = "desc"
 
 
@@ -224,8 +285,8 @@ class ScreeningConfig:
             config.contract_filter = ContractFilterConfig(
                 dte_range=tuple(cf.get("dte_range", [25, 45])),
                 optimal_dte_range=tuple(cf.get("optimal_dte_range", [30, 35])),
-                delta_range=tuple(cf.get("delta_range", [-0.35, -0.15])),
-                optimal_delta_range=tuple(cf.get("optimal_delta_range", [-0.25, -0.20])),
+                delta_range=tuple(cf.get("delta_range", [0.15, 0.35])),
+                optimal_delta_range=tuple(cf.get("optimal_delta_range", [0.20, 0.25])),
                 liquidity=LiquidityConfig(
                     max_bid_ask_spread=liq.get("max_bid_ask_spread", 0.10),
                     min_open_interest=liq.get("min_open_interest", 100),
@@ -235,7 +296,7 @@ class ScreeningConfig:
                     min_sharpe_ratio=met.get("min_sharpe_ratio", 1.0),
                     min_sas=met.get("min_sas", 50),
                     max_prei=met.get("max_prei", 75),
-                    min_tgr=met.get("min_tgr", 0.05),
+                    min_tgr=met.get("min_tgr", 1.0),
                     max_kelly_fraction=met.get("max_kelly_fraction", 0.25),
                 ),
             )

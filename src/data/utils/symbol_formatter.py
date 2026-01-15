@@ -11,15 +11,8 @@ Symbol Formats:
 """
 
 from dataclasses import dataclass
-from enum import Enum
 
-
-class Market(Enum):
-    """Market type enumeration."""
-
-    US = "US"
-    HK = "HK"
-    UNKNOWN = "UNKNOWN"
+from src.data.models.enums import Market
 
 
 @dataclass

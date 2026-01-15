@@ -124,39 +124,64 @@ def calc_prei(
 
 
 def calc_tgr(position: Position) -> float | None:
-    """Calculate Theta/Gamma Ratio (TGR) for a single position.
+    """Calculate standardized Theta/Gamma Ratio (TGR) for a single position.
 
-    TGR measures the ratio of daily time decay income to gamma risk.
-    Higher TGR indicates more favorable risk/reward for theta strategies.
+    Standardized TGR normalizes for stock price and volatility:
+        TGR = |Theta| / (|Gamma| × S² × σ_daily) × 100
+
+    Where:
+        - S = underlying_price (spot price)
+        - σ_daily = IV / √252 (daily volatility)
+        - Gamma × S² = "Gamma Dollar" (normalizes gamma across different stock prices)
 
     Physical meaning:
-    - Theta is daily income from time decay (negative value = you earn)
-    - Gamma is the rate of delta change (convexity risk)
-    - High TGR = more theta income per unit of gamma risk
-    - Typical target: TGR > 2-3 for income strategies
+    - Theta is daily income from time decay
+    - Gamma Dollar is the dollar-normalized gamma risk
+    - σ_daily accounts for volatility level
+    - High TGR = more theta income per unit of volatility-adjusted gamma risk
+    - Target: TGR > 1.0 for good theta strategies
 
     Args:
-        position: Position object with theta and gamma.
+        position: Position object with theta, gamma, underlying_price, and iv.
 
     Returns:
-        TGR value. Higher is better for theta strategies.
-        Returns None if gamma is zero or data is missing.
+        Standardized TGR value. Higher is better for theta strategies.
+        Returns None if required data is missing.
+        Falls back to simple TGR (|theta|/|gamma|) if spot_price or iv unavailable.
 
     Example:
         >>> from src.engine.models.position import Position
-        >>> pos = Position(symbol="AAPL", quantity=1, theta=-0.05, gamma=0.01)
+        >>> from src.data.models.option import Greeks
+        >>> pos = Position(
+        ...     symbol="AAPL",
+        ...     quantity=1,
+        ...     greeks=Greeks(theta=-0.05, gamma=0.01),
+        ...     underlying_price=150.0,
+        ...     iv=0.30,
+        ... )
         >>> calc_tgr(pos)
-        5.0
+        1.85  # Good theta strategy
     """
     theta = position.theta
     gamma = position.gamma
+    spot_price = position.underlying_price
+    iv = position.iv
 
-    if gamma is None or gamma == 0:
-        return None
-    if theta is None:
+    if gamma is None or gamma == 0 or theta is None:
         return None
 
-    return abs(theta) / abs(gamma)
+    # Fall back to simple TGR if spot_price or iv unavailable (backward compatibility)
+    if spot_price is None or iv is None or spot_price <= 0 or iv <= 0:
+        return abs(theta) / abs(gamma)
+
+    # Standardized TGR
+    sigma_daily = iv / math.sqrt(252)
+    gamma_dollar_vol = abs(gamma) * (spot_price**2) * sigma_daily
+
+    if gamma_dollar_vol == 0:
+        return None
+
+    return (abs(theta) / gamma_dollar_vol) * 100
 
 
 # ============================================================================
