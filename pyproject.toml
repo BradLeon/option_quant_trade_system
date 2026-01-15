@@ -46,18 +46,8 @@ dependencies = [
 optrade = "src.business.cli.main:cli"
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=7.0.0",
-    "pytest-cov>=4.0.0",
-    "pytest-mock>=3.10.0",
-    "black>=23.0.0",
-    "isort>=5.12.0",
-    "mypy>=1.0.0",
-    "ruff>=0.1.0",
-]
-quantconnect = [
-    "QuantConnect>=2.5",
-]
+# QuantConnect 在 PyPI 上版本不兼容，需通过其他方式安装
+# quantconnect = ["QuantConnect>=2.5"]
 
 [project.urls]
 Homepage = "https://github.com/BradLeon/option_quant_trade_system"
@@ -101,3 +91,14 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-v --cov=src --cov-report=term-missing"
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-mock>=3.10.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "mypy>=1.0.0",
+    "ruff>=0.1.0",
+]
