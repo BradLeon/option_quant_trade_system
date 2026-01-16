@@ -248,6 +248,16 @@ class ShortPutStrategy(OptionStrategy):
             10% × Strike Price
         )
 
+        underlying_price = 54.49
+        put_price = 1.44
+        strike_price = 51
+        OTM = 54.49 - 51 = 3.49
+        
+        Margin = 1.44 + Max(0.20 × 54.49 - 3.49, 0.10 × 54.49)
+        Margin = 1.44 + Max(10.898 - 3.49, 5.449)
+        Margin = 1.44 + 10.898
+        Margin = 12.338
+
         Where:
         - Put Price = Premium received
         - Underlying Price = Current stock price

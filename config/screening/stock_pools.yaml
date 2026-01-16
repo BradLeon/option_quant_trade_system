@@ -21,9 +21,9 @@ us_pools:
       - NVDA   # NVIDIA
       - TSLA   # Tesla
       # 指数 ETF
-      - IVE    # S&P 500 ETF
+      #- IVE    # S&P 500 ETF
       - QQQ    # Nasdaq 100 ETF
-    #  - TQQQ   # ProShares UltraPro QQQ (3x)
+      - TQQQ   # ProShares UltraPro QQQ (3x)
       # 杠杆 ETF
     #  - TSLL   # Direxion Daily TSLA Bull 2X
     #  - NVDL   # GraniteShares 2x Long NVDA Daily ETF

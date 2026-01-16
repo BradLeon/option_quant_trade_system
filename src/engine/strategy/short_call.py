@@ -250,6 +250,17 @@ class ShortCallStrategy(OptionStrategy):
             10% × Underlying Price
         )
 
+        underlying_price = 333.10 
+        Strike Price = 350 
+        OTM = 350 - 333.10 = 16.90 
+        Call Price = 8.00
+        
+        Margin = 8.00 + Max(0.20 × 333.10 - 16.90, 0.10 × 333.10)
+        Margin = 8.00 + Max(66.62 - 16.90, 33.31)
+        Margin = 8.00 + 66.62
+        Margin = 74.62
+
+
         Where:
         - Call Price = Premium received
         - Underlying Price = Current stock price
