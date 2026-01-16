@@ -12,13 +12,18 @@ from src.data.models import (
     Fundamental,
     KlineBar,
     MacroData,
+    MarginRequirement,
+    MarginSource,
     OptionChain,
     OptionQuote,
     StockQuote,
     StockVolatility,
+    calc_reg_t_margin_short_call,
+    calc_reg_t_margin_short_put,
 )
+from src.data.models.account import AccountType
 from src.data.models.enums import DataType, Market
-from src.data.models.option import OptionContract
+from src.data.models.option import OptionContract, OptionType
 from src.data.models.stock import KlineType
 from src.data.providers.base import DataProvider
 from src.data.providers.economic_calendar_provider import EconomicCalendarProvider
@@ -536,6 +541,19 @@ class UnifiedDataProvider:
         if expiry_max_days is not None and expiry_end is None:
             expiry_end = today + timedelta(days=expiry_max_days)
 
+        # 日期范围调试日志
+        if expiry_start and expiry_end:
+            span_days = (expiry_end - expiry_start).days
+            logger.debug(
+                f"get_option_chain {underlying}: expiry_start={expiry_start}, "
+                f"expiry_end={expiry_end}, span={span_days}天"
+            )
+            if span_days > 30:
+                logger.warning(
+                    f"Futu API 日期跨度限制: {span_days}天 > 30天上限，"
+                    f"Futu可能返回错误或空数据"
+                )
+
         market = self._detect_market(underlying)
         providers = self._route(DataType.OPTION_CHAIN, underlying)
 
@@ -670,6 +688,8 @@ class UnifiedDataProvider:
         self,
         contracts: list[OptionContract],
         min_volume: int | None = None,
+        fetch_margin: bool = False,
+        underlying_price: float | None = None,
     ) -> list[OptionQuote]:
         """Get quotes for multiple option contracts.
 
@@ -679,9 +699,14 @@ class UnifiedDataProvider:
         Args:
             contracts: List of option contracts.
             min_volume: Minimum volume filter (optional).
+            fetch_margin: If True, populate margin field in quotes.
+                - US market: Uses Reg T formula (accurate within 1%)
+                - HK market: Uses Futu API (Reg T not applicable)
+            underlying_price: Current underlying price for margin calc.
+                If not provided, will try to fetch from provider.
 
         Returns:
-            List of OptionQuote instances.
+            List of OptionQuote instances with optional margin data.
         """
         if not contracts:
             return []
@@ -711,6 +736,13 @@ class UnifiedDataProvider:
                             f"get_option_quotes_batch routed to {provider.name}, "
                             f"got {len(result)} quotes"
                         )
+
+                        # Populate margin if requested
+                        if fetch_margin and result:
+                            result = self._populate_margins(
+                                result, underlying, underlying_price
+                            )
+
                         return result
             except Exception as e:
                 logger.warning(
@@ -719,6 +751,146 @@ class UnifiedDataProvider:
 
         logger.warning("All providers failed for get_option_quotes_batch")
         return []
+
+    def _populate_margins(
+        self,
+        quotes: list[OptionQuote],
+        underlying: str,
+        underlying_price: float | None = None,
+    ) -> list[OptionQuote]:
+        """Populate margin field for option quotes.
+
+        Strategy:
+        - US market: Use Reg T formula (verified accurate within 1%)
+        - HK market: Use Futu API (Reg T is ~70% off for HK)
+
+        Args:
+            quotes: List of option quotes to populate.
+            underlying: Underlying symbol for market detection.
+            underlying_price: Current underlying price (optional).
+
+        Returns:
+            Same quotes with margin field populated.
+        """
+        from src.data.utils import SymbolFormatter
+
+        market = SymbolFormatter.detect_market(underlying)
+
+        # Get underlying price if not provided
+        if underlying_price is None:
+            stock_quote = self.get_stock_quote(underlying)
+            if stock_quote:
+                underlying_price = stock_quote.close or stock_quote.last_price
+
+        if underlying_price is None:
+            logger.warning(f"Could not get underlying price for {underlying}, skipping margin calc")
+            return quotes
+
+        for quote in quotes:
+            try:
+                premium = quote.mid_price or quote.last_price or 0
+                if premium <= 0:
+                    continue
+
+                strike = quote.contract.strike_price
+                lot_size = quote.contract.lot_size
+                option_type = quote.contract.option_type
+
+                if market == Market.HK:
+                    # HK market: Try Futu API first, then fallback to Reg T
+                    margin = None
+                    symbol_format = self._detect_option_symbol_format(quote.contract.symbol)
+                    if symbol_format == "futu":
+                        margin = self._get_futu_margin(quote, lot_size)
+                        if margin is None:
+                            # Futu API returned None (e.g., CALL options may return 0)
+                            logger.debug(
+                                f"Futu margin API returned None for {quote.contract.symbol}, "
+                                f"falling back to Reg T formula"
+                            )
+                    else:
+                        # Symbol is in IBKR format (from fallback)
+                        logger.debug(
+                            f"HK symbol {quote.contract.symbol} in {symbol_format} format, "
+                            f"using Reg T formula"
+                        )
+
+                    # Fallback to Reg T formula if Futu API didn't return margin
+                    if margin is None:
+                        if option_type == OptionType.PUT:
+                            margin_per_share = calc_reg_t_margin_short_put(
+                                underlying_price, strike, premium
+                            )
+                        else:
+                            margin_per_share = calc_reg_t_margin_short_call(
+                                underlying_price, strike, premium
+                            )
+                        margin = MarginRequirement(
+                            initial_margin=margin_per_share,
+                            maintenance_margin=margin_per_share * 0.8,
+                            source=MarginSource.REG_T_FORMULA,
+                            is_estimated=True,
+                            currency="HKD",
+                        )
+                else:
+                    # US market: Use Reg T formula
+                    if option_type == OptionType.PUT:
+                        margin_per_share = calc_reg_t_margin_short_put(
+                            underlying_price, strike, premium
+                        )
+                    else:
+                        margin_per_share = calc_reg_t_margin_short_call(
+                            underlying_price, strike, premium
+                        )
+
+                    margin = MarginRequirement(
+                        initial_margin=margin_per_share,
+                        maintenance_margin=margin_per_share * 0.8,
+                        source=MarginSource.REG_T_FORMULA,
+                        is_estimated=True,
+                        currency="USD",
+                    )
+
+                quote.margin = margin
+
+            except Exception as e:
+                logger.debug(f"Error calculating margin for {quote.contract.symbol}: {e}")
+
+        return quotes
+
+    def _get_futu_margin(
+        self,
+        quote: OptionQuote,
+        lot_size: int,
+    ) -> MarginRequirement | None:
+        """Get margin from Futu API for HK options.
+
+        Args:
+            quote: Option quote to get margin for.
+            lot_size: Contract multiplier.
+
+        Returns:
+            MarginRequirement or None if query fails.
+        """
+        futu_provider = self._providers.get("futu")
+        if not futu_provider:
+            logger.warning("Futu provider not available for margin query")
+            return None
+
+        premium = quote.mid_price or quote.last_price or 0
+        if premium <= 0:
+            return None
+
+        try:
+            return futu_provider.get_margin_requirement(
+                option_symbol=quote.contract.symbol,
+                price=premium,
+                lot_size=lot_size,
+                account_type=AccountType.REAL,
+            )
+        except Exception as e:
+            logger.debug(f"Futu margin query failed for {quote.contract.symbol}: {e}")
+            return None
 
     def _extract_underlying(self, option_symbol: str) -> str:
         """Extract underlying symbol from option symbol.

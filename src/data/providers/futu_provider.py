@@ -19,6 +19,8 @@ from src.data.models import (
     KlineBar,
     MacroData,
     Market,
+    MarginRequirement,
+    MarginSource,
     OptionChain,
     OptionQuote,
     StockQuote,
@@ -44,6 +46,7 @@ try:
         OptionCondType,
         OptionDataFilter,
         OptionType as FutuOptionType,
+        OrderType as FutuOrderType,
         RET_ERROR,
         RET_OK,
         SubType,
@@ -122,6 +125,8 @@ class FutuProvider(DataProvider, AccountProvider):
             "quote": (60, 30),  # 60 requests per 30 seconds
             "option_chain": (10, 30),  # 10 requests per 30 seconds
             "history_kline": (60, 30),  # 60 requests per 30 seconds
+            "option_expiration": (10, 30),  # 10 requests per 30 seconds
+            "margin_query": (10, 30),  # 10 requests per 30 seconds (acctradinginfo_query)
         }
 
     @property
@@ -377,6 +382,47 @@ class FutuProvider(DataProvider, AccountProvider):
             logger.error(f"Error getting history kline: {e}")
             return []
 
+    def get_option_expiration_dates(
+        self,
+        underlying: str,
+    ) -> list[date]:
+        """Get available option expiration dates for an underlying.
+
+        必须先调用此 API 获取有效到期日，再用于 get_option_chain。
+        港股期权是月频到期，直接用任意日期范围会返回空数据。
+
+        Args:
+            underlying: Underlying symbol (e.g., "0700.HK")
+
+        Returns:
+            List of available expiration dates, sorted ascending.
+        """
+        self._ensure_connected()
+        self._check_rate_limit("option_expiration")
+
+        underlying = self.normalize_symbol(underlying)
+
+        try:
+            ret, data = self._quote_ctx.get_option_expiration_date(code=underlying)
+
+            if ret != RET_OK:
+                logger.error(f"Get option expiration dates failed: {data}")
+                return []
+
+            # 解析到期日列表
+            expiry_dates = []
+            for _, row in data.iterrows():
+                expiry_str = row["strike_time"]
+                expiry = datetime.strptime(expiry_str, "%Y-%m-%d").date()
+                expiry_dates.append(expiry)
+
+            logger.debug(f"{underlying} 可用到期日: {expiry_dates}")
+            return sorted(expiry_dates)
+
+        except Exception as e:
+            logger.error(f"Error getting option expiration dates: {e}")
+            return []
+
     def get_option_chain(
         self,
         underlying: str,
@@ -392,6 +438,11 @@ class FutuProvider(DataProvider, AccountProvider):
     ) -> OptionChain | None:
         """Get option chain for an underlying asset.
 
+        正确流程（参考 Futu 官方 Demo）：
+        1. 先调用 get_option_expiration_dates 获取有效到期日
+        2. 按日期范围过滤
+        3. 对每个有效到期日调用 get_option_chain (start=date, end=date)
+
         Args:
             underlying: Underlying symbol (e.g., "2800.HK")
             expiry_start: Filter options with expiry >= this date
@@ -404,18 +455,41 @@ class FutuProvider(DataProvider, AccountProvider):
             vol_min: Minimum volume filter
         """
         self._ensure_connected()
-        self._check_rate_limit("option_chain")
 
         underlying = self.normalize_symbol(underlying)
 
         try:
-            kwargs: dict[str, Any] = {"code": underlying}
+            # ===== Step 1: 获取有效到期日 =====
+            all_expiry_dates = self.get_option_expiration_dates(underlying)
+            if not all_expiry_dates:
+                logger.warning(f"{underlying} 无可用到期日")
+                return None
 
-            # 日期过滤
+            # ===== Step 2: 按日期范围过滤 =====
+            # 注意: 到期日是固定的（如每月最后一个交易日），可能刚好在边界外
+            # 使用 7 天容差，避免 expiry_end=2/25 而到期日=2/26 被排除的情况
+            BOUNDARY_TOLERANCE_DAYS = 7
+
+            valid_dates = all_expiry_dates
             if expiry_start:
-                kwargs["start"] = expiry_start.strftime("%Y-%m-%d")
+                valid_dates = [d for d in valid_dates if d >= expiry_start]
             if expiry_end:
-                kwargs["end"] = expiry_end.strftime("%Y-%m-%d")
+                from datetime import timedelta
+                expiry_end_with_tolerance = expiry_end + timedelta(days=BOUNDARY_TOLERANCE_DAYS)
+                valid_dates = [d for d in valid_dates if d <= expiry_end_with_tolerance]
+
+            if not valid_dates:
+                logger.warning(
+                    f"{underlying} 无符合条件的到期日 "
+                    f"(范围: {expiry_start} ~ {expiry_end}+{BOUNDARY_TOLERANCE_DAYS}d, "
+                    f"可用: {all_expiry_dates[:3]}...)"
+                )
+                return None
+
+            logger.debug(f"{underlying} 符合条件的到期日: {valid_dates}")
+
+            # ===== Step 3: 构建公共请求参数 =====
+            base_kwargs: dict[str, Any] = {"code": underlying}
 
             # 期权类型过滤
             if option_type:
@@ -423,39 +497,66 @@ class FutuProvider(DataProvider, AccountProvider):
                     "call": FutuOptionType.CALL,
                     "put": FutuOptionType.PUT,
                 }
-                kwargs["option_type"] = type_map.get(
+                base_kwargs["option_type"] = type_map.get(
                     option_type.lower(), FutuOptionType.ALL
                 )
 
-            # OTM/ITM 过滤 (关键优化点)
-            if option_cond_type:
-                cond_map = {
-                    "otm": OptionCondType.OUTSIDE,  # 虚值
-                    "itm": OptionCondType.WITHIN,  # 实值
-                }
-                kwargs["option_cond_type"] = cond_map.get(
-                    option_cond_type.lower(), OptionCondType.ALL
-                )
-
-            # 数据过滤器 (delta, OI, volume)
+            # 数据过滤器
+            # 注意: open_interest_min 不在 API 层过滤，改为应用层后处理
+            # 因为 Futu API 的 OI 过滤可能过于严格，导致返回空数据
             filter_params: dict[str, Any] = {}
             if delta_min is not None:
                 filter_params["delta_min"] = delta_min
             if delta_max is not None:
                 filter_params["delta_max"] = delta_max
-            if open_interest_min is not None:
-                filter_params["open_interest_min"] = open_interest_min
+            # open_interest_min: 移到应用层后处理
             if vol_min is not None:
                 filter_params["vol_min"] = vol_min
 
             if filter_params:
-                kwargs["data_filter"] = OptionDataFilter(**filter_params)
+                base_kwargs["data_filter"] = OptionDataFilter(**filter_params)
 
-            ret, data = self._quote_ctx.get_option_chain(**kwargs)
+            # 记录被忽略的 API 层过滤器
+            if open_interest_min is not None:
+                logger.debug(f"OI过滤 (>={open_interest_min}) 将在应用层后处理")
 
-            if ret != RET_OK:
-                logger.error(f"Get option chain failed: {data}")
+            # ===== Step 4: 对每个到期日查询 =====
+            all_data = []
+            for expiry_date in valid_dates:
+                self._check_rate_limit("option_chain")
+
+                kwargs = base_kwargs.copy()
+                date_str = expiry_date.strftime("%Y-%m-%d")
+                kwargs["start"] = date_str
+                kwargs["end"] = date_str
+
+                logger.debug(f"Futu get_option_chain: {expiry_date}")
+
+                ret, data = self._quote_ctx.get_option_chain(**kwargs)
+
+                if ret != RET_OK:
+                    logger.warning(f"Get option chain for {expiry_date} failed: {data}")
+                    continue
+
+                if data.empty:
+                    # 记录空数据的原因（可能是过滤条件太严格）
+                    logger.debug(
+                        f"  -> 0 rows (过滤条件: option_type={option_type}, "
+                        f"option_cond_type={option_cond_type}, "
+                        f"OI>={open_interest_min}, delta={delta_min}~{delta_max})"
+                    )
+                else:
+                    all_data.append(data)
+                    logger.debug(f"  -> {len(data)} rows")
+
+            # ===== Step 5: 合并结果 =====
+            if not all_data:
+                logger.warning(f"{underlying} 所有到期日均无数据")
                 return None
+
+            import pandas as pd
+            data = pd.concat(all_data, ignore_index=True)
+            logger.debug(f"Futu get_option_chain 合计 {len(data)} rows")
 
             calls = []
             puts = []
@@ -582,6 +683,7 @@ class FutuProvider(DataProvider, AccountProvider):
                 option_type=OptionType.CALL,  # Need to determine from symbol
                 strike_price=row.get("strike_price", 0),
                 expiry_date=date.today(),  # Need to parse from symbol
+                lot_size=row.get("lot_size", 100),
             )
 
             greeks = Greeks(
@@ -875,6 +977,98 @@ class FutuProvider(DataProvider, AccountProvider):
             return f if f == f else default  # NaN check
         except (ValueError, TypeError):
             return default
+
+    def get_margin_requirement(
+        self,
+        option_symbol: str,
+        price: float,
+        lot_size: int = 100,
+        account_type: AccountType = AccountType.REAL,
+    ) -> MarginRequirement | None:
+        """Get margin requirement for a short option position.
+
+        Uses Futu acctradinginfo_query API to get real margin requirements.
+        Returns per-share margin (divided by lot_size) for consistency with
+        other metrics.
+
+        Args:
+            option_symbol: Futu option symbol (e.g., "HK.TCH260123P580000").
+            price: Option price for margin calculation.
+            lot_size: Contract multiplier (default 100, varies by underlying).
+            account_type: REAL or PAPER account (PAPER may not support options).
+
+        Returns:
+            MarginRequirement with per-share initial and maintenance margin,
+            or None if query fails.
+
+        Note:
+            This API requires REAL account for HK options.
+            PAPER account returns error "当前模拟账号不支持此证券类型".
+        """
+        if not FUTU_AVAILABLE:
+            logger.warning("Futu API not available")
+            return None
+
+        try:
+            self._check_rate_limit("margin_query")
+
+            trd_ctx = self._get_trade_context(account_type)
+            trd_env = TrdEnv.SIMULATE if account_type == AccountType.PAPER else TrdEnv.REAL
+
+            # Query trading info
+            ret, data = trd_ctx.acctradinginfo_query(
+                order_type=FutuOrderType.NORMAL,
+                code=option_symbol,
+                price=price,
+                trd_env=trd_env,
+            )
+
+            if ret != RET_OK or data is None or data.empty:
+                logger.warning(f"acctradinginfo_query failed for {option_symbol}: {data}")
+                return None
+
+            row = data.iloc[0]
+
+            # 调试：打印 API 返回的原始数据
+            logger.debug(
+                f"Margin API raw for {option_symbol}: "
+                f"short_required_im={row.get('short_required_im')}, "
+                f"long_required_im={row.get('long_required_im')}, "
+                f"all_keys={list(row.keys())[:10]}..."
+            )
+
+            # Extract margin values (these are total contract margins)
+            short_init_margin = self._safe_float(row.get("short_required_im"))
+            long_init_margin = self._safe_float(row.get("long_required_im"))
+
+            # Use short margin for selling options
+            total_margin = short_init_margin if short_init_margin > 0 else long_init_margin
+
+            if total_margin <= 0:
+                logger.warning(
+                    f"No valid margin data for {option_symbol}: "
+                    f"short_im={short_init_margin}, long_im={long_init_margin}"
+                )
+                return None
+
+            # Convert to per-share for consistency with other metrics
+            per_share_margin = total_margin / lot_size
+
+            # Futu doesn't provide maintenance margin separately
+            # Estimate as ~80% of initial (typical for HK options)
+            maintenance_margin = per_share_margin * 0.8
+
+            return MarginRequirement(
+                initial_margin=per_share_margin,
+                maintenance_margin=maintenance_margin,
+                source=MarginSource.FUTU_API,
+                is_estimated=False,
+                currency="HKD",  # Futu primarily for HK market
+            )
+
+        except Exception as e:
+            logger.error(f"Error querying Futu margin for {option_symbol}: {e}")
+            return None
 
     def get_account_summary(
         self,

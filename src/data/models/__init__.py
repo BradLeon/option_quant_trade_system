@@ -17,6 +17,12 @@ from src.data.models.event import (
 )
 from src.data.models.fundamental import Fundamental
 from src.data.models.macro import MacroData
+from src.data.models.margin import (
+    MarginRequirement,
+    MarginSource,
+    calc_reg_t_margin_short_call,
+    calc_reg_t_margin_short_put,
+)
 from src.data.models.option import OptionChain, OptionContract, OptionQuote
 from src.data.models.stock import KlineBar, StockQuote, StockVolatility
 from src.data.models.technical import TechnicalData
@@ -46,6 +52,11 @@ __all__ = [
     "EconomicEventType",
     "EventCalendar",
     "EventImpact",
+    # Margin models
+    "MarginRequirement",
+    "MarginSource",
+    "calc_reg_t_margin_short_put",
+    "calc_reg_t_margin_short_call",
     # Other models
     "Fundamental",
     "MacroData",

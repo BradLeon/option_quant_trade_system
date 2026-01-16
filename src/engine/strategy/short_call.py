@@ -44,6 +44,7 @@ class ShortCallStrategy(OptionStrategy):
         gamma: float | None = None,
         theta: float | None = None,
         vega: float | None = None,
+        margin_per_share: float | None = None,
     ):
         """Initialize Short Call strategy.
 
@@ -60,6 +61,7 @@ class ShortCallStrategy(OptionStrategy):
             gamma: Option gamma (optional)
             theta: Option theta - daily time decay (optional)
             vega: Option vega (optional)
+            margin_per_share: Real margin per-share from broker API (optional, for accurate ROC)
         """
         leg = OptionLeg(
             option_type=OptionType.CALL,
@@ -77,6 +79,10 @@ class ShortCallStrategy(OptionStrategy):
             dte=dte,
         )
         super().__init__([leg], params)
+
+        # Set real margin per-share if provided
+        if margin_per_share is not None:
+            self._set_margin_per_share(margin_per_share)
 
         # Create BSParams for B-S calculations
         bs_params = BSParams(

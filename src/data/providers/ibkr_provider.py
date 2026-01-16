@@ -484,6 +484,16 @@ class IBKRProvider(DataProvider, AccountProvider):
             if trading_class:
                 logger.debug(f"Trading class for {underlying}: {trading_class}")
 
+            # Extract multiplier (lot_size) from chain
+            lot_size = 100  # default
+            chain_multiplier = getattr(chain, 'multiplier', None)
+            if chain_multiplier:
+                try:
+                    lot_size = int(chain_multiplier)
+                    logger.debug(f"Multiplier for {underlying}: {chain_multiplier} -> lot_size={lot_size}")
+                except (ValueError, TypeError):
+                    pass
+
             # Convert expiry_min_days/max_days to dates
             # ONLY apply min/max days defaults if expiry_start/expiry_end are not provided
             today = date.today()
@@ -554,7 +564,7 @@ class IBKRProvider(DataProvider, AccountProvider):
                                 option_type=OptionType.CALL if right == "C" else OptionType.PUT,
                                 strike_price=strike,
                                 expiry_date=expiry,
-                                lot_size=100,
+                                lot_size=lot_size,  # From chain.multiplier
                                 trading_class=trading_class,  # For HK options (e.g., "TCH")
                             )
                             # Create OptionQuote with contract info only (no market data)
@@ -835,8 +845,26 @@ class IBKRProvider(DataProvider, AccountProvider):
                     if oi is not None and oi == oi and oi >= 0:
                         open_interest = int(oi)
 
+                    # Create new contract with correct lot_size from IBKR multiplier
+                    lot_size = 100  # default
+                    if opt.multiplier:
+                        try:    
+                            lot_size = int(opt.multiplier)
+                        except (ValueError, TypeError):
+                            pass
+
+                    enriched_contract = OptionContract(
+                        symbol=contract.symbol,
+                        underlying=contract.underlying,
+                        option_type=contract.option_type,
+                        strike_price=contract.strike_price,
+                        expiry_date=contract.expiry_date,
+                        lot_size=lot_size,
+                        trading_class=contract.trading_class,
+                    )
+
                     quote = OptionQuote(
-                        contract=contract,
+                        contract=enriched_contract,
                         timestamp=datetime.now(),
                         last_price=last_price,
                         bid=bid,
@@ -1097,12 +1125,21 @@ class IBKRProvider(DataProvider, AccountProvider):
                         vega=mg.vega if mg.vega == mg.vega else None,
                     )
 
+                # Get lot_size from IBKR multiplier
+                lot_size = 100  # default
+                if opt.multiplier:
+                    try:
+                        lot_size = int(opt.multiplier)
+                    except (ValueError, TypeError):
+                        pass
+
                 contract = OptionContract(
                     symbol=f"{underlying}{exp_str}{right}{int(strike*1000):08d}",
                     underlying=underlying,
                     option_type=OptionType.CALL if right == "C" else OptionType.PUT,
                     strike_price=strike,
                     expiry_date=expiry,
+                    lot_size=lot_size,
                 )
 
                 quote = OptionQuote(
