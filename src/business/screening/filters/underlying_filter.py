@@ -97,8 +97,9 @@ class UnderlyingFilter:
         """
         results: list[UnderlyingScore] = []
 
-        for symbol in symbols:
+        for idx, symbol in enumerate(symbols, 1):
             try:
+                logger.info(f"正在评估标的 {idx}/{len(symbols)}: {symbol}")
                 score = self._evaluate_single(symbol, market_type)
                 results.append(score)
 
@@ -213,9 +214,11 @@ class UnderlyingFilter:
         warnings: list[str] = []  # P2/P3 警告条件
 
         # 从 data_layer 获取当前价格
+        logger.debug(f"获取 {symbol} 当前价格...")
         current_price = self._get_current_price(symbol)
 
         # 1. 从 data_layer 获取波动率数据
+        logger.debug(f"获取 {symbol} 波动率数据...")
         vol_data = self._get_volatility_data(symbol)
         iv_rank = None
         iv_hv_ratio = None
@@ -252,6 +255,7 @@ class UnderlyingFilter:
             disqualify_reasons.append("[P1] 无法获取波动率数据")
 
         # 2. 获取技术面评分（P2/P3 只警告）
+        logger.debug(f"评估 {symbol} 技术面...")
         technical = self._evaluate_technical(symbol, filter_config.technical)
         tech_warnings = self._check_technical(technical, filter_config.technical)
         warnings.extend(tech_warnings)
@@ -259,6 +263,7 @@ class UnderlyingFilter:
         # 3. 获取基本面评分（P3 只警告）
         fundamental = None
         if filter_config.fundamental.enabled:
+            logger.debug(f"评估 {symbol} 基本面...")
             fundamental = self._evaluate_fundamental(symbol, filter_config.fundamental)
             fund_warnings = self._check_fundamental(fundamental, filter_config.fundamental)
             warnings.extend(fund_warnings)
@@ -270,6 +275,7 @@ class UnderlyingFilter:
         days_to_ex_dividend = None
 
         if filter_config.event_calendar.enabled:
+            logger.debug(f"检查 {symbol} 事件日历...")
             event_result = self._check_event_calendar(
                 symbol, filter_config.event_calendar
             )

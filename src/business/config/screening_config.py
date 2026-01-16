@@ -180,13 +180,13 @@ class ContractFilterConfig:
     """
 
     # P1: DTE 范围（港股期权到期日稀疏，使用宽范围）
-    dte_range: tuple[int, int] = (14, 60)
+    dte_range: tuple[int, int] = (7, 45)
     optimal_dte_range: tuple[int, int] = (25, 45)
     # P1: |Delta| 范围（绝对值，覆盖两种策略）
-    delta_range: tuple[float, float] = (0.10, 0.40)
+    delta_range: tuple[float, float] = (0.05, 0.40)
     optimal_delta_range: tuple[float, float] = (0.20, 0.30)
     # P2: OTM 百分比范围
-    otm_range: tuple[float, float] = (0.05, 0.20)
+    otm_range: tuple[float, float] = (0.10, 0.30)
     # 流动性配置
     liquidity: LiquidityConfig = field(default_factory=LiquidityConfig)
     # 指标配置

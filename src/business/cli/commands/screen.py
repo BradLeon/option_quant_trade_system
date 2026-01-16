@@ -137,95 +137,94 @@ def screen(
         click.echo("   ⏭️  跳过市场环境检查")
     click.echo("=" * 60)
 
-    # 创建 Provider（共享）
-    provider = UnifiedDataProvider()
-
+    # 创建 Provider（共享），使用 with 确保正确关闭
     all_results = []
     total_opportunities = 0
 
     try:
-        for mkt in markets:
-            market_type = MarketType.US if mkt == "us" else MarketType.HK
+        with UnifiedDataProvider() as provider:
+            for mkt in markets:
+                market_type = MarketType.US if mkt == "us" else MarketType.HK
 
-            # 确定标的列表
-            if symbol:
-                # 用户指定了标的，按市场过滤
-                symbol_list = [s for s in symbol if _is_market_symbol(s, mkt)]
-                if not symbol_list:
-                    continue
-                pool_name = None
-            elif pool:
-                try:
-                    symbol_list = pool_manager.load_pool(pool)
-                    pool_name = pool
-                except StockPoolError as e:
-                    click.echo(f"❌ 错误: {e}", err=True)
-                    continue
-            else:
-                # 使用默认股票池
-                pool_name = pool_manager.get_default_pool_name(market_type)
-                symbol_list = pool_manager.get_default_pool(market_type)
-
-            for strat in strategies:
-                click.echo()
-                click.echo("-" * 60)
-                click.echo(f"🔍 {mkt.upper()} | {strat} | {len(symbol_list)} 只标的")
-                click.echo("-" * 60)
-
-                # 加载策略配置
-                screening_config = ScreeningConfig.load(strat)
-
-                # 创建筛选管道
-                pipeline = ScreeningPipeline(screening_config, provider)
-
-                # 运行筛选
-                result = pipeline.run(
-                    symbols=symbol_list,
-                    market_type=market_type,
-                    strategy_type=strat,
-                    skip_market_check=skip_market_check,
-                )
-
-                # 统计
-                qualified = [o for o in result.opportunities if o.passed] if result.opportunities else []
-                total_opportunities += len(qualified)
-                all_results.append({
-                    "market": mkt,
-                    "strategy": strat,
-                    "result": result,
-                    "qualified": qualified,
-                })
-
-                # 简要输出
-                if qualified:
-                    click.echo(f"   ✅ 发现 {len(qualified)} 个机会")
-                    for opp in qualified[:3]:
-                        click.echo(f"      - {opp.symbol} {opp.option_type.upper()}{opp.strike:.0f} "
-                                   f"DTE={opp.dte} Expected ROC={opp.expected_roc:.1%}" if opp.expected_roc else "")
-                    if len(qualified) > 3:
-                        click.echo(f"      ... 还有 {len(qualified) - 3} 个")
+                # 确定标的列表
+                if symbol:
+                    # 用户指定了标的，按市场过滤
+                    symbol_list = [s for s in symbol if _is_market_symbol(s, mkt)]
+                    if not symbol_list:
+                        continue
+                    pool_name = None
+                elif pool:
+                    try:
+                        symbol_list = pool_manager.load_pool(pool)
+                        pool_name = pool
+                    except StockPoolError as e:
+                        click.echo(f"❌ 错误: {e}", err=True)
+                        continue
                 else:
-                    reason = result.rejection_reason or "无符合条件的合约"
-                    click.echo(f"   ❌ {reason}")
+                    # 使用默认股票池
+                    pool_name = pool_manager.get_default_pool_name(market_type)
+                    symbol_list = pool_manager.get_default_pool(market_type)
 
-        # 汇总输出
-        click.echo()
-        click.echo("=" * 60)
-        click.echo(f"📊 筛选完成 - 共发现 {total_opportunities} 个机会")
-        click.echo("=" * 60)
+                for strat in strategies:
+                    click.echo()
+                    click.echo("-" * 60)
+                    click.echo(f"🔍 {mkt.upper()} | {strat} | {len(symbol_list)} 只标的")
+                    click.echo("-" * 60)
 
-        if output == "json":
-            _output_json_all(all_results)
-        elif total_opportunities > 0:
-            _output_text_summary(all_results)
+                    # 加载策略配置
+                    screening_config = ScreeningConfig.load(strat)
 
-        # 推送结果
-        if push and total_opportunities > 0:
-            for item in all_results:
-                if item["qualified"]:
-                    _push_result(item["result"])
+                    # 创建筛选管道
+                    pipeline = ScreeningPipeline(screening_config, provider)
 
-        # 设置退出码
+                    # 运行筛选
+                    result = pipeline.run(
+                        symbols=symbol_list,
+                        market_type=market_type,
+                        strategy_type=strat,
+                        skip_market_check=skip_market_check,
+                    )
+
+                    # 统计
+                    qualified = [o for o in result.opportunities if o.passed] if result.opportunities else []
+                    total_opportunities += len(qualified)
+                    all_results.append({
+                        "market": mkt,
+                        "strategy": strat,
+                        "result": result,
+                        "qualified": qualified,
+                    })
+
+                    # 简要输出
+                    if qualified:
+                        click.echo(f"   ✅ 发现 {len(qualified)} 个机会")
+                        for opp in qualified[:3]:
+                            click.echo(f"      - {opp.symbol} {opp.option_type.upper()}{opp.strike:.0f} "
+                                       f"DTE={opp.dte} Expected ROC={opp.expected_roc:.1%}" if opp.expected_roc else "")
+                        if len(qualified) > 3:
+                            click.echo(f"      ... 还有 {len(qualified) - 3} 个")
+                    else:
+                        reason = result.rejection_reason or "无符合条件的合约"
+                        click.echo(f"   ❌ {reason}")
+
+            # 汇总输出 (在 with 块内，确保 provider 关闭前完成输出)
+            click.echo()
+            click.echo("=" * 60)
+            click.echo(f"📊 筛选完成 - 共发现 {total_opportunities} 个机会")
+            click.echo("=" * 60)
+
+            if output == "json":
+                _output_json_all(all_results)
+            elif total_opportunities > 0:
+                _output_text_summary(all_results)
+
+            # 推送结果
+            if push and total_opportunities > 0:
+                for item in all_results:
+                    if item["qualified"]:
+                        _push_result(item["result"])
+
+        # 设置退出码 (在 with 块外，provider 已关闭)
         sys.exit(0 if total_opportunities > 0 else 1)
 
     except Exception as e:
