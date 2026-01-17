@@ -6,8 +6,11 @@ import os
 from re import S
 import time
 from datetime import date, datetime, timedelta
+from functools import wraps
 from threading import Lock
-from typing import Any
+from typing import Any, Callable, TypeVar
+
+F = TypeVar("F", bound=Callable[..., Any])
 
 from dotenv import load_dotenv
 
@@ -73,6 +76,35 @@ KLINE_DURATION_MAP = {
     KlineType.WEEK: "2 Y",
     KlineType.MONTH: "5 Y",
 }
+
+
+def auto_reconnect(func: F) -> F:
+    """Decorator: auto-reconnect on connection failure.
+
+    Detects connection issues and attempts to reconnect once before retrying.
+    """
+
+    @wraps(func)
+    def wrapper(self: "IBKRProvider", *args: Any, **kwargs: Any) -> Any:
+        try:
+            return func(self, *args, **kwargs)
+        except Exception as e:
+            error_msg = str(e).lower()
+            # Check for connection-related errors
+            if any(
+                keyword in error_msg
+                for keyword in ["not connected", "timeout", "connection", "socket"]
+            ):
+                logger.warning(
+                    f"Connection issue detected in {func.__name__}: {e}, "
+                    "attempting reconnect..."
+                )
+                if self.reconnect(max_retries=2, initial_delay=2.0):
+                    logger.info(f"Reconnected, retrying {func.__name__}")
+                    return func(self, *args, **kwargs)
+            raise
+
+    return wrapper  # type: ignore
 
 
 class IBKRProvider(DataProvider, AccountProvider):
@@ -146,10 +178,30 @@ class IBKRProvider(DataProvider, AccountProvider):
 
     @property
     def is_available(self) -> bool:
-        """Check if provider is available."""
+        """Check if provider is available with active health check."""
         if not IBKR_AVAILABLE:
             return False
-        return self._connected
+        if not self._connected:
+            return False
+        # Perform active health check
+        return self._check_connection_health()
+
+    def _check_connection_health(self) -> bool:
+        """Lightweight connection health check.
+
+        Uses managedAccounts() as a heartbeat to verify connection is alive.
+        """
+        try:
+            if self._ib is None:
+                self._connected = False
+                return False
+            # managedAccounts() is a lightweight call that verifies connection
+            accounts = self._ib.managedAccounts()
+            return accounts is not None and len(accounts) > 0
+        except Exception as e:
+            logger.warning(f"Connection health check failed: {e}")
+            self._connected = False
+            return False
 
     def __enter__(self) -> "IBKRProvider":
         """Enter context manager, establish connection."""
@@ -236,6 +288,7 @@ class IBKRProvider(DataProvider, AccountProvider):
         quotes = self.get_stock_quotes([symbol])
         return quotes[0] if quotes else None
 
+    @auto_reconnect
     def get_stock_quotes(self, symbols: list[str]) -> list[StockQuote]:
         """Get real-time quotes for multiple stocks."""
         self._ensure_connected()
@@ -1174,6 +1227,7 @@ class IBKRProvider(DataProvider, AccountProvider):
         """
         return None
 
+    @auto_reconnect
     def get_stock_volatility(
         self,
         symbol: str,

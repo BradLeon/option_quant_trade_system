@@ -5,7 +5,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
-from src.data.cache import DataCache
+from src.data.cache import DataCache, RedisCache
 from src.data.models import (
     EconomicEvent,
     EventCalendar,
@@ -82,6 +82,7 @@ class UnifiedDataProvider:
         yahoo_provider: YahooProvider | None = None,
         economic_calendar_provider: EconomicCalendarProvider | None = None,
         use_cache: bool = False,
+        use_redis_cache: bool = True,
     ) -> None:
         """Initialize unified provider with routing configuration.
 
@@ -96,6 +97,8 @@ class UnifiedDataProvider:
             yahoo_provider: Optional pre-configured Yahoo provider.
             economic_calendar_provider: Optional pre-configured economic calendar provider.
             use_cache: Whether to use Supabase caching. Default False (disabled).
+            use_redis_cache: Whether to use Redis caching for klines/fundamentals.
+                            Default True (enabled). Requires Redis server running.
         """
         # Load routing configuration
         if isinstance(routing_config, RoutingConfig):
@@ -105,8 +108,23 @@ class UnifiedDataProvider:
         else:
             self._routing = RoutingConfig()  # Use defaults
 
-        # Cache is disabled by default
+        # Supabase cache is disabled by default
         self._cache = cache if use_cache else None
+
+        # Redis cache for klines and fundamentals (enabled by default)
+        self._redis_cache: RedisCache | None = None
+        if use_redis_cache:
+            try:
+                self._redis_cache = RedisCache()
+                if not self._redis_cache.is_available:
+                    logger.warning(
+                        "Redis cache not available, "
+                        "klines/fundamentals will be fetched on every request"
+                    )
+                    self._redis_cache = None
+            except Exception as e:
+                logger.warning(f"Failed to initialize Redis cache: {e}")
+                self._redis_cache = None
 
         # Store provider instances
         self._providers: dict[str, DataProvider | None] = {
@@ -466,6 +484,13 @@ class UnifiedDataProvider:
         if start_date is None:
             start_date = end_date - timedelta(days=365)
 
+        # Try Redis cache first (for daily klines only)
+        if self._redis_cache and ktype == KlineType.DAY and not force_refresh:
+            cached = self._redis_cache.get_klines(symbol, ktype.value)
+            if cached:
+                logger.debug(f"Redis cache hit for klines: {symbol}")
+                return [KlineBar(**bar) for bar in cached]
+
         def fetcher() -> list[KlineBar]:
             providers = self._route(DataType.HISTORY_KLINE, symbol)
             result = self._execute_with_fallback(
@@ -474,10 +499,34 @@ class UnifiedDataProvider:
             return result or []
 
         if self._cache:
-            return self._cache.get_or_fetch_klines(
+            result = self._cache.get_or_fetch_klines(
                 symbol, ktype.value, start_date, end_date, fetcher, force_refresh
             )
-        return fetcher()
+        else:
+            result = fetcher()
+
+        # Write to Redis cache (for daily klines only)
+        if self._redis_cache and ktype == KlineType.DAY and result:
+            try:
+                klines_data = [
+                    {
+                        "symbol": bar.symbol,
+                        "timestamp": bar.timestamp.isoformat()
+                        if hasattr(bar.timestamp, "isoformat")
+                        else str(bar.timestamp),
+                        "open": bar.open,
+                        "high": bar.high,
+                        "low": bar.low,
+                        "close": bar.close,
+                        "volume": bar.volume,
+                    }
+                    for bar in result
+                ]
+                self._redis_cache.set_klines(symbol, ktype.value, klines_data)
+            except Exception as e:
+                logger.warning(f"Failed to cache klines to Redis: {e}")
+
+        return result
 
     # =========================================================================
     # Option Data Methods
@@ -925,13 +974,54 @@ class UnifiedDataProvider:
         Returns:
             Fundamental instance or None if not available.
         """
+        # Try Redis cache first
+        if self._redis_cache and not force_refresh:
+            cached = self._redis_cache.get_fundamental(symbol)
+            if cached:
+                logger.debug(f"Redis cache hit for fundamental: {symbol}")
+                return Fundamental(**cached)
+
         def fetcher() -> Fundamental | None:
             providers = self._route(DataType.FUNDAMENTAL, symbol)
             return self._execute_with_fallback(providers, "get_fundamental", symbol)
 
         if self._cache:
-            return self._cache.get_or_fetch_fundamental(symbol, fetcher, force_refresh)
-        return fetcher()
+            result = self._cache.get_or_fetch_fundamental(symbol, fetcher, force_refresh)
+        else:
+            result = fetcher()
+
+        # Write to Redis cache
+        if self._redis_cache and result:
+            try:
+                fundamental_data = {
+                    "symbol": result.symbol,
+                    "pe_ratio": result.pe_ratio,
+                    "forward_pe": result.forward_pe,
+                    "peg_ratio": result.peg_ratio,
+                    "price_to_book": result.price_to_book,
+                    "market_cap": result.market_cap,
+                    "revenue": result.revenue,
+                    "revenue_growth": result.revenue_growth,
+                    "earnings_growth": result.earnings_growth,
+                    "profit_margin": result.profit_margin,
+                    "debt_to_equity": result.debt_to_equity,
+                    "current_ratio": result.current_ratio,
+                    "dividend_yield": result.dividend_yield,
+                    "recommendation": result.recommendation,
+                    "target_price": result.target_price,
+                    "num_analysts": result.num_analysts,
+                    "earnings_date": result.earnings_date.isoformat()
+                    if result.earnings_date
+                    else None,
+                    "ex_dividend_date": result.ex_dividend_date.isoformat()
+                    if result.ex_dividend_date
+                    else None,
+                }
+                self._redis_cache.set_fundamental(symbol, fundamental_data)
+            except Exception as e:
+                logger.warning(f"Failed to cache fundamental to Redis: {e}")
+
+        return result
 
     # =========================================================================
     # Stock Volatility Methods
