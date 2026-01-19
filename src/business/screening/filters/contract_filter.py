@@ -265,6 +265,7 @@ class ContractFilter:
         quotes = self.provider.get_option_quotes_batch(
             contracts_to_fetch,
             min_volume=0,  # 评估阶段再检查
+            fetch_margin=True,  # 获取真实保证金用于 ROC 计算
         )
 
         if not quotes:
@@ -468,6 +469,9 @@ class ContractFilter:
         # Theta/Premium 比率
         theta_prem_ratio = calc_theta_premium_ratio(theta, mid_price)
 
+        # 提取真实保证金 per-share（如果有）
+        margin_per_share = quote.margin.initial_margin if quote.margin else None
+
         # 策略指标
         metrics = self._calc_strategy_metrics(
             spot_price=underlying_price or 0,
@@ -482,6 +486,7 @@ class ContractFilter:
             theta=theta,
             vega=vega,
             option_type=option_type,
+            margin_per_share=margin_per_share,
         )
 
         # 使用策略类计算的 ROC 指标（基于 IBKR margin 公式）
@@ -673,6 +678,7 @@ class ContractFilter:
         theta: float | None,
         vega: float | None,
         option_type: str = "put",
+        margin_per_share: float | None = None,
     ) -> dict:
         """计算策略指标
 
@@ -682,6 +688,7 @@ class ContractFilter:
 
         Args:
             option_type: 期权类型 ("put" 或 "call")
+            margin_per_share: 真实保证金 per-share (来自 Broker API，可选)
 
         Returns:
             包含所有策略指标的字典
@@ -706,6 +713,7 @@ class ContractFilter:
                     gamma=gamma,
                     theta=theta,
                     vega=vega,
+                    margin_per_share=margin_per_share,
                 )
             else:  # option_type == "call"
                 strategy = ShortCallStrategy(
@@ -720,6 +728,13 @@ class ContractFilter:
                     gamma=gamma,
                     theta=theta,
                     vega=vega,
+                    margin_per_share=margin_per_share,
+                )
+
+            # 输出真实保证金使用日志（如果有）
+            if margin_per_share is not None:
+                logger.debug(
+                    f"{option_type.upper()} K={strike_price}: 使用真实保证金 {margin_per_share:.2f}/share"
                 )
 
             # 输入参数日志

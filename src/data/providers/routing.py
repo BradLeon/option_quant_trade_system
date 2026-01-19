@@ -222,17 +222,19 @@ class RoutingConfig:
                 data_type=["stock_quote", "stock_quotes"],
                 providers=["futu", "yahoo"],
             ),
-            # US options → IBKR preferred (best Greeks), Futu fallback, Yahoo last resort
+            # US options → IBKR preferred (best Greeks), Yahoo fallback, Futu last
+            # Note: Futu has no US stock subscription, put it last as fallback
             RoutingRule(
                 market="us",
                 data_type=["option_chain", "option_quote", "option_quotes"],
-                providers=["ibkr", "futu", "yahoo"],
+                providers=["ibkr", "yahoo", "futu"],
             ),
-            # US stocks (quote) → IBKR preferred (real-time)
+            # US stocks (quote) → IBKR > Yahoo > Futu
+            # Note: Futu has no US stock subscription, put it last as fallback
             RoutingRule(
                 market="us",
                 data_type=["stock_quote", "stock_quotes"],
-                providers=["ibkr", "futu", "yahoo"],
+                providers=["ibkr", "yahoo", "futu"],
             ),
             # Default fallback → Yahoo (always available)
             RoutingRule(

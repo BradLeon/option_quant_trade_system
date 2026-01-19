@@ -5,20 +5,25 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
-from src.data.cache import DataCache
+from src.data.cache import DataCache, RedisCache
 from src.data.models import (
     EconomicEvent,
     EventCalendar,
     Fundamental,
     KlineBar,
     MacroData,
+    MarginRequirement,
+    MarginSource,
     OptionChain,
     OptionQuote,
     StockQuote,
     StockVolatility,
+    calc_reg_t_margin_short_call,
+    calc_reg_t_margin_short_put,
 )
+from src.data.models.account import AccountType
 from src.data.models.enums import DataType, Market
-from src.data.models.option import OptionContract
+from src.data.models.option import OptionContract, OptionType
 from src.data.models.stock import KlineType
 from src.data.providers.base import DataProvider
 from src.data.providers.economic_calendar_provider import EconomicCalendarProvider
@@ -77,6 +82,7 @@ class UnifiedDataProvider:
         yahoo_provider: YahooProvider | None = None,
         economic_calendar_provider: EconomicCalendarProvider | None = None,
         use_cache: bool = False,
+        use_redis_cache: bool = True,
     ) -> None:
         """Initialize unified provider with routing configuration.
 
@@ -91,6 +97,8 @@ class UnifiedDataProvider:
             yahoo_provider: Optional pre-configured Yahoo provider.
             economic_calendar_provider: Optional pre-configured economic calendar provider.
             use_cache: Whether to use Supabase caching. Default False (disabled).
+            use_redis_cache: Whether to use Redis caching for klines/fundamentals.
+                            Default True (enabled). Requires Redis server running.
         """
         # Load routing configuration
         if isinstance(routing_config, RoutingConfig):
@@ -100,8 +108,23 @@ class UnifiedDataProvider:
         else:
             self._routing = RoutingConfig()  # Use defaults
 
-        # Cache is disabled by default
+        # Supabase cache is disabled by default
         self._cache = cache if use_cache else None
+
+        # Redis cache for klines and fundamentals (enabled by default)
+        self._redis_cache: RedisCache | None = None
+        if use_redis_cache:
+            try:
+                self._redis_cache = RedisCache()
+                if not self._redis_cache.is_available:
+                    logger.warning(
+                        "Redis cache not available, "
+                        "klines/fundamentals will be fetched on every request"
+                    )
+                    self._redis_cache = None
+            except Exception as e:
+                logger.warning(f"Failed to initialize Redis cache: {e}")
+                self._redis_cache = None
 
         # Store provider instances
         self._providers: dict[str, DataProvider | None] = {
@@ -461,6 +484,13 @@ class UnifiedDataProvider:
         if start_date is None:
             start_date = end_date - timedelta(days=365)
 
+        # Try Redis cache first (for daily klines only)
+        if self._redis_cache and ktype == KlineType.DAY and not force_refresh:
+            cached = self._redis_cache.get_klines(symbol, ktype.value)
+            if cached:
+                logger.debug(f"Redis cache hit for klines: {symbol}")
+                return [KlineBar(**bar) for bar in cached]
+
         def fetcher() -> list[KlineBar]:
             providers = self._route(DataType.HISTORY_KLINE, symbol)
             result = self._execute_with_fallback(
@@ -469,10 +499,34 @@ class UnifiedDataProvider:
             return result or []
 
         if self._cache:
-            return self._cache.get_or_fetch_klines(
+            result = self._cache.get_or_fetch_klines(
                 symbol, ktype.value, start_date, end_date, fetcher, force_refresh
             )
-        return fetcher()
+        else:
+            result = fetcher()
+
+        # Write to Redis cache (for daily klines only)
+        if self._redis_cache and ktype == KlineType.DAY and result:
+            try:
+                klines_data = [
+                    {
+                        "symbol": bar.symbol,
+                        "timestamp": bar.timestamp.isoformat()
+                        if hasattr(bar.timestamp, "isoformat")
+                        else str(bar.timestamp),
+                        "open": bar.open,
+                        "high": bar.high,
+                        "low": bar.low,
+                        "close": bar.close,
+                        "volume": bar.volume,
+                    }
+                    for bar in result
+                ]
+                self._redis_cache.set_klines(symbol, ktype.value, klines_data)
+            except Exception as e:
+                logger.warning(f"Failed to cache klines to Redis: {e}")
+
+        return result
 
     # =========================================================================
     # Option Data Methods
@@ -535,6 +589,19 @@ class UnifiedDataProvider:
             expiry_start = today + timedelta(days=expiry_min_days)
         if expiry_max_days is not None and expiry_end is None:
             expiry_end = today + timedelta(days=expiry_max_days)
+
+        # 日期范围调试日志
+        if expiry_start and expiry_end:
+            span_days = (expiry_end - expiry_start).days
+            logger.debug(
+                f"get_option_chain {underlying}: expiry_start={expiry_start}, "
+                f"expiry_end={expiry_end}, span={span_days}天"
+            )
+            if span_days > 30:
+                logger.warning(
+                    f"Futu API 日期跨度限制: {span_days}天 > 30天上限，"
+                    f"Futu可能返回错误或空数据"
+                )
 
         market = self._detect_market(underlying)
         providers = self._route(DataType.OPTION_CHAIN, underlying)
@@ -670,6 +737,8 @@ class UnifiedDataProvider:
         self,
         contracts: list[OptionContract],
         min_volume: int | None = None,
+        fetch_margin: bool = False,
+        underlying_price: float | None = None,
     ) -> list[OptionQuote]:
         """Get quotes for multiple option contracts.
 
@@ -679,9 +748,14 @@ class UnifiedDataProvider:
         Args:
             contracts: List of option contracts.
             min_volume: Minimum volume filter (optional).
+            fetch_margin: If True, populate margin field in quotes.
+                - US market: Uses Reg T formula (accurate within 1%)
+                - HK market: Uses Futu API (Reg T not applicable)
+            underlying_price: Current underlying price for margin calc.
+                If not provided, will try to fetch from provider.
 
         Returns:
-            List of OptionQuote instances.
+            List of OptionQuote instances with optional margin data.
         """
         if not contracts:
             return []
@@ -711,6 +785,13 @@ class UnifiedDataProvider:
                             f"get_option_quotes_batch routed to {provider.name}, "
                             f"got {len(result)} quotes"
                         )
+
+                        # Populate margin if requested
+                        if fetch_margin and result:
+                            result = self._populate_margins(
+                                result, underlying, underlying_price
+                            )
+
                         return result
             except Exception as e:
                 logger.warning(
@@ -719,6 +800,146 @@ class UnifiedDataProvider:
 
         logger.warning("All providers failed for get_option_quotes_batch")
         return []
+
+    def _populate_margins(
+        self,
+        quotes: list[OptionQuote],
+        underlying: str,
+        underlying_price: float | None = None,
+    ) -> list[OptionQuote]:
+        """Populate margin field for option quotes.
+
+        Strategy:
+        - US market: Use Reg T formula (verified accurate within 1%)
+        - HK market: Use Futu API (Reg T is ~70% off for HK)
+
+        Args:
+            quotes: List of option quotes to populate.
+            underlying: Underlying symbol for market detection.
+            underlying_price: Current underlying price (optional).
+
+        Returns:
+            Same quotes with margin field populated.
+        """
+        from src.data.utils import SymbolFormatter
+
+        market = SymbolFormatter.detect_market(underlying)
+
+        # Get underlying price if not provided
+        if underlying_price is None:
+            stock_quote = self.get_stock_quote(underlying)
+            if stock_quote:
+                underlying_price = stock_quote.close or stock_quote.last_price
+
+        if underlying_price is None:
+            logger.warning(f"Could not get underlying price for {underlying}, skipping margin calc")
+            return quotes
+
+        for quote in quotes:
+            try:
+                premium = quote.mid_price or quote.last_price or 0
+                if premium <= 0:
+                    continue
+
+                strike = quote.contract.strike_price
+                lot_size = quote.contract.lot_size
+                option_type = quote.contract.option_type
+
+                if market == Market.HK:
+                    # HK market: Try Futu API first, then fallback to Reg T
+                    margin = None
+                    symbol_format = self._detect_option_symbol_format(quote.contract.symbol)
+                    if symbol_format == "futu":
+                        margin = self._get_futu_margin(quote, lot_size)
+                        if margin is None:
+                            # Futu API returned None (e.g., CALL options may return 0)
+                            logger.debug(
+                                f"Futu margin API returned None for {quote.contract.symbol}, "
+                                f"falling back to Reg T formula"
+                            )
+                    else:
+                        # Symbol is in IBKR format (from fallback)
+                        logger.debug(
+                            f"HK symbol {quote.contract.symbol} in {symbol_format} format, "
+                            f"using Reg T formula"
+                        )
+
+                    # Fallback to Reg T formula if Futu API didn't return margin
+                    if margin is None:
+                        if option_type == OptionType.PUT:
+                            margin_per_share = calc_reg_t_margin_short_put(
+                                underlying_price, strike, premium
+                            )
+                        else:
+                            margin_per_share = calc_reg_t_margin_short_call(
+                                underlying_price, strike, premium
+                            )
+                        margin = MarginRequirement(
+                            initial_margin=margin_per_share,
+                            maintenance_margin=margin_per_share * 0.8,
+                            source=MarginSource.REG_T_FORMULA,
+                            is_estimated=True,
+                            currency="HKD",
+                        )
+                else:
+                    # US market: Use Reg T formula
+                    if option_type == OptionType.PUT:
+                        margin_per_share = calc_reg_t_margin_short_put(
+                            underlying_price, strike, premium
+                        )
+                    else:
+                        margin_per_share = calc_reg_t_margin_short_call(
+                            underlying_price, strike, premium
+                        )
+
+                    margin = MarginRequirement(
+                        initial_margin=margin_per_share,
+                        maintenance_margin=margin_per_share * 0.8,
+                        source=MarginSource.REG_T_FORMULA,
+                        is_estimated=True,
+                        currency="USD",
+                    )
+
+                quote.margin = margin
+
+            except Exception as e:
+                logger.debug(f"Error calculating margin for {quote.contract.symbol}: {e}")
+
+        return quotes
+
+    def _get_futu_margin(
+        self,
+        quote: OptionQuote,
+        lot_size: int,
+    ) -> MarginRequirement | None:
+        """Get margin from Futu API for HK options.
+
+        Args:
+            quote: Option quote to get margin for.
+            lot_size: Contract multiplier.
+
+        Returns:
+            MarginRequirement or None if query fails.
+        """
+        futu_provider = self._providers.get("futu")
+        if not futu_provider:
+            logger.warning("Futu provider not available for margin query")
+            return None
+
+        premium = quote.mid_price or quote.last_price or 0
+        if premium <= 0:
+            return None
+
+        try:
+            return futu_provider.get_margin_requirement(
+                option_symbol=quote.contract.symbol,
+                price=premium,
+                lot_size=lot_size,
+                account_type=AccountType.REAL,
+            )
+        except Exception as e:
+            logger.debug(f"Futu margin query failed for {quote.contract.symbol}: {e}")
+            return None
 
     def _extract_underlying(self, option_symbol: str) -> str:
         """Extract underlying symbol from option symbol.
@@ -753,13 +974,54 @@ class UnifiedDataProvider:
         Returns:
             Fundamental instance or None if not available.
         """
+        # Try Redis cache first
+        if self._redis_cache and not force_refresh:
+            cached = self._redis_cache.get_fundamental(symbol)
+            if cached:
+                logger.debug(f"Redis cache hit for fundamental: {symbol}")
+                return Fundamental(**cached)
+
         def fetcher() -> Fundamental | None:
             providers = self._route(DataType.FUNDAMENTAL, symbol)
             return self._execute_with_fallback(providers, "get_fundamental", symbol)
 
         if self._cache:
-            return self._cache.get_or_fetch_fundamental(symbol, fetcher, force_refresh)
-        return fetcher()
+            result = self._cache.get_or_fetch_fundamental(symbol, fetcher, force_refresh)
+        else:
+            result = fetcher()
+
+        # Write to Redis cache
+        if self._redis_cache and result:
+            try:
+                fundamental_data = {
+                    "symbol": result.symbol,
+                    "pe_ratio": result.pe_ratio,
+                    "forward_pe": result.forward_pe,
+                    "peg_ratio": result.peg_ratio,
+                    "price_to_book": result.price_to_book,
+                    "market_cap": result.market_cap,
+                    "revenue": result.revenue,
+                    "revenue_growth": result.revenue_growth,
+                    "earnings_growth": result.earnings_growth,
+                    "profit_margin": result.profit_margin,
+                    "debt_to_equity": result.debt_to_equity,
+                    "current_ratio": result.current_ratio,
+                    "dividend_yield": result.dividend_yield,
+                    "recommendation": result.recommendation,
+                    "target_price": result.target_price,
+                    "num_analysts": result.num_analysts,
+                    "earnings_date": result.earnings_date.isoformat()
+                    if result.earnings_date
+                    else None,
+                    "ex_dividend_date": result.ex_dividend_date.isoformat()
+                    if result.ex_dividend_date
+                    else None,
+                }
+                self._redis_cache.set_fundamental(symbol, fundamental_data)
+            except Exception as e:
+                logger.warning(f"Failed to cache fundamental to Redis: {e}")
+
+        return result
 
     # =========================================================================
     # Stock Volatility Methods

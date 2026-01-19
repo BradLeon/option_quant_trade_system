@@ -1,9 +1,14 @@
 """Option data models."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from src.data.models.margin import MarginRequirement
 
 
 class OptionType(Enum):
@@ -117,10 +122,11 @@ class OptionQuote:
     iv: float | None = None  # Implied volatility
     greeks: Greeks = field(default_factory=Greeks)
     source: str = "unknown"
+    margin: MarginRequirement | None = None  # Margin requirement for short position
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for database storage."""
-        return {
+        result = {
             "symbol": self.contract.symbol,
             "underlying": self.contract.underlying,
             "option_type": self.contract.option_type.value,
@@ -140,6 +146,9 @@ class OptionQuote:
             "rho": self.greeks.rho,
             "source": self.source,
         }
+        if self.margin:
+            result["margin"] = self.margin.to_dict()
+        return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "OptionQuote":
@@ -168,6 +177,12 @@ class OptionQuote:
             rho=data.get("rho"),
         )
 
+        # Parse margin if present
+        margin = None
+        if "margin" in data and data["margin"]:
+            from src.data.models.margin import MarginRequirement
+            margin = MarginRequirement.from_dict(data["margin"])
+
         return cls(
             contract=contract,
             timestamp=timestamp,
@@ -179,6 +194,7 @@ class OptionQuote:
             iv=data.get("iv"),
             greeks=greeks,
             source=data.get("source", "unknown"),
+            margin=margin,
         )
 
     @property

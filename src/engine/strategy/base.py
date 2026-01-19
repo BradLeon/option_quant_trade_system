@@ -4,11 +4,20 @@ Contains the abstract OptionStrategy base class.
 For data models, import from src.engine.models directly.
 """
 
+from __future__ import annotations
+
+import logging
 import math
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 from src.data.models.option import Greeks
 from src.engine.models.strategy import OptionLeg, StrategyMetrics, StrategyParams
+
+if TYPE_CHECKING:
+    from src.data.models.margin import MarginRequirement
+
+logger = logging.getLogger(__name__)
 
 
 class OptionStrategy(ABC):
@@ -32,6 +41,7 @@ class OptionStrategy(ABC):
         """
         self.legs = legs
         self.params = params
+        self._margin_per_share: float | None = None  # 真实保证金（per-share）
 
     @property
     def leg(self) -> OptionLeg:
@@ -98,12 +108,8 @@ class OptionStrategy(ABC):
         if std_pi <= 0:
             return None
 
-        # Use actual margin requirement from broker formula
-        try:
-            margin = self.calc_margin_requirement()
-        except Exception:
-            # Fallback to capital at risk if margin calc fails
-            margin = self._calc_capital_at_risk()
+        # Use effective margin (real margin if set, else Reg T formula)
+        margin = self.get_effective_margin()
 
         # Risk-free return on margin capital
         rf = margin * (math.exp(self.params.risk_free_rate * self.params.time_to_expiry) - 1)
@@ -160,6 +166,45 @@ class OptionStrategy(ABC):
             if leg.is_short:
                 capital += leg.strike * leg.quantity
         return capital if capital > 0 else self.params.spot_price
+
+    def _set_margin_per_share(self, margin_per_share: float) -> None:
+        """Internal method: Set real margin per-share (called by subclass constructors).
+
+        Args:
+            margin_per_share: Real margin per-share from broker API.
+        """
+        self._margin_per_share = margin_per_share
+
+    def get_effective_margin(self) -> float:
+        """Get effective margin for ROC calculations.
+
+        Priority:
+        1. Real margin per-share (if set via constructor)
+        2. Reg T formula from calc_margin_requirement()
+        3. Capital at risk as fallback
+
+        Returns:
+            Effective margin in dollars (per-share).
+        """
+        # Priority 1: Real margin per-share
+        if self._margin_per_share is not None:
+            return self._margin_per_share
+
+        # Priority 2: Reg T formula
+        try:
+            margin = self.calc_margin_requirement()
+            logger.debug(
+                f"Using Reg T margin={margin:.2f} (no real margin set) "
+                f"for K={self.leg.strike if self.leg else '?'}"
+            )
+            return margin
+        except Exception as e:
+            logger.warning(f"calc_margin_requirement() failed: {e}, using capital at risk fallback")
+
+        # Priority 3: Fallback to capital at risk
+        fallback = self._calc_capital_at_risk()
+        logger.warning(f"Using capital at risk fallback: {fallback:.2f}")
+        return fallback
 
     def _get_total_gamma(self) -> float | None:
         """Get total gamma across all legs (position-adjusted).
@@ -315,12 +360,8 @@ class OptionStrategy(ABC):
         if premium <= 0:
             return None
 
-        # Use actual margin requirement from broker formula
-        try:
-            margin = self.calc_margin_requirement()
-        except Exception:
-            # Fallback to capital at risk if margin calc fails
-            margin = self._calc_capital_at_risk()
+        # Use effective margin (real margin if set, else Reg T formula)
+        margin = self.get_effective_margin()
 
         if margin <= 0:
             return None
@@ -349,12 +390,8 @@ class OptionStrategy(ABC):
         if expected_return is None:
             return None
 
-        # Use actual margin requirement from broker formula
-        try:
-            capital = self.calc_margin_requirement()
-        except Exception:
-            # Fallback to capital at risk if margin calc fails
-            capital = self._calc_capital_at_risk()
+        # Use effective margin (real margin if set, else Reg T formula)
+        capital = self.get_effective_margin()
 
         if capital is None or capital <= 0:
             return None
