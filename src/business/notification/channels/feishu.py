@@ -445,7 +445,9 @@ class FeishuCardBuilder:
             option_type = opp.get("option_type", "put").upper()
 
             # 标题行：#1 TSLA PUT 485 @ 2026-02-06 (DTE=18)
-            header_text = f"**#{i} {symbol} {option_type} {strike:.0f} @ {expiry} (DTE={dte})**"
+            # 行权价格式化：整数显示为整数，小数保留小数位
+            strike_str = f"{strike:.0f}" if strike == int(strike) else f"{strike}"
+            header_text = f"**#{i} {symbol} {option_type} {strike_str} @ {expiry} (DTE={dte})**"
             elements.append(cls.create_text_element(header_text))
 
             # 策略行：Pos, ExpROC, Sharpe, Premium Rate, WinP, Annual ROC

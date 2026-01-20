@@ -28,6 +28,7 @@ from src.business.screening.filters.contract_filter import ContractFilter
 from src.business.screening.filters.market_filter import MarketFilter
 from src.business.screening.filters.underlying_filter import UnderlyingFilter
 from src.business.screening.models import (
+    ContractOpportunity,
     MarketStatus,
     MarketType,
     ScreeningResult,
@@ -164,25 +165,58 @@ class ScreeningPipeline:
             return_rejected=True,
         )
 
-        # 统计实际评估数量并筛选出通过的
+        # 统计实际评估数量并筛选出通过的（Step1 候选）
         total_evaluated = len(all_evaluated)
-        opportunities = [o for o in all_evaluated if o.passed]
+        candidates = [o for o in all_evaluated if o.passed]
+
+        logger.info(
+            f"Step 3 完成: {len(candidates)}/{total_evaluated} 个候选"
+        )
+
+        # 4. 二次确认 - 重新获取数据并评估候选合约
+        confirmed: list[ContractOpportunity] = []
+        if candidates:
+            logger.info(f"Step 4: 二次确认 ({len(candidates)} 个候选)...")
+
+            confirmed = self._confirm_candidates(
+                candidates=candidates,
+                passed_underlyings=passed_underlyings,
+                option_types=option_types,
+                market_type=market_type,
+            )
+
+            logger.info(f"确认完成: {len(confirmed)}/{len(candidates)} 通过")
+
+            # 输出确认结果详情
+            for c in candidates:
+                key = (c.symbol, c.expiry, c.strike, c.option_type)
+                is_confirmed = any(
+                    (x.symbol, x.expiry, x.strike, x.option_type) == key
+                    for x in confirmed
+                )
+                status = "✅" if is_confirmed else "❌"
+                logger.info(
+                    f"   {status} {c.symbol} {c.option_type.upper()} {c.strike} "
+                    f"@{c.expiry} (E[ROC]={c.expected_roc:.1%})"
+                )
 
         elapsed = (datetime.now() - start_time).total_seconds()
         logger.info(
-            f"筛选完成: {len(opportunities)}/{total_evaluated} 个机会, 耗时 {elapsed:.1f}s"
+            f"筛选完成: {len(confirmed)} 个确认机会, 耗时 {elapsed:.1f}s"
         )
 
         return ScreeningResult(
-            passed=len(opportunities) > 0,
+            passed=len(confirmed) > 0,
             strategy_type=strategy_type,
             market_status=market_status,
             opportunities=all_evaluated,  # 返回所有评估的合约，便于显示淘汰原因
             underlying_scores=underlying_scores,
             scanned_underlyings=len(symbols),
             passed_underlyings=len(passed_underlyings),
-            total_contracts_evaluated=total_evaluated,  # 使用实际评估数量
-            qualified_contracts=len(opportunities),
+            total_contracts_evaluated=total_evaluated,
+            qualified_contracts=len(confirmed),  # 使用确认后的数量
+            candidates=candidates,  # Step1 候选
+            confirmed=confirmed,  # 两步都通过
         )
 
     def run_market_only(self, market_type: MarketType) -> MarketStatus:
@@ -273,6 +307,54 @@ class ScreeningPipeline:
                 logger.info(f"      ❌ {reason}")
 
         logger.info(f"{'─' * 50}")
+
+    def _confirm_candidates(
+        self,
+        candidates: list[ContractOpportunity],
+        passed_underlyings: list[UnderlyingScore],
+        option_types: list[str] | None,
+        market_type: MarketType,
+    ) -> list[ContractOpportunity]:
+        """二次确认候选合约
+
+        重新获取数据并评估候选合约，只返回仍然通过的合约。
+
+        Args:
+            candidates: Step1 候选合约列表
+            passed_underlyings: 通过标的筛选的标的列表
+            option_types: 期权类型列表
+            market_type: 市场类型
+
+        Returns:
+            两步都通过的合约列表
+        """
+        # 提取候选合约的唯一标识 (symbol, expiry, strike, option_type)
+        candidate_keys = {
+            (c.symbol, c.expiry, c.strike, c.option_type)
+            for c in candidates
+        }
+
+        # 只重新评估候选合约所属的标的
+        candidate_symbols = {c.symbol for c in candidates}
+        underlyings_to_evaluate = [
+            s for s in passed_underlyings
+            if s.symbol in candidate_symbols
+        ]
+
+        # 重新评估（会重新获取最新行情数据）
+        re_evaluated = self.contract_filter.evaluate(
+            underlyings_to_evaluate,
+            option_types=option_types,
+            return_rejected=True,
+        )
+
+        # 只保留：1) 在候选中 2) 仍然通过
+        confirmed = [
+            o for o in re_evaluated
+            if o.passed and (o.symbol, o.expiry, o.strike, o.option_type) in candidate_keys
+        ]
+
+        return confirmed
 
 
 # 便捷函数

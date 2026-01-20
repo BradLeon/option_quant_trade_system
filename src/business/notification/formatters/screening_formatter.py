@@ -52,9 +52,9 @@ class ScreeningFormatter:
         # 构建市场状态描述
         market_status_text = self._format_market_status(result.market_status)
 
-        # 构建机会列表（只包含通过筛选的合约）
-        # 注意：result.opportunities 包含所有评估的合约（含被拒绝的），需要过滤
-        passed_opportunities = [opp for opp in result.opportunities if opp.passed]
+        # 使用 confirmed（两步都通过的合约）
+        # Double Confirmation: 只有两次筛选都通过的合约才推送
+        confirmed_opportunities = result.confirmed if result.confirmed else []
 
         opportunities_data = [
             {
@@ -95,7 +95,7 @@ class ScreeningFormatter:
                 # 警告信息
                 "warnings": opp.warnings,
             }
-            for opp in passed_opportunities
+            for opp in confirmed_opportunities
         ]
 
         return FeishuCardBuilder.create_opportunity_card(
@@ -173,7 +173,7 @@ class ScreeningFormatter:
         """格式化筛选结果
 
         根据结果自动选择合适的格式：
-        - 有机会: format_opportunity
+        - 有确认机会: format_opportunity (使用 confirmed)
         - 无机会: format_no_opportunity
         - 市场不利: format_market_unfavorable
 
@@ -185,7 +185,8 @@ class ScreeningFormatter:
         """
         if result.rejection_reason and "市场环境" in result.rejection_reason:
             return self.format_market_unfavorable(result)
-        elif result.passed and result.opportunities:
+        elif result.confirmed:
+            # Double Confirmation: 只有两步都通过的才推送
             return self.format_opportunity(result)
         else:
             return self.format_no_opportunity(result)

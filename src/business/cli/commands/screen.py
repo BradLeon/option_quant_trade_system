@@ -186,24 +186,29 @@ def screen(
                         skip_market_check=skip_market_check,
                     )
 
-                    # 统计
-                    qualified = [o for o in result.opportunities if o.passed] if result.opportunities else []
-                    total_opportunities += len(qualified)
+                    # 统计（使用 confirmed 而非 opportunities）
+                    confirmed = result.confirmed if result.confirmed else []
+                    candidates = result.candidates if result.candidates else []
+                    total_opportunities += len(confirmed)
                     all_results.append({
                         "market": mkt,
                         "strategy": strat,
                         "result": result,
-                        "qualified": qualified,
+                        "qualified": confirmed,  # 兼容下游代码
+                        "candidates": candidates,
                     })
 
                     # 简要输出
-                    if qualified:
-                        click.echo(f"   ✅ 发现 {len(qualified)} 个机会")
-                        for opp in qualified[:3]:
-                            click.echo(f"      - {opp.symbol} {opp.option_type.upper()}{opp.strike:.0f} "
-                                       f"DTE={opp.dte} Expected ROC={opp.expected_roc:.1%}" if opp.expected_roc else "")
-                        if len(qualified) > 3:
-                            click.echo(f"      ... 还有 {len(qualified) - 3} 个")
+                    if confirmed:
+                        click.echo(f"   ✅ 确认 {len(confirmed)}/{len(candidates)} 个机会")
+                        for opp in confirmed[:3]:
+                            strike_str = f"{opp.strike:.0f}" if opp.strike == int(opp.strike) else f"{opp.strike}"
+                            roc_str = f" Expected ROC={opp.expected_roc:.1%}" if opp.expected_roc else ""
+                            click.echo(f"      - {opp.symbol} {opp.option_type.upper()} {strike_str} DTE={opp.dte}{roc_str}")
+                        if len(confirmed) > 3:
+                            click.echo(f"      ... 还有 {len(confirmed) - 3} 个")
+                    elif candidates:
+                        click.echo(f"   ⚠️ {len(candidates)} 个候选，但二次确认后均被淘汰")
                     else:
                         reason = result.rejection_reason or "无符合条件的合约"
                         click.echo(f"   ❌ {reason}")
@@ -390,7 +395,8 @@ def _output_text(result) -> None:
                 click.echo("   示例:")
                 for o in rejected[:3]:
                     if o.disqualify_reasons:
-                        click.echo(f"     - {o.symbol} {o.option_type.upper()}{o.strike:.0f}: {o.disqualify_reasons[0]}")
+                        strike_str = f"{o.strike:.0f}" if o.strike == int(o.strike) else f"{o.strike}"
+                        click.echo(f"     - {o.symbol} {o.option_type.upper()} {strike_str}: {o.disqualify_reasons[0]}")
 
     click.echo()
 
@@ -520,16 +526,17 @@ def _output_text_summary(all_results: list[dict]) -> None:
     """文本格式汇总输出"""
     click.echo()
     click.echo("=" * 90)
-    click.echo(" ✅ 开仓机会汇总")
+    click.echo(" ✅ 开仓机会汇总 (Double Confirmation)")
     click.echo("=" * 90)
 
     for item in all_results:
         qualified = item["qualified"]
+        candidates = item.get("candidates", [])
         if not qualified:
             continue
 
         click.echo()
-        click.echo(f"📌 {item['market'].upper()} | {item['strategy']}")
+        click.echo(f"📌 {item['market'].upper()} | {item['strategy']} | 确认: {len(qualified)}/{len(candidates)}")
         click.echo("=" * 90)
 
         # 按 ROC 排序
@@ -548,10 +555,12 @@ def _print_opportunity_card(opp, index: int) -> None:
     """打印单个机会的详细卡片"""
     opt_type = "CALL" if opp.option_type == "call" else "PUT"
     exp_str = opp.expiry if opp.expiry else "N/A"
+    # 行权价格式化：整数显示为整数，小数保留小数位
+    strike_str = f"{opp.strike:.0f}" if opp.strike == int(opp.strike) else f"{opp.strike}"
 
     # 标题行
     click.echo()
-    click.echo(f"┌─ #{index} {opp.symbol} {opt_type} {opp.strike:.0f} @ {exp_str} (DTE={opp.dte})")
+    click.echo(f"┌─ #{index} {opp.symbol} {opt_type} {strike_str} @ {exp_str} (DTE={opp.dte})")
     click.echo("├" + "─" * 89)
 
     # 策略指标行 (重要的放前面)

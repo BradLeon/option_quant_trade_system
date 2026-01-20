@@ -360,6 +360,10 @@ class ScreeningResult:
     # 不通过原因（如市场不利）
     rejection_reason: Optional[str] = None
 
+    # Double Confirmation 字段
+    candidates: list[ContractOpportunity] = field(default_factory=list)  # Step1 候选
+    confirmed: list[ContractOpportunity] = field(default_factory=list)  # 两步都通过
+
     @property
     def summary(self) -> dict:
         """筛选摘要"""
