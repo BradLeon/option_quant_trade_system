@@ -462,8 +462,9 @@ class AccountAggregator:
 
         for pos in futu_options:
             try:
-                # Use the underlying field which contains IBKR-compatible stock code
-                # (e.g., "9988" for ALB, "700" for TCH)
+                # Use the underlying field which contains standard HK stock code
+                # (e.g., "9988.HK" for ALB, "0700.HK" for TCH)
+                # fetch_greeks_for_hk_option internally converts to IBKR format
                 underlying = pos.underlying
                 strike = pos.strike
                 expiry = pos.expiry  # Should be in YYYYMMDD format

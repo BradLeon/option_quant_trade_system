@@ -56,12 +56,18 @@ logger = logging.getLogger(__name__)
     is_flag=True,
     help="显示详细日志",
 )
+@click.option(
+    "--push/--no-push",
+    default=False,
+    help="是否推送结果到飞书",
+)
 def dashboard(
     account_type: Optional[str],
     ibkr_only: bool,
     futu_only: bool,
     refresh: int,
     verbose: bool,
+    push: bool,
 ) -> None:
     """实时监控仪表盘
 
@@ -81,6 +87,9 @@ def dashboard(
 
       # 仅使用 IBKR 账户
       optrade dashboard -a paper --ibkr-only
+
+      # 推送结果到飞书
+      optrade dashboard -a real --push
     """
     # 配置日志
     log_level = logging.DEBUG if verbose else logging.WARNING
@@ -107,6 +116,10 @@ def dashboard(
             result = _get_monitor_result(account_type, ibkr_only, futu_only)
             output = renderer.render(result)
             click.echo(output)
+
+            # 推送结果
+            if push:
+                _push_result(result)
 
     except KeyboardInterrupt:
         click.echo("\n👋 已退出仪表盘")
@@ -440,6 +453,30 @@ def _get_sample_positions() -> list[PositionData]:
             fundamental_score=82.0,
         ),
     ]
+
+
+def _push_result(result: MonitorResult) -> None:
+    """推送结果到飞书
+
+    Args:
+        result: 监控结果
+    """
+    click.echo()
+    click.echo("📤 推送结果到飞书...")
+
+    try:
+        from src.business.notification.dispatcher import MessageDispatcher
+
+        dispatcher = MessageDispatcher()
+        send_result = dispatcher.send_dashboard_result(result, force=True)
+
+        if send_result.is_success:
+            click.echo(f"✅ 推送成功: {send_result.message_id}")
+        else:
+            click.echo(f"❌ 推送失败: {send_result.error}")
+
+    except Exception as e:
+        click.echo(f"❌ 推送出错: {e}", err=True)
 
 
 def _get_sample_capital() -> CapitalMetrics:

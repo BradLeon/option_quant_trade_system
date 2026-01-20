@@ -6,6 +6,7 @@ Screen Command - 开仓筛选命令
 
 import json
 import logging
+import os
 import sys
 from datetime import datetime
 from typing import Optional
@@ -218,19 +219,25 @@ def screen(
             elif total_opportunities > 0:
                 _output_text_summary(all_results)
 
-            # 推送结果
-            if push and total_opportunities > 0:
-                for item in all_results:
-                    if item["qualified"]:
-                        _push_result(item["result"])
+            # 推送结果（无论是否有机会都推送）
+            if push:
+                if total_opportunities > 0:
+                    # 有机会时，推送每个有机会的结果
+                    for item in all_results:
+                        if item["qualified"]:
+                            _push_result(item["result"])
+                else:
+                    # 无机会时，推送汇总结果
+                    _push_no_opportunity_summary(all_results, markets, strategies)
 
         # 设置退出码 (在 with 块外，provider 已关闭)
-        sys.exit(0 if total_opportunities > 0 else 1)
+        # 使用 os._exit() 强制退出，避免 Futu SDK 后台线程阻塞
+        os._exit(0 if total_opportunities > 0 else 1)
 
     except Exception as e:
         logger.exception("筛选过程出错")
         click.echo(f"❌ 错误: {e}", err=True)
-        sys.exit(2)
+        os._exit(2)
 
 
 def _is_market_symbol(symbol: str, market: str) -> bool:
@@ -602,6 +609,44 @@ def _push_result(result) -> None:
     try:
         dispatcher = MessageDispatcher()
         send_result = dispatcher.send_screening_result(result, force=True)
+
+        if send_result.is_success:
+            click.echo(f"✅ 推送成功: {send_result.message_id}")
+        else:
+            click.echo(f"❌ 推送失败: {send_result.error}")
+
+    except Exception as e:
+        click.echo(f"❌ 推送出错: {e}", err=True)
+
+
+def _push_no_opportunity_summary(all_results: list, markets: list, strategies: list) -> None:
+    """推送无机会的汇总结果"""
+    click.echo()
+    click.echo("📤 推送筛选结果到飞书（无符合条件的合约）...")
+
+    try:
+        # 统计扫描的标的数量
+        total_scanned = sum(
+            item["result"].scanned_underlyings
+            for item in all_results
+            if item.get("result")
+        )
+
+        # 构建消息内容
+        market_str = ", ".join(m.upper() for m in markets)
+        strategy_str = ", ".join(strategies)
+
+        title = "📊 筛选完成 - 暂无机会"
+        content = (
+            f"**市场**: {market_str}\n"
+            f"**策略**: {strategy_str}\n"
+            f"**扫描标的**: {total_scanned} 个\n"
+            f"**符合条件的合约**: 0 个\n\n"
+            f"当前市场环境下无符合条件的开仓机会，建议继续观察。"
+        )
+
+        dispatcher = MessageDispatcher()
+        send_result = dispatcher.send_text(title, content, force=True)
 
         if send_result.is_success:
             click.echo(f"✅ 推送成功: {send_result.message_id}")

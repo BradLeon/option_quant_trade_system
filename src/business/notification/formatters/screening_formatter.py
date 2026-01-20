@@ -52,18 +52,50 @@ class ScreeningFormatter:
         # 构建市场状态描述
         market_status_text = self._format_market_status(result.market_status)
 
-        # 构建机会列表
+        # 构建机会列表（只包含通过筛选的合约）
+        # 注意：result.opportunities 包含所有评估的合约（含被拒绝的），需要过滤
+        passed_opportunities = [opp for opp in result.opportunities if opp.passed]
+
         opportunities_data = [
             {
+                # 基础信息
                 "symbol": opp.symbol,
                 "strike": opp.strike,
                 "expiry": opp.expiry,
-                "sas": opp.sas or 0,
-                "delta": opp.delta or 0,
                 "dte": opp.dte,
-                "sharpe": opp.sharpe_ratio or 0,
+                "option_type": opp.option_type,
+                # 策略指标
+                "recommended_position": opp.recommended_position,
+                "expected_roc": opp.expected_roc,
+                "sharpe_ratio": opp.sharpe_ratio,
+                "premium_rate": opp.premium_rate,
+                "win_probability": opp.win_probability,
+                "annual_roc": opp.annual_roc,
+                # 风险指标
+                "tgr": opp.tgr,
+                "sas": opp.sas,
+                "prei": opp.prei,
+                "kelly_fraction": opp.kelly_fraction,
+                "theta_premium_ratio": opp.theta_premium_ratio,
+                # 行情数据
+                "underlying_price": opp.underlying_price,
+                "mid_price": opp.mid_price,
+                "moneyness": opp.moneyness,
+                "bid": opp.bid,
+                "ask": opp.ask,
+                "volume": opp.volume,
+                "iv": opp.iv,
+                # Greeks
+                "delta": opp.delta,
+                "gamma": opp.gamma,
+                "theta": opp.theta,
+                "vega": opp.vega,
+                "open_interest": opp.open_interest,
+                "otm_percent": opp.otm_percent,
+                # 警告信息
+                "warnings": opp.warnings,
             }
-            for opp in result.opportunities
+            for opp in passed_opportunities
         ]
 
         return FeishuCardBuilder.create_opportunity_card(

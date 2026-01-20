@@ -22,6 +22,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 import requests
+from dotenv import load_dotenv
 
 from src.business.notification.channels.base import (
     NotificationChannel,
@@ -43,6 +44,7 @@ class FeishuConfig:
     @classmethod
     def from_env(cls) -> "FeishuConfig":
         """从环境变量加载配置"""
+        load_dotenv()
         webhook_url = os.getenv("FEISHU_WEBHOOK_URL", "")
         secret = os.getenv("FEISHU_WEBHOOK_SECRET")
         timeout = int(os.getenv("FEISHU_TIMEOUT", "10"))
@@ -421,7 +423,7 @@ class FeishuCardBuilder:
 
         Args:
             title: 标题
-            opportunities: 机会列表
+            opportunities: 机会列表，每个机会包含详细字段
             market_status: 市场状态描述
 
         Returns:
@@ -434,22 +436,90 @@ class FeishuCardBuilder:
             elements.append(cls.create_text_element(f"📊 **市场状态**: {market_status}"))
             elements.append(cls.create_divider())
 
-        # 机会列表
+        # 机会列表（详细格式）
         for i, opp in enumerate(opportunities[:5], 1):  # 最多显示 5 个
             symbol = opp.get("symbol", "N/A")
             strike = opp.get("strike", 0)
             expiry = opp.get("expiry", "N/A")
-            sas = opp.get("sas", 0)
-            delta = opp.get("delta", 0)
+            dte = opp.get("dte", 0)
+            option_type = opp.get("option_type", "put").upper()
 
-            opp_text = (
-                f"**{i}. {symbol}** | "
-                f"行权价: ${strike:.0f} | "
-                f"到期: {expiry} | "
-                f"SAS: {sas:.0f} | "
-                f"Delta: {delta:.2f}"
+            # 标题行：#1 TSLA PUT 485 @ 2026-02-06 (DTE=18)
+            header_text = f"**#{i} {symbol} {option_type} {strike:.0f} @ {expiry} (DTE={dte})**"
+            elements.append(cls.create_text_element(header_text))
+
+            # 策略行：Pos, ExpROC, Sharpe, Premium Rate, WinP, Annual ROC
+            # 注意：百分比值存储为小数（如 0.484 表示 48.4%），需要乘 100
+            pos = opp.get("recommended_position", 0) or 0
+            exp_roc = (opp.get("expected_roc", 0) or 0) * 100
+            sharpe = opp.get("sharpe_ratio", 0) or 0
+            premium_rate = (opp.get("premium_rate", 0) or 0) * 100
+            win_prob = (opp.get("win_probability", 0) or 0) * 100
+            annual_roc = (opp.get("annual_roc", 0) or 0) * 100
+
+            strategy_text = (
+                f"📈 Pos={pos:.2f} | ExpROC={exp_roc:.1f}% | "
+                f"Sharpe={sharpe:.2f} | PremRate={premium_rate:.2f}% | "
+                f"WinP={win_prob:.1f}% | AnnROC={annual_roc:.1f}%"
             )
-            elements.append(cls.create_text_element(opp_text))
+            elements.append(cls.create_text_element(strategy_text))
+
+            # 指标行：TGR, SAS, PREI, Kelly, Θ/P
+            tgr = opp.get("tgr", 0) or 0
+            sas = opp.get("sas", 0) or 0
+            prei = opp.get("prei", 0) or 0
+            kelly = opp.get("kelly_fraction", 0) or 0
+            theta_premium = opp.get("theta_premium_ratio", 0) or 0
+
+            indicators_text = (
+                f"📊 TGR={tgr:.2f} | SAS={sas:.1f} | "
+                f"PREI={prei:.1f} | Kelly={kelly:.2f} | Θ/P={theta_premium:.3f}"
+            )
+            elements.append(cls.create_text_element(indicators_text))
+
+            # 行情行：S, Premium, Moneyness, Bid/Ask, Vol, IV
+            underlying_price = opp.get("underlying_price", 0) or 0
+            mid_price = opp.get("mid_price", 0) or 0
+            moneyness = (opp.get("moneyness", 0) or 0) * 100  # 小数转百分比
+            bid = opp.get("bid")
+            ask = opp.get("ask")
+            volume = opp.get("volume")
+            iv = (opp.get("iv", 0) or 0) * 100  # 小数转百分比
+
+            bid_str = f"{bid:.2f}" if bid else "N/A"
+            ask_str = f"{ask:.2f}" if ask else "N/A"
+            vol_str = str(volume) if volume else "N/A"
+
+            market_text = (
+                f"💹 S={underlying_price:.2f} | Prem={mid_price:.2f} | "
+                f"Moneyness={moneyness:.2f}% | Bid/Ask={bid_str}/{ask_str} | "
+                f"Vol={vol_str} | IV={iv:.1f}%"
+            )
+            elements.append(cls.create_text_element(market_text))
+
+            # Greeks行：Δ, Γ, Θ, V, OI, OTM
+            delta = opp.get("delta", 0) or 0
+            gamma = opp.get("gamma", 0) or 0
+            theta = opp.get("theta", 0) or 0
+            vega = opp.get("vega", 0) or 0
+            oi = opp.get("open_interest", 0) or 0
+            otm_pct = (opp.get("otm_percent", 0) or 0) * 100  # 小数转百分比
+
+            greeks_text = (
+                f"🔢 Δ={delta:.3f} | Γ={gamma:.4f} | "
+                f"Θ={theta:.3f} | V={vega:.3f} | OI={oi} | OTM={otm_pct:.1f}%"
+            )
+            elements.append(cls.create_text_element(greeks_text))
+
+            # 警告信息
+            warnings = opp.get("warnings", [])
+            if warnings:
+                for warning in warnings[:2]:  # 最多显示 2 个警告
+                    elements.append(cls.create_text_element(f"⚠️ {warning}"))
+
+            # 分隔线（除了最后一个）
+            if i < len(opportunities[:5]):
+                elements.append(cls.create_divider())
 
         elements.append(cls.create_note(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"))
 

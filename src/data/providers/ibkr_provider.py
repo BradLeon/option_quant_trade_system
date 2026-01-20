@@ -721,19 +721,56 @@ class IBKRProvider(DataProvider, AccountProvider):
         BATCH_SIZE = 30
         WAIT_SECONDS = 5  # Wait time for Greeks to populate
 
-        logger.info(f"Fetching quotes for {len(contracts)} contracts in batches of {BATCH_SIZE}...")
+        total_batches = (len(contracts) + BATCH_SIZE - 1) // BATCH_SIZE
+        logger.info(f"Fetching quotes for {len(contracts)} contracts in {total_batches} batches...")
 
         # NOTE: Underlying subscription disabled - testing showed it may interfere with
         # option data retrieval during non-market hours. Greeks can still be computed
         # via Black-Scholes fallback when API Greeks unavailable.
         underlying_tickers: dict[str, tuple[any, any]] = {}
 
+        import time as _time
+
+        # Pre-fetch underlying data for all unique underlyings (optimization for BS fallback)
+        # This avoids repeated get_stock_volatility() calls for the same underlying
+        unique_underlyings = set(c.underlying for c in contracts)
+        underlying_cache: dict[str, dict] = {}  # {underlying: {price, iv}}
+
+        if len(unique_underlyings) <= 10:  # Only pre-fetch if reasonable number
+            logger.info(f"Pre-fetching data for {len(unique_underlyings)} unique underlyings...")
+            for underlying in unique_underlyings:
+                try:
+                    underlying_symbol = SymbolFormatter.to_standard(underlying)
+                    cache_entry = {"price": None, "iv": None}
+
+                    # Get price
+                    stock_quote = self.get_stock_quote(underlying_symbol)
+                    if stock_quote and stock_quote.close is not None:
+                        try:
+                            if not math.isnan(stock_quote.close):
+                                cache_entry["price"] = stock_quote.close
+                        except (TypeError, ValueError):
+                            pass
+
+                    # Get volatility
+                    vol_data = self.get_stock_volatility(underlying_symbol, include_iv_rank=False)
+                    if vol_data:
+                        cache_entry["iv"] = vol_data.iv or vol_data.hv
+
+                    underlying_cache[underlying] = cache_entry
+                    logger.debug(f"Cached {underlying}: price={cache_entry['price']}, iv={cache_entry['iv']}")
+                except Exception as e:
+                    logger.warning(f"Failed to pre-fetch data for {underlying}: {e}")
+
+            logger.info(f"Pre-fetch complete: {len(underlying_cache)} underlyings cached")
+
+        batch_start_time = _time.time()
+
         for batch_start in range(0, len(contracts), BATCH_SIZE):
             batch_contracts = contracts[batch_start:batch_start + BATCH_SIZE]
             batch_num = batch_start // BATCH_SIZE + 1
-            total_batches = (len(contracts) + BATCH_SIZE - 1) // BATCH_SIZE
 
-            logger.debug(f"Processing batch {batch_num}/{total_batches}: {len(batch_contracts)} contracts")
+            logger.info(f"[Batch {batch_num}/{total_batches}] Processing {len(batch_contracts)} contracts...")
 
             # Phase 1: Create and qualify all IBKR Option contracts
             qualified_items: list[tuple[OptionContract, Option]] = []
@@ -776,8 +813,14 @@ class IBKRProvider(DataProvider, AccountProvider):
                             opt.tradingClass = contract.trading_class
                             logger.debug(f"Using tradingClass={contract.trading_class} for {contract.symbol}")
 
-                    # Qualify contract
+                    # Qualify contract (this can block - log progress)
+                    qualify_start = _time.time()
                     qualified = self._ib.qualifyContracts(opt)
+                    qualify_elapsed = _time.time() - qualify_start
+
+                    if qualify_elapsed > 5:
+                        logger.warning(f"qualifyContracts for {contract.symbol} took {qualify_elapsed:.1f}s")
+
                     if not qualified or not hasattr(opt, 'conId') or not opt.conId:
                         logger.debug(f"Contract not found: {contract.symbol}")
                         skipped_contracts += 1
@@ -857,14 +900,17 @@ class IBKRProvider(DataProvider, AccountProvider):
                         api_greeks_count += 1
                         logger.debug(f"Have API Greeks for {contract.symbol}: delta={greeks.delta:.4f}, iv={iv:.4f}")
                     else:
-                        # Fallback to Black-Scholes
+                        # Fallback to Black-Scholes (use cached underlying data if available)
                         logger.debug(f"No API Greeks for {contract.symbol}, using BS fallback")
+                        cached_data = underlying_cache.get(contract.underlying)
                         bs_result = self._calculate_greeks_from_params(
                             underlying=contract.underlying,
                             strike=contract.strike_price,
                             expiry=contract.expiry_date.strftime("%Y%m%d"),
                             option_type="call" if contract.option_type == OptionType.CALL else "put",
-                            ticker=ticker
+                            ticker=ticker,
+                            cached_price=cached_data.get("price") if cached_data else None,
+                            cached_iv=cached_data.get("iv") if cached_data else None,
                         )
                         if bs_result and bs_result.get("delta") is not None:
                             greeks = Greeks(
@@ -946,6 +992,11 @@ class IBKRProvider(DataProvider, AccountProvider):
                     self._ib.cancelMktData(opt)
                 except Exception:
                     pass
+
+            # Log batch completion time
+            batch_elapsed = _time.time() - batch_start_time
+            logger.info(f"[Batch {batch_num}/{total_batches}] Completed in {batch_elapsed:.1f}s, {len(results)} quotes so far")
+            batch_start_time = _time.time()
 
         # Phase 6: Cancel underlying subscriptions
         for underlying, (stock, _) in underlying_tickers.items():
@@ -1316,7 +1367,7 @@ class IBKRProvider(DataProvider, AccountProvider):
 
             # If no volatility data available, return None
             if iv is None and hv is None:
-                logger.warning(f"No volatility data available for {symbol}. "
+                logger.warning(f"No volatility data available for {normalized} (input: {symbol}). "
                               "Options market data subscription may be required.")
                 return None
 
@@ -1708,7 +1759,10 @@ class IBKRProvider(DataProvider, AccountProvider):
 
                 # Add option-specific fields
                 if sec_type == "OPT":
-                    position.underlying = contract.symbol  # Underlying stock symbol
+                    # Convert IBKR underlying to standard format for cross-provider compatibility
+                    position.underlying = SymbolFormatter.from_ibkr_contract(
+                        contract.symbol, contract.exchange
+                    )  # e.g., "700" + "SEHK" -> "0700.HK"
                     position.strike = contract.strike
                     position.expiry = contract.lastTradeDateOrContractMonth
                     position.option_type = "call" if contract.right == "C" else "put"
@@ -1904,6 +1958,8 @@ class IBKRProvider(DataProvider, AccountProvider):
         expiry: str,
         option_type: str,
         ticker: Any = None,
+        cached_price: float | None = None,
+        cached_iv: float | None = None,
     ) -> dict[str, float | None] | None:
         """Calculate Greeks using Black-Scholes from raw parameters.
 
@@ -1913,6 +1969,8 @@ class IBKRProvider(DataProvider, AccountProvider):
             expiry: Expiry date in YYYYMMDD format.
             option_type: "call" or "put".
             ticker: Optional IBKR ticker object.
+            cached_price: Pre-fetched underlying price (optimization).
+            cached_iv: Pre-fetched IV (optimization).
 
         Returns:
             Dictionary with calculated Greeks, or None if calculation fails.
@@ -1925,41 +1983,42 @@ class IBKRProvider(DataProvider, AccountProvider):
             # Step 1: Normalize underlying symbol using SymbolFormatter
             underlying_symbol = SymbolFormatter.to_standard(underlying)
 
-            # Step 2: Get underlying price with multiple fallbacks
-            underlying_price = None
-            try:
-                stock_quote = self.get_stock_quote(underlying_symbol)
-                if stock_quote:
-                    # Priority: close (last price)
-                    if stock_quote.close is not None:
-                        try:
-                            if not math.isnan(stock_quote.close):
-                                underlying_price = stock_quote.close
-                                logger.debug(f"Fetched underlying price from close: {underlying_price}")
-                        except (TypeError, ValueError):
-                            pass
-                    # Fallback: bid/ask midpoint
-                    if underlying_price is None:
-                        bid = getattr(stock_quote, '_bid', None)
-                        ask = getattr(stock_quote, '_ask', None)
-                        if bid is not None and ask is not None and bid > 0 and ask > 0:
-                            underlying_price = (bid + ask) / 2
-                            logger.debug(f"Fetched underlying price from bid/ask midpoint: {underlying_price}")
-            except Exception as e:
-                logger.debug(f"Could not fetch underlying stock quote: {e}")
+            # Step 2: Get underlying price (use cached if available)
+            underlying_price = cached_price
+            if underlying_price is None:
+                try:
+                    stock_quote = self.get_stock_quote(underlying_symbol)
+                    if stock_quote:
+                        # Priority: close (last price)
+                        if stock_quote.close is not None:
+                            try:
+                                if not math.isnan(stock_quote.close):
+                                    underlying_price = stock_quote.close
+                                    logger.debug(f"Fetched underlying price from close: {underlying_price}")
+                            except (TypeError, ValueError):
+                                pass
+                        # Fallback: bid/ask midpoint
+                        if underlying_price is None:
+                            bid = getattr(stock_quote, '_bid', None)
+                            ask = getattr(stock_quote, '_ask', None)
+                            if bid is not None and ask is not None and bid > 0 and ask > 0:
+                                underlying_price = (bid + ask) / 2
+                                logger.debug(f"Fetched underlying price from bid/ask midpoint: {underlying_price}")
+                except Exception as e:
+                    logger.debug(f"Could not fetch underlying stock quote: {e}")
 
             if underlying_price is None:
                 logger.warning(f"Cannot calculate Greeks: no underlying price for {underlying_symbol}")
                 return None
 
-            # Step 3: Get or estimate IV
-            iv = None
+            # Step 3: Get or estimate IV (use cached if available)
+            iv = cached_iv
 
-            # Try to get IV from ticker
-            if ticker and hasattr(ticker, 'impliedVolatility') and ticker.impliedVolatility == ticker.impliedVolatility:
+            # Try to get IV from ticker if not cached
+            if iv is None and ticker and hasattr(ticker, 'impliedVolatility') and ticker.impliedVolatility == ticker.impliedVolatility:
                 iv = ticker.impliedVolatility
 
-            # If no IV from ticker, try to get from stock volatility
+            # If no IV from ticker or cache, try to get from stock volatility
             if iv is None:
                 try:
                     volatility_data = self.get_stock_volatility(underlying_symbol, include_iv_rank=False)
