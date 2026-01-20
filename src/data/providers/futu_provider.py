@@ -34,6 +34,7 @@ from src.data.providers.base import (
     DataProvider,
     RateLimitError,
 )
+from src.data.utils import SymbolFormatter
 
 logger = logging.getLogger(__name__)
 
@@ -1133,19 +1134,20 @@ class FutuProvider(DataProvider, AccountProvider):
             logger.error(f"Error getting account summary: {e}")
             return None
 
-    # Mapping from Futu option codes to IBKR stock codes (HK stocks)
+    # Mapping from Futu option codes to standard HK stock codes (Yahoo format)
     # These are HKEX standardized option abbreviations
     # Add new mappings here when encountering unknown option codes
-    FUTU_TO_IBKR_CODE = {
-        "ALB": "9988",   # 阿里巴巴
-        "TCH": "700",    # 腾讯
-        "MIU": "1810",   # 小米
-        "BDU": "9888",   # 百度
-        "JDH": "9618",   # 京东
-        "NTE": "9999",   # 网易
-        "BLB": "9626",   # 哔哩哔哩
-        "HCH": "2318",   # 中国平安
-        "HSI": "HSI",    # 恒生指数
+    # Format: "0700.HK" is compatible with both Yahoo and Futu (via normalize_symbol)
+    FUTU_TO_STANDARD_CODE = {
+        "ALB": "9988.HK",   # 阿里巴巴
+        "TCH": "0700.HK",   # 腾讯
+        "MIU": "1810.HK",   # 小米
+        "BDU": "9888.HK",   # 百度
+        "JDH": "9618.HK",   # 京东
+        "NTE": "9999.HK",   # 网易
+        "BLB": "9626.HK",   # 哔哩哔哩
+        "HCH": "2318.HK",   # 中国平安
+        "HSI": "^HSI",      # 恒生指数 (Yahoo format)
     }
 
     # HK option contract multiplier (shares per contract)
@@ -1175,29 +1177,34 @@ class FutuProvider(DataProvider, AccountProvider):
         return self.HK_OPTION_MULTIPLIER.get(futu_code, self.HK_OPTION_MULTIPLIER_DEFAULT)
 
     def _get_underlying_code(self, futu_code: str) -> str:
-        """Get IBKR stock code for a Futu option code.
+        """Get standard HK stock code for a Futu option code.
 
         Args:
             futu_code: Short Futu code (e.g., "ALB").
 
         Returns:
-            IBKR-compatible stock code (e.g., "9988").
+            Standard HK stock code in Yahoo format (e.g., "9988.HK").
+            This format is compatible with:
+            - Yahoo Finance (direct use)
+            - Futu (via normalize_symbol: "9988.HK" -> "HK.09988")
+            - UnifiedProvider market detection
         """
-        if futu_code in self.FUTU_TO_IBKR_CODE:
-            return self.FUTU_TO_IBKR_CODE[futu_code]
+        if futu_code in self.FUTU_TO_STANDARD_CODE:
+            return self.FUTU_TO_STANDARD_CODE[futu_code]
 
-        # Unknown code - log warning and return as-is
+        # Unknown code - log warning and return with .HK suffix
         logger.warning(
             f"Unknown Futu option code '{futu_code}'. "
-            f"Please add mapping to FUTU_TO_IBKR_CODE in FutuProvider."
+            f"Please add mapping to FUTU_TO_STANDARD_CODE in FutuProvider."
         )
-        return futu_code
+        # Return with .HK suffix so it's at least recognized as HK market
+        return f"{futu_code}.HK"
 
     def _parse_futu_option_symbol(self, code: str, stock_name: str) -> dict | None:
         """Parse Futu option symbol to extract option details.
 
         Futu option format: HK.ALB260129C160000
-        - ALB = underlying (阿里巴巴) -> mapped to IBKR code 9988
+        - ALB = underlying (阿里巴巴) -> mapped to standard code 9988.HK
         - 260129 = expiry date (YYMMDD)
         - C = Call, P = Put
         - 160000 = strike * 1000
@@ -1208,6 +1215,8 @@ class FutuProvider(DataProvider, AccountProvider):
 
         Returns:
             Dict with option details or None if not an option.
+            The 'underlying' field is in Yahoo format (e.g., "9988.HK") for
+            cross-provider compatibility.
         """
         import re
 
@@ -1227,10 +1236,10 @@ class FutuProvider(DataProvider, AccountProvider):
             option_type_char = match.group(3)
             strike_raw = match.group(4)
 
-            # Get IBKR stock code from mapping
-            ibkr_code = self._get_underlying_code(futu_code)
+            # Get standard HK stock code from mapping (Yahoo format)
+            standard_code = self._get_underlying_code(futu_code)
 
-            # Parse expiry date - return in YYYYMMDD format for IBKR compatibility
+            # Parse expiry date - return in YYYYMMDD format
             try:
                 expiry_date = datetime.strptime(f"20{expiry_str}", "%Y%m%d").strftime("%Y%m%d")
             except ValueError:
@@ -1243,7 +1252,7 @@ class FutuProvider(DataProvider, AccountProvider):
                 strike = 0.0
 
             return {
-                "underlying": ibkr_code,  # IBKR-compatible stock code
+                "underlying": standard_code,  # Standard HK code in Yahoo format (e.g., "0700.HK")
                 "expiry": expiry_date,
                 "option_type": "call" if option_type_char == "C" else "put",
                 "strike": strike,
@@ -1271,12 +1280,12 @@ class FutuProvider(DataProvider, AccountProvider):
                 except ValueError:
                     strike = 0.0
 
-                # Extract Futu code and get IBKR code from mapping
+                # Extract Futu code and get standard code from mapping
                 futu_code = symbol[:3] if len(symbol) > 3 else symbol
-                ibkr_code = self._get_underlying_code(futu_code)
+                standard_code = self._get_underlying_code(futu_code)
 
                 return {
-                    "underlying": ibkr_code,
+                    "underlying": standard_code,  # Standard HK code in Yahoo format
                     "expiry": expiry_date,
                     "option_type": "call" if "购" in type_str else "put",
                     "strike": strike,
@@ -1357,9 +1366,19 @@ class FutuProvider(DataProvider, AccountProvider):
                 # Get realized P&L
                 realized_pnl = self._safe_float(row.get("realized_pl", 0))
 
+                # For stocks, convert symbol to standard format for cross-provider compatibility
+                # US.TSM -> TSM, HK.00700 -> 0700.HK
+                # For options, keep original code as it's a contract identifier
+                if option_info:
+                    # Option: keep original Futu code (e.g., HK.TCH260129P600000)
+                    position_symbol = code
+                else:
+                    # Stock: convert to standard format
+                    position_symbol = SymbolFormatter.to_standard(code)
+
                 # Create position
                 position = AccountPosition(
-                    symbol=code,
+                    symbol=position_symbol,
                     asset_type=asset_type,
                     market=market,
                     quantity=self._safe_float(row.get("qty", 0)),

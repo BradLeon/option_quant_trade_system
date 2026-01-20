@@ -489,7 +489,11 @@ class UnifiedDataProvider:
             cached = self._redis_cache.get_klines(symbol, ktype.value)
             if cached:
                 logger.debug(f"Redis cache hit for klines: {symbol}")
-                return [KlineBar(**bar) for bar in cached]
+                # Add default ktype for old cached data that doesn't have it
+                for bar in cached:
+                    if "ktype" not in bar:
+                        bar["ktype"] = KlineType.DAY.value
+                return [KlineBar.from_dict(bar) for bar in cached]
 
         def fetcher() -> list[KlineBar]:
             providers = self._route(DataType.HISTORY_KLINE, symbol)
@@ -514,6 +518,7 @@ class UnifiedDataProvider:
                         "timestamp": bar.timestamp.isoformat()
                         if hasattr(bar.timestamp, "isoformat")
                         else str(bar.timestamp),
+                        "ktype": bar.ktype.value,
                         "open": bar.open,
                         "high": bar.high,
                         "low": bar.low,
@@ -979,7 +984,7 @@ class UnifiedDataProvider:
             cached = self._redis_cache.get_fundamental(symbol)
             if cached:
                 logger.debug(f"Redis cache hit for fundamental: {symbol}")
-                return Fundamental(**cached)
+                return Fundamental.from_dict(cached)
 
         def fetcher() -> Fundamental | None:
             providers = self._route(DataType.FUNDAMENTAL, symbol)
@@ -993,30 +998,8 @@ class UnifiedDataProvider:
         # Write to Redis cache
         if self._redis_cache and result:
             try:
-                fundamental_data = {
-                    "symbol": result.symbol,
-                    "pe_ratio": result.pe_ratio,
-                    "forward_pe": result.forward_pe,
-                    "peg_ratio": result.peg_ratio,
-                    "price_to_book": result.price_to_book,
-                    "market_cap": result.market_cap,
-                    "revenue": result.revenue,
-                    "revenue_growth": result.revenue_growth,
-                    "earnings_growth": result.earnings_growth,
-                    "profit_margin": result.profit_margin,
-                    "debt_to_equity": result.debt_to_equity,
-                    "current_ratio": result.current_ratio,
-                    "dividend_yield": result.dividend_yield,
-                    "recommendation": result.recommendation,
-                    "target_price": result.target_price,
-                    "num_analysts": result.num_analysts,
-                    "earnings_date": result.earnings_date.isoformat()
-                    if result.earnings_date
-                    else None,
-                    "ex_dividend_date": result.ex_dividend_date.isoformat()
-                    if result.ex_dividend_date
-                    else None,
-                }
+                # Use Fundamental.to_dict() for consistent serialization
+                fundamental_data = result.to_dict()
                 self._redis_cache.set_fundamental(symbol, fundamental_data)
             except Exception as e:
                 logger.warning(f"Failed to cache fundamental to Redis: {e}")

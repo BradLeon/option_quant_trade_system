@@ -20,6 +20,7 @@ import yaml
 from src.business.monitoring.models import Alert, MonitorResult
 from src.business.notification.channels.base import NotificationChannel, SendResult, SendStatus
 from src.business.notification.channels.feishu import FeishuChannel
+from src.business.notification.formatters.dashboard_formatter import DashboardFormatter
 from src.business.notification.formatters.monitoring_formatter import MonitoringFormatter
 from src.business.notification.formatters.screening_formatter import ScreeningFormatter
 from src.business.screening.models import ScreeningResult
@@ -55,6 +56,7 @@ class MessageDispatcher:
         templates = self.config.get("templates", {})
         self.screening_formatter = ScreeningFormatter(templates)
         self.monitoring_formatter = MonitoringFormatter(templates)
+        self.dashboard_formatter = DashboardFormatter(templates)
 
         # 消息去重缓存
         self._sent_messages: dict[str, datetime] = {}
@@ -331,6 +333,52 @@ class MessageDispatcher:
 
         if send_result.is_success:
             self._last_send_time = datetime.now()
+
+        return send_result
+
+    def send_dashboard_result(
+        self,
+        result: MonitorResult,
+        force: bool = False,
+    ) -> SendResult:
+        """发送仪表盘每日报告
+
+        Args:
+            result: 监控结果
+            force: 是否强制发送（忽略限制）
+
+        Returns:
+            SendResult
+        """
+        # 检查限制
+        if not force:
+            if self._is_silent_period():
+                return SendResult(
+                    status=SendStatus.SILENCED,
+                    error="In silent period",
+                )
+
+            if self._is_rate_limited():
+                return SendResult(
+                    status=SendStatus.RATE_LIMITED,
+                    error="Rate limited",
+                )
+
+        # 格式化消息
+        card_data = self.dashboard_formatter.format(result)
+
+        # 检查去重
+        if not force and self._is_duplicate(card_data):
+            return SendResult(
+                status=SendStatus.RATE_LIMITED,
+                error="Duplicate message",
+            )
+
+        # 发送消息
+        send_result = self.channel.send_card(card_data)
+
+        if send_result.is_success:
+            self._mark_sent(card_data)
 
         return send_result
 
