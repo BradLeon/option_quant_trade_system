@@ -119,9 +119,9 @@ class IBKRProvider(DataProvider, AccountProvider):
             positions = provider.get_positions()
     """
 
-    # Port mapping for account types
-    PAPER_PORT = 7497
-    LIVE_PORT = 7496
+    # Port mapping for account types (IB Gateway)
+    PAPER_PORT = 4002
+    LIVE_PORT = 4001
 
     def __init__(
         self,
@@ -301,7 +301,7 @@ class IBKRProvider(DataProvider, AccountProvider):
 
                 # Qualify the contract
                 qualified = self._ib.qualifyContracts(contract)
-                if not qualified:
+                if not qualified or not contract.conId:
                     logger.warning(f"Could not qualify contract for {symbol}")
                     continue
 
@@ -379,7 +379,7 @@ class IBKRProvider(DataProvider, AccountProvider):
         try:
             contract = self._create_stock_contract(symbol)
             qualified = self._ib.qualifyContracts(contract)
-            if not qualified:
+            if not qualified or not contract.conId:
                 logger.warning(f"Could not qualify contract for {symbol}")
                 return []
 
@@ -478,7 +478,7 @@ class IBKRProvider(DataProvider, AccountProvider):
             # Create and qualify stock contract
             stock = self._create_stock_contract(underlying)
             qualified = self._ib.qualifyContracts(stock)
-            if not qualified:
+            if not qualified or not stock.conId:
                 logger.warning(f"Could not qualify contract for {underlying}")
                 return None
 
@@ -1035,7 +1035,7 @@ class IBKRProvider(DataProvider, AccountProvider):
             )
 
             qualified = self._ib.qualifyContracts(opt)
-            if not qualified:
+            if not qualified or not opt.conId:
                 logger.warning(f"Could not qualify option contract: {symbol}")
                 return None
 
@@ -1177,7 +1177,7 @@ class IBKRProvider(DataProvider, AccountProvider):
         try:
             stock = self._create_stock_contract(underlying)
             qualified = self._ib.qualifyContracts(stock)
-            if not qualified:
+            if not qualified or not stock.conId:
                 return []
 
             # Get underlying price if strikes not specified
@@ -1314,7 +1314,7 @@ class IBKRProvider(DataProvider, AccountProvider):
 
             # Qualify the contract
             qualified = self._ib.qualifyContracts(contract)
-            if not qualified:
+            if not qualified or not contract.conId:
                 logger.warning(f"Could not qualify contract for {symbol}")
                 return None
 
@@ -1828,7 +1828,7 @@ class IBKRProvider(DataProvider, AccountProvider):
         try:
             # Ensure contract is qualified
             qualified = self._ib.qualifyContracts(contract)
-            if not qualified:
+            if not qualified or not contract.conId:
                 logger.warning(f"Could not qualify contract for {position.symbol}")
                 return
 

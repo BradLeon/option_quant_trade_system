@@ -4,6 +4,7 @@ Screening Formatter - 筛选结果格式化器
 将筛选结果格式化为推送消息。
 """
 
+from collections import defaultdict
 from typing import Any
 
 from src.business.notification.channels.feishu import FeishuCardBuilder
@@ -12,6 +13,9 @@ from src.business.screening.models import (
     MarketStatus,
     ScreeningResult,
 )
+
+# 默认最大推送机会数
+DEFAULT_MAX_OPPORTUNITIES = 10
 
 
 class ScreeningFormatter:
@@ -23,13 +27,63 @@ class ScreeningFormatter:
     def __init__(
         self,
         templates: dict[str, str] | None = None,
+        max_opportunities: int = DEFAULT_MAX_OPPORTUNITIES,
     ) -> None:
         """初始化格式化器
 
         Args:
             templates: 消息模板配置
+            max_opportunities: 最多推送的机会数量
         """
         self.templates = templates or {}
+        self.max_opportunities = max_opportunities
+
+    def _diversify_opportunities(
+        self,
+        opportunities: list[ContractOpportunity],
+        max_count: int,
+    ) -> list[ContractOpportunity]:
+        """在多个标的中分散选取机会
+
+        采用轮询策略：按标的分组，然后轮流从每个标的中选取，
+        直到达到 max_count 或所有机会都被选完。
+
+        Args:
+            opportunities: 原始机会列表（已按 expected_roc 排序）
+            max_count: 最大选取数量
+
+        Returns:
+            分散选取后的机会列表
+        """
+        if len(opportunities) <= max_count:
+            return opportunities
+
+        # 按标的分组，保持每个标的内部的排序
+        by_symbol: dict[str, list[ContractOpportunity]] = defaultdict(list)
+        for opp in opportunities:
+            by_symbol[opp.symbol].append(opp)
+
+        # 轮询选取
+        result: list[ContractOpportunity] = []
+        symbols = list(by_symbol.keys())
+        indices = {s: 0 for s in symbols}  # 每个标的当前选取位置
+
+        while len(result) < max_count:
+            added_this_round = False
+            for symbol in symbols:
+                if len(result) >= max_count:
+                    break
+                idx = indices[symbol]
+                if idx < len(by_symbol[symbol]):
+                    result.append(by_symbol[symbol][idx])
+                    indices[symbol] = idx + 1
+                    added_this_round = True
+
+            # 如果这轮没有新增，说明所有标的都选完了
+            if not added_this_round:
+                break
+
+        return result
 
     def format_opportunity(
         self,
@@ -52,9 +106,15 @@ class ScreeningFormatter:
         # 构建市场状态描述
         market_status_text = self._format_market_status(result.market_status)
 
-        # 构建机会列表（只包含通过筛选的合约）
-        # 注意：result.opportunities 包含所有评估的合约（含被拒绝的），需要过滤
-        passed_opportunities = [opp for opp in result.opportunities if opp.passed]
+        # 使用 confirmed（两步都通过的合约）
+        # Double Confirmation: 只有两次筛选都通过的合约才推送
+        confirmed_opportunities = result.confirmed if result.confirmed else []
+
+        # 在多个标的中分散选取，避免集中在同一只股票
+        diversified = self._diversify_opportunities(
+            confirmed_opportunities,
+            self.max_opportunities,
+        )
 
         opportunities_data = [
             {
@@ -95,13 +155,14 @@ class ScreeningFormatter:
                 # 警告信息
                 "warnings": opp.warnings,
             }
-            for opp in passed_opportunities
+            for opp in diversified
         ]
 
         return FeishuCardBuilder.create_opportunity_card(
             title=title,
             opportunities=opportunities_data,
             market_status=market_status_text,
+            max_opportunities=self.max_opportunities,
         )
 
     def format_no_opportunity(
@@ -173,7 +234,7 @@ class ScreeningFormatter:
         """格式化筛选结果
 
         根据结果自动选择合适的格式：
-        - 有机会: format_opportunity
+        - 有确认机会: format_opportunity (使用 confirmed)
         - 无机会: format_no_opportunity
         - 市场不利: format_market_unfavorable
 
@@ -185,7 +246,8 @@ class ScreeningFormatter:
         """
         if result.rejection_reason and "市场环境" in result.rejection_reason:
             return self.format_market_unfavorable(result)
-        elif result.passed and result.opportunities:
+        elif result.confirmed:
+            # Double Confirmation: 只有两步都通过的才推送
             return self.format_opportunity(result)
         else:
             return self.format_no_opportunity(result)

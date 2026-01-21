@@ -418,6 +418,7 @@ class FeishuCardBuilder:
         title: str,
         opportunities: list[dict[str, Any]],
         market_status: Optional[str] = None,
+        max_opportunities: int = 10,
     ) -> dict[str, Any]:
         """创建机会卡片
 
@@ -425,6 +426,7 @@ class FeishuCardBuilder:
             title: 标题
             opportunities: 机会列表，每个机会包含详细字段
             market_status: 市场状态描述
+            max_opportunities: 最多显示的机会数量（默认 10）
 
         Returns:
             卡片数据
@@ -437,7 +439,8 @@ class FeishuCardBuilder:
             elements.append(cls.create_divider())
 
         # 机会列表（详细格式）
-        for i, opp in enumerate(opportunities[:5], 1):  # 最多显示 5 个
+        display_opportunities = opportunities[:max_opportunities]
+        for i, opp in enumerate(display_opportunities, 1):
             symbol = opp.get("symbol", "N/A")
             strike = opp.get("strike", 0)
             expiry = opp.get("expiry", "N/A")
@@ -445,7 +448,9 @@ class FeishuCardBuilder:
             option_type = opp.get("option_type", "put").upper()
 
             # 标题行：#1 TSLA PUT 485 @ 2026-02-06 (DTE=18)
-            header_text = f"**#{i} {symbol} {option_type} {strike:.0f} @ {expiry} (DTE={dte})**"
+            # 行权价格式化：整数显示为整数，小数保留小数位
+            strike_str = f"{strike:.0f}" if strike == int(strike) else f"{strike}"
+            header_text = f"**#{i} {symbol} {option_type} {strike_str} @ {expiry} (DTE={dte})**"
             elements.append(cls.create_text_element(header_text))
 
             # 策略行：Pos, ExpROC, Sharpe, Premium Rate, WinP, Annual ROC
@@ -518,7 +523,7 @@ class FeishuCardBuilder:
                     elements.append(cls.create_text_element(f"⚠️ {warning}"))
 
             # 分隔线（除了最后一个）
-            if i < len(opportunities[:5]):
+            if i < len(display_opportunities):
                 elements.append(cls.create_divider())
 
         elements.append(cls.create_note(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"))

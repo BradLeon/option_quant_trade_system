@@ -21,18 +21,20 @@ Screening Pipeline - 筛选管道
 """
 
 import logging
-from datetime import datetime
+from datetime import date, datetime
 
 from src.business.config.screening_config import ScreeningConfig
 from src.business.screening.filters.contract_filter import ContractFilter
 from src.business.screening.filters.market_filter import MarketFilter
 from src.business.screening.filters.underlying_filter import UnderlyingFilter
 from src.business.screening.models import (
+    ContractOpportunity,
     MarketStatus,
     MarketType,
     ScreeningResult,
     UnderlyingScore,
 )
+from src.data.models.option import OptionContract, OptionType
 from src.data.providers.unified_provider import UnifiedDataProvider
 
 logger = logging.getLogger(__name__)
@@ -164,25 +166,58 @@ class ScreeningPipeline:
             return_rejected=True,
         )
 
-        # 统计实际评估数量并筛选出通过的
+        # 统计实际评估数量并筛选出通过的（Step1 候选）
         total_evaluated = len(all_evaluated)
-        opportunities = [o for o in all_evaluated if o.passed]
+        candidates = [o for o in all_evaluated if o.passed]
+
+        logger.info(
+            f"Step 3 完成: {len(candidates)}/{total_evaluated} 个候选"
+        )
+
+        # 4. 二次确认 - 重新获取数据并评估候选合约
+        confirmed: list[ContractOpportunity] = []
+        if candidates:
+            logger.info(f"Step 4: 二次确认 ({len(candidates)} 个候选)...")
+
+            confirmed = self._confirm_candidates(
+                candidates=candidates,
+                passed_underlyings=passed_underlyings,
+                option_types=option_types,
+                market_type=market_type,
+            )
+
+            logger.info(f"确认完成: {len(confirmed)}/{len(candidates)} 通过")
+
+            # 输出确认结果详情
+            for c in candidates:
+                key = (c.symbol, c.expiry, c.strike, c.option_type)
+                is_confirmed = any(
+                    (x.symbol, x.expiry, x.strike, x.option_type) == key
+                    for x in confirmed
+                )
+                status = "✅" if is_confirmed else "❌"
+                logger.info(
+                    f"   {status} {c.symbol} {c.option_type.upper()} {c.strike} "
+                    f"@{c.expiry} (E[ROC]={c.expected_roc:.1%})"
+                )
 
         elapsed = (datetime.now() - start_time).total_seconds()
         logger.info(
-            f"筛选完成: {len(opportunities)}/{total_evaluated} 个机会, 耗时 {elapsed:.1f}s"
+            f"筛选完成: {len(confirmed)} 个确认机会, 耗时 {elapsed:.1f}s"
         )
 
         return ScreeningResult(
-            passed=len(opportunities) > 0,
+            passed=len(confirmed) > 0,
             strategy_type=strategy_type,
             market_status=market_status,
             opportunities=all_evaluated,  # 返回所有评估的合约，便于显示淘汰原因
             underlying_scores=underlying_scores,
             scanned_underlyings=len(symbols),
             passed_underlyings=len(passed_underlyings),
-            total_contracts_evaluated=total_evaluated,  # 使用实际评估数量
-            qualified_contracts=len(opportunities),
+            total_contracts_evaluated=total_evaluated,
+            qualified_contracts=len(confirmed),  # 使用确认后的数量
+            candidates=candidates,  # Step1 候选
+            confirmed=confirmed,  # 两步都通过
         )
 
     def run_market_only(self, market_type: MarketType) -> MarketStatus:
@@ -273,6 +308,103 @@ class ScreeningPipeline:
                 logger.info(f"      ❌ {reason}")
 
         logger.info(f"{'─' * 50}")
+
+    def _confirm_candidates(
+        self,
+        candidates: list[ContractOpportunity],
+        passed_underlyings: list[UnderlyingScore],
+        option_types: list[str] | None,
+        market_type: MarketType,
+    ) -> list[ContractOpportunity]:
+        """二次确认候选合约
+
+        只重新获取候选合约的最新行情并评估，不获取整个期权链。
+
+        Args:
+            candidates: Step1 候选合约列表
+            passed_underlyings: 通过标的筛选的标的列表
+            option_types: 期权类型列表
+            market_type: 市场类型
+
+        Returns:
+            两步都通过的合约列表
+        """
+        if not candidates:
+            return []
+
+        # 1. 构建 OptionContract 列表（只包含候选合约）
+        contracts_to_fetch: list[OptionContract] = []
+        contract_to_candidate: dict[tuple, ContractOpportunity] = {}
+
+        for c in candidates:
+            # 构建 OptionContract
+            opt_type = OptionType.PUT if c.option_type == "put" else OptionType.CALL
+            expiry_date = date.fromisoformat(c.expiry)
+            contract = OptionContract(
+                symbol=f"{c.symbol}_{c.expiry}_{c.strike}_{c.option_type}",  # 标识用
+                underlying=c.symbol,
+                option_type=opt_type,
+                strike_price=c.strike,
+                expiry_date=expiry_date,
+            )
+            contracts_to_fetch.append(contract)
+            # 记录映射关系
+            key = (c.symbol, c.expiry, c.strike, c.option_type)
+            contract_to_candidate[key] = c
+
+        logger.info(f"二次确认: 获取 {len(contracts_to_fetch)} 个候选合约的最新行情...")
+
+        # 2. 批量获取候选合约的最新行情（不获取整个期权链）
+        quotes = self.provider.get_option_quotes_batch(
+            contracts_to_fetch,
+            min_volume=0,
+            fetch_margin=True,
+        )
+
+        if not quotes:
+            logger.warning("二次确认: 无法获取候选合约行情")
+            return []
+
+        logger.info(f"二次确认: 获取到 {len(quotes)} 个合约报价，开始评估...")
+
+        # 3. 构建 symbol -> UnderlyingScore 映射
+        underlying_map = {s.symbol: s for s in passed_underlyings}
+
+        # 4. 评估每个合约
+        filter_config = self.config.contract_filter
+        dte_min, dte_max = filter_config.dte_range
+
+        confirmed: list[ContractOpportunity] = []
+        for quote in quotes:
+            contract = quote.contract
+            symbol = contract.underlying
+            opt_type = "put" if contract.option_type == OptionType.PUT else "call"
+            expiry_str = contract.expiry_date.isoformat()
+            key = (symbol, expiry_str, contract.strike_price, opt_type)
+
+            # 获取对应的 UnderlyingScore
+            underlying_score = underlying_map.get(symbol)
+            if not underlying_score:
+                logger.warning(f"二次确认: 未找到 {symbol} 的标的评分")
+                continue
+
+            # 调用 contract_filter 的评估方法
+            opp = self.contract_filter._evaluate_contract(
+                quote=quote,
+                underlying_score=underlying_score,
+                filter_config=filter_config,
+                dte_min=dte_min,
+                dte_max=dte_max,
+                option_type=opt_type,
+            )
+
+            # 输出评估结果
+            self.contract_filter._log_contract_evaluation(opp)
+
+            if opp.passed:
+                confirmed.append(opp)
+
+        return confirmed
 
 
 # 便捷函数
