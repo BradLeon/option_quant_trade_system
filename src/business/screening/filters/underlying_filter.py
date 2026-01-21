@@ -260,15 +260,23 @@ class UnderlyingFilter:
         tech_warnings = self._check_technical(technical, filter_config.technical)
         warnings.extend(tech_warnings)
 
-        # 3. 获取基本面评分（P3 只警告）
+        # 3. 获取基本面数据（只获取一次）
+        fundamental_data = None
+        if filter_config.fundamental.enabled or filter_config.event_calendar.enabled:
+            logger.debug(f"获取 {symbol} 基本面数据...")
+            fundamental_data = self.provider.get_fundamental(symbol)
+
+        # 4. 评估基本面（P3 只警告）
         fundamental = None
         if filter_config.fundamental.enabled:
             logger.debug(f"评估 {symbol} 基本面...")
-            fundamental = self._evaluate_fundamental(symbol, filter_config.fundamental)
+            fundamental = self._evaluate_fundamental_with_data(
+                symbol, filter_config.fundamental, fundamental_data
+            )
             fund_warnings = self._check_fundamental(fundamental, filter_config.fundamental)
             warnings.extend(fund_warnings)
 
-        # 4. 检查事件日历（财报日、除息日）
+        # 5. 检查事件日历（财报日、除息日）
         earnings_date = None
         ex_dividend_date = None
         days_to_earnings = None
@@ -276,8 +284,8 @@ class UnderlyingFilter:
 
         if filter_config.event_calendar.enabled:
             logger.debug(f"检查 {symbol} 事件日历...")
-            event_result = self._check_event_calendar(
-                symbol, filter_config.event_calendar
+            event_result = self._check_event_calendar_with_data(
+                symbol, filter_config.event_calendar, fundamental_data
             )
             if event_result:
                 earnings_date = event_result.get("earnings_date")
@@ -451,21 +459,33 @@ class UnderlyingFilter:
 
         return warnings
 
-    def _evaluate_fundamental(
+    def _evaluate_fundamental_with_data(
         self,
         symbol: str,
         config: FundamentalConfig,  # noqa: ARG002
+        fundamental_data: object | None = None,
     ) -> FundamentalScore | None:
-        """评估基本面
+        """评估基本面（使用预获取的数据）
 
         数据来源：UnifiedDataProvider.get_fundamental() (Yahoo)
+
+        Args:
+            symbol: 标的代码
+            config: 基本面配置
+            fundamental_data: 预获取的基本面数据（如提供则使用，否则重新获取）
+
+        Returns:
+            FundamentalScore 或 None
         """
         try:
-            # 从 data_layer 获取基本面数据
-            fundamental = self.provider.get_fundamental(symbol)
+            # 使用预获取的数据，避免重复调用
+            if fundamental_data is None:
+                fundamental_data = self.provider.get_fundamental(symbol)
 
-            if fundamental is None:
+            if fundamental_data is None:
                 return None
+
+            fundamental = fundamental_data
 
             # 提取关键指标
             pe_ratio = getattr(fundamental, "pe_ratio", None)
@@ -564,12 +584,13 @@ class UnderlyingFilter:
 
         return warnings
 
-    def _check_event_calendar(
+    def _check_event_calendar_with_data(
         self,
         symbol: str,
         config: EventCalendarConfig,
+        fundamental_data: object | None = None,
     ) -> dict | None:
-        """检查事件日历（财报日、除息日）
+        """检查事件日历（财报日、除息日）（使用预获取的数据）
 
         检查标的是否有即将发布的财报或除息日。
 
@@ -582,6 +603,7 @@ class UnderlyingFilter:
         Args:
             symbol: 标的代码
             config: 事件日历配置
+            fundamental_data: 预获取的基本面数据（如提供则使用，否则重新获取）
 
         Returns:
             包含 earnings_date, ex_dividend_date, days_to_*, disqualify_reasons, warnings 的字典
@@ -596,12 +618,15 @@ class UnderlyingFilter:
         }
 
         try:
-            # 从 data_layer 获取基本面数据（包含财报日和除息日）
-            fundamental = self.provider.get_fundamental(symbol)
+            # 使用预获取的数据，避免重复调用
+            if fundamental_data is None:
+                fundamental_data = self.provider.get_fundamental(symbol)
 
-            if fundamental is None:
+            if fundamental_data is None:
                 logger.debug(f"{symbol} 无法获取基本面数据用于事件日历检查")
                 return result
+
+            fundamental = fundamental_data
 
             today = date.today()
 
