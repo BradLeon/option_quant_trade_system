@@ -21,7 +21,7 @@ Screening Pipeline - 筛选管道
 """
 
 import logging
-from datetime import datetime
+from datetime import date, datetime
 
 from src.business.config.screening_config import ScreeningConfig
 from src.business.screening.filters.contract_filter import ContractFilter
@@ -34,6 +34,7 @@ from src.business.screening.models import (
     ScreeningResult,
     UnderlyingScore,
 )
+from src.data.models.option import OptionContract, OptionType
 from src.data.providers.unified_provider import UnifiedDataProvider
 
 logger = logging.getLogger(__name__)
@@ -317,7 +318,7 @@ class ScreeningPipeline:
     ) -> list[ContractOpportunity]:
         """二次确认候选合约
 
-        重新获取数据并评估候选合约，只返回仍然通过的合约。
+        只重新获取候选合约的最新行情并评估，不获取整个期权链。
 
         Args:
             candidates: Step1 候选合约列表
@@ -328,31 +329,80 @@ class ScreeningPipeline:
         Returns:
             两步都通过的合约列表
         """
-        # 提取候选合约的唯一标识 (symbol, expiry, strike, option_type)
-        candidate_keys = {
-            (c.symbol, c.expiry, c.strike, c.option_type)
-            for c in candidates
-        }
+        if not candidates:
+            return []
 
-        # 只重新评估候选合约所属的标的
-        candidate_symbols = {c.symbol for c in candidates}
-        underlyings_to_evaluate = [
-            s for s in passed_underlyings
-            if s.symbol in candidate_symbols
-        ]
+        # 1. 构建 OptionContract 列表（只包含候选合约）
+        contracts_to_fetch: list[OptionContract] = []
+        contract_to_candidate: dict[tuple, ContractOpportunity] = {}
 
-        # 重新评估（会重新获取最新行情数据）
-        re_evaluated = self.contract_filter.evaluate(
-            underlyings_to_evaluate,
-            option_types=option_types,
-            return_rejected=True,
+        for c in candidates:
+            # 构建 OptionContract
+            opt_type = OptionType.PUT if c.option_type == "put" else OptionType.CALL
+            expiry_date = date.fromisoformat(c.expiry)
+            contract = OptionContract(
+                symbol=f"{c.symbol}_{c.expiry}_{c.strike}_{c.option_type}",  # 标识用
+                underlying=c.symbol,
+                option_type=opt_type,
+                strike_price=c.strike,
+                expiry_date=expiry_date,
+            )
+            contracts_to_fetch.append(contract)
+            # 记录映射关系
+            key = (c.symbol, c.expiry, c.strike, c.option_type)
+            contract_to_candidate[key] = c
+
+        logger.info(f"二次确认: 获取 {len(contracts_to_fetch)} 个候选合约的最新行情...")
+
+        # 2. 批量获取候选合约的最新行情（不获取整个期权链）
+        quotes = self.provider.get_option_quotes_batch(
+            contracts_to_fetch,
+            min_volume=0,
+            fetch_margin=True,
         )
 
-        # 只保留：1) 在候选中 2) 仍然通过
-        confirmed = [
-            o for o in re_evaluated
-            if o.passed and (o.symbol, o.expiry, o.strike, o.option_type) in candidate_keys
-        ]
+        if not quotes:
+            logger.warning("二次确认: 无法获取候选合约行情")
+            return []
+
+        logger.info(f"二次确认: 获取到 {len(quotes)} 个合约报价，开始评估...")
+
+        # 3. 构建 symbol -> UnderlyingScore 映射
+        underlying_map = {s.symbol: s for s in passed_underlyings}
+
+        # 4. 评估每个合约
+        filter_config = self.config.contract_filter
+        dte_min, dte_max = filter_config.dte_range
+
+        confirmed: list[ContractOpportunity] = []
+        for quote in quotes:
+            contract = quote.contract
+            symbol = contract.underlying
+            opt_type = "put" if contract.option_type == OptionType.PUT else "call"
+            expiry_str = contract.expiry_date.isoformat()
+            key = (symbol, expiry_str, contract.strike_price, opt_type)
+
+            # 获取对应的 UnderlyingScore
+            underlying_score = underlying_map.get(symbol)
+            if not underlying_score:
+                logger.warning(f"二次确认: 未找到 {symbol} 的标的评分")
+                continue
+
+            # 调用 contract_filter 的评估方法
+            opp = self.contract_filter._evaluate_contract(
+                quote=quote,
+                underlying_score=underlying_score,
+                filter_config=filter_config,
+                dte_min=dte_min,
+                dte_max=dte_max,
+                option_type=opt_type,
+            )
+
+            # 输出评估结果
+            self.contract_filter._log_contract_evaluation(opp)
+
+            if opp.passed:
+                confirmed.append(opp)
 
         return confirmed
 

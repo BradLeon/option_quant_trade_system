@@ -35,7 +35,7 @@ retry:
 content:
   include_market_status: true     # 是否包含市场状态
   include_suggestions: true       # 是否包含建议操作
-  max_opportunities: 5            # 最多推送机会数
+  max_opportunities: 10           # 最多推送机会数
 
   # 启用的预警级别
   alert_levels:

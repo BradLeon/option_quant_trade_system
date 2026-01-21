@@ -130,9 +130,9 @@ python src/business/cli/main.py screen --push
 
 | 指标 | 优先级 | 条件 | 说明 |
 |------|--------|------|------|
-| Expected ROC | P0 | > 10% | 期望收益率必须为正 |
+| Annual Expected ROC | P0 | > 10% | 年化期望收益率必须为正 |
 | Premium Rate | P1 | > 1% | 费率 = Premium / Strike |
-| Sharpe Ratio | P1 | > 0.5 | 风险调整后收益 |
+| Sharpe Ratio | P1 | > 0.5 | 年化夏普率-收益风险比 |
 | TGR | P1 | > 0.5 | Theta/Gamma 比率（标准化） |
 | DTE | P1 | 14~60 天 | 港股到期日稀疏，范围宽松 |
 | |Delta| | P1 | 0.10~0.40 | 最优 0.20~0.30 |
