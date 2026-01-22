@@ -327,3 +327,4 @@ class StrategyMetrics:
     roc: float | None = None
     expected_roc: float | None = None
     premium_rate: float | None = None  # Premium / Strike (费率)
+    theta_margin_ratio: float | None = None  # |Theta| / Margin（资金效率排序指标）

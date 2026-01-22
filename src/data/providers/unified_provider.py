@@ -776,9 +776,14 @@ class UnifiedDataProvider:
         for provider in providers:
             try:
                 # Check symbol format compatibility
-                # Futu can only handle Futu format symbols
+                # Futu can now handle any format - it builds Futu symbols from contract info
+                # (underlying, expiry_date, strike_price, option_type)
                 # IBKR can handle IBKR and US format symbols
-                if provider.name == "futu" and symbol_format == "ibkr":
+                # Note: We no longer skip Futu for "ibkr" format since Futu provider
+                # uses _build_futu_option_symbol() to construct proper symbols
+                if provider.name == "futu" and symbol_format == "ibkr" and ".HK" in contracts[0].symbol and "_" not in contracts[0].symbol:
+                    # Only skip Futu if it's a true IBKR HK option symbol (e.g., "0700.HK20260129P00500000")
+                    # Don't skip for internal format (e.g., "9988.HK_2026-01-29_152.5_put")
                     logger.debug(f"Skipping Futu provider - incompatible symbol format ({symbol_format})")
                     continue
 

@@ -32,13 +32,13 @@ market_filter:
     trend_required: "neutral_or_bearish"
 
 underlying_filter:
-  min_iv_rank: 40                 # 最低 IV Rank（比 Short Put 略低）
+  min_iv_rank: 30                 # 最低 IV Rank（比 Short Put 略低）
   max_iv_hv_ratio: 1.8
   min_iv_hv_ratio: 0.9
   technical:
     min_rsi: 45                   # RSI 下限
     max_rsi: 75                   # RSI 上限（动能衰竭区间）
-    rsi_exhaustion_range: [55, 70]   # 动能衰竭区间
+    rsi_exhaustion_range: [40, 70]   # 动能衰竭区间
     bb_percent_b_range: [0.7, 0.9]   # 布林带 %B 动能衰竭区间
     max_adx: 40
     min_sma_alignment: "neutral"

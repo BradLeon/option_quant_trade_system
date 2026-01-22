@@ -346,6 +346,7 @@ class ScreeningPipeline:
                 option_type=opt_type,
                 strike_price=c.strike,
                 expiry_date=expiry_date,
+                trading_class=c.trading_class,  # IBKR 需要 trading_class 来识别 HK 期权
             )
             contracts_to_fetch.append(contract)
             # 记录映射关系

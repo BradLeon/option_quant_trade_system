@@ -24,14 +24,13 @@ class USMarketConfig:
     """美股市场配置"""
 
     vix_symbol: str = "^VIX"
-    vix_range: tuple[float, float] = (15.0, 28.0)
+    vix_range: tuple[float, float] = (15.0, 999.0)  # 移除上限，VIX > 30 是卖方黄金时刻
     vix_percentile_range: tuple[float, float] = (0.2, 0.8)
     vix3m_symbol: str = "^VIX3M"
     term_structure_threshold: float = 0.9
     trend_indices: list[TrendIndexConfig] = field(default_factory=list)
     trend_required: str = "bullish_or_neutral"
-    pcr_symbol: str = "SPY"
-    pcr_range: tuple[float, float] = (0.8, 1.2)
+    # PCR 已删除: 0.8-1.2 是常态震荡无过滤价值，数据质量不稳定
 
     def __post_init__(self) -> None:
         if not self.trend_indices:
@@ -47,7 +46,7 @@ class HKMarketConfig:
 
     # VHSI (恒生波动率指数) 配置 - 通过 Yahoo Finance 获取
     vhsi_symbol: str = "^HSIL"  # Yahoo Finance 代码
-    vhsi_range: tuple[float, float] = (18.0, 32.0)
+    vhsi_range: tuple[float, float] = (18.0, 999.0)  # 移除上限，高波是卖方黄金时刻
     vhsi_percentile_range: tuple[float, float] = (0.2, 0.8)  # VHSI 分布较窄，放宽低位阈值
 
     # 备选: 2800.HK IV (需要 IBKR 连接)
@@ -95,8 +94,17 @@ class MarketFilterConfig:
 class TechnicalConfig:
     """技术面配置"""
 
-    min_rsi: float = 30.0
-    max_rsi: float = 70.0
+    # RSI 策略区分阈值
+    # Short Put: 允许更深超卖（RSI 25 是底部反弹信号）
+    short_put_rsi_min: float = 25.0
+    short_put_rsi_max: float = 70.0
+    # Covered Call: 允许更高超买（RSI 85 以下动能仍可持续）
+    covered_call_rsi_min: float = 30.0
+    covered_call_rsi_max: float = 85.0
+
+    # 兼容旧配置
+    min_rsi: float = 25.0  # 使用最宽范围
+    max_rsi: float = 85.0  # 使用最宽范围
     rsi_stabilizing_range: tuple[float, float] = (30.0, 45.0)
     bb_percent_b_range: tuple[float, float] = (0.1, 0.3)
     max_adx: float = 45.0
@@ -126,7 +134,7 @@ class EventCalendarConfig:
 class UnderlyingFilterConfig:
     """标的过滤器配置"""
 
-    min_iv_rank: float = 30.0  # P2: 从 50% 降低到 30%，只警告不阻塞
+    min_iv_rank: float = 30.0  # P1: IV Rank 阻塞条件，卖方必须卖"贵"的东西
     max_iv_hv_ratio: float = 2.0
     min_iv_hv_ratio: float = 0.8
     technical: TechnicalConfig = field(default_factory=TechnicalConfig)
@@ -148,9 +156,17 @@ class LiquidityConfig:
 
 @dataclass
 class MetricsConfig:
-    """指标配置"""
+    """指标配置
 
-    # P1: 年化夏普比率 (SR_annual = SR × √(365/DTE))
+    优先级说明：
+    - P0: Expected ROC（致命条件）
+    - P1: TGR（核心条件）
+    - P2: Annual ROC（重要条件）
+    - P3: Sharpe Ratio, Premium Rate, Win Probability, Theta/Premium, Kelly（参考条件）
+          Sharpe/PremRate 降级原因：卖方收益非正态分布，费率已被 AnnROC 包含
+    """
+
+    # P3: 年化夏普比率（参考条件，卖方收益非正态分布）
     min_sharpe_ratio: float = 0.5
     # P2: 策略吸引力评分
     min_sas: float = 50.0
@@ -168,7 +184,7 @@ class MetricsConfig:
     min_win_probability: float = 0.65
     # P3: Theta/Premium 比率 (每天)
     min_theta_premium_ratio: float = 0.01
-    # P1: 费率 (Premium / K × 100%)
+    # P3: 费率（参考条件，已被 Annual ROC 包含）
     min_premium_rate: float = 0.01
 
 
@@ -239,8 +255,6 @@ class ScreeningConfig:
                         TrendIndexConfig(**idx) for idx in us.get("trend_indices", [])
                     ],
                     trend_required=us.get("trend_required", "bullish_or_neutral"),
-                    pcr_symbol=us.get("pcr_symbol", "SPY"),
-                    pcr_range=tuple(us.get("pcr_range", [0.8, 1.2])),
                 )
             if "hk_market" in mf:
                 hk = mf["hk_market"]

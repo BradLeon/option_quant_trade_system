@@ -4,10 +4,10 @@ Underlying Filter - 标的过滤器
 第二层筛选：评估单个标的是否适合期权卖方策略
 
 检查项目：
-- IV Rank >= 50%
-- IV/HV 比率在合理范围
-- 技术面（RSI、布林带、均线排列）
-- 基本面（可选）
+- IV Rank >= 30% (P1 阻塞，卖方必须卖"贵"的东西)
+- IV/HV 比率在合理范围 (P1 阻塞)
+- 技术面（RSI、布林带、均线排列）(P2/P3 警告)
+- 基本面（可选）(P3 警告)
 
 架构说明：
 - 数据获取：调用 data_layer (UnifiedDataProvider)
@@ -142,7 +142,14 @@ class UnderlyingFilter:
             if score.technical.rsi is not None:
                 rsi_str = f"{score.technical.rsi:.1f} ({score.technical.rsi_zone})"
             if score.technical.adx is not None:
-                adx_str = f"{score.technical.adx:.1f}"
+                # 显示 ADX 和方向指标
+                plus_di = score.technical.plus_di
+                minus_di = score.technical.minus_di
+                if plus_di is not None and minus_di is not None:
+                    trend_dir = "↑" if plus_di > minus_di else "↓" if minus_di > plus_di else "→"
+                    adx_str = f"{score.technical.adx:.1f}{trend_dir} (+DI={plus_di:.1f}/-DI={minus_di:.1f})"
+                else:
+                    adx_str = f"{score.technical.adx:.1f}"
             if score.technical.sma_alignment:
                 sma_str = score.technical.sma_alignment
 
@@ -196,12 +203,12 @@ class UnderlyingFilter:
         - P2/P3 条件只警告不阻塞（warnings）
 
         P1 阻塞条件：
+        - IV Rank < 30%（卖方策略必须卖"贵"的东西）
         - 波动率数据缺失
         - IV/HV 比率超出范围（期权相对便宜或可能有特殊事件）
         - 财报日期 < 7天（且不允许跨财报）
 
         P2/P3 警告条件：
-        - IV Rank 偏低
         - RSI 超买/超卖
         - ADX 过高
         - 均线空头排列
@@ -232,10 +239,13 @@ class UnderlyingFilter:
             hv_20 = vol_data.hv
             current_iv = vol_data.iv
 
-            # P2: IV Rank 检查（只警告，不阻塞）
-            if iv_rank is not None and iv_rank < filter_config.min_iv_rank:
-                warnings.append(
-                    f"[P2] IV Rank={iv_rank:.1f}% 偏低（<{filter_config.min_iv_rank}%）"
+            # P1: IV Rank 检查（阻塞，卖方策略必须卖"贵"的东西）
+            # 使用动态阈值（与 VIX 挂钩）
+            iv_rank_threshold = self._get_dynamic_iv_rank_threshold(market_type)
+            if iv_rank is not None and iv_rank < iv_rank_threshold:
+                disqualify_reasons.append(
+                    f"[P1] IV Rank={iv_rank:.1f}% 不足（<{iv_rank_threshold:.0f}%），"
+                    f"期权不够'贵'"
                 )
 
             # P1: IV/HV 比率检查（阻塞）
@@ -335,6 +345,69 @@ class UnderlyingFilter:
             logger.warning(f"获取 {symbol} 价格失败: {e}")
             return None
 
+    def _get_current_vix(self, symbol: str) -> float | None:
+        """获取当前波动率指数值
+
+        Args:
+            symbol: VIX symbol (^VIX for US, ^HSIL for HK)
+
+        Returns:
+            当前 VIX 值或 None
+        """
+        try:
+            from datetime import timedelta
+
+            end_date = date.today()
+            start_date = end_date - timedelta(days=5)
+
+            macro_data = self.provider.get_macro_data(symbol, start_date, end_date)
+            if macro_data and len(macro_data) > 0:
+                return macro_data[-1].close
+            return None
+        except Exception as e:
+            logger.warning(f"获取 {symbol} VIX 失败: {e}")
+            return None
+
+    def _get_dynamic_iv_rank_threshold(self, market_type: MarketType) -> float:
+        """计算动态 IV Rank 阈值（与波动率指数挂钩）
+
+        规则：
+        - VIX < 15: 返回 20%（低波环境，降低门槛以捕捉机会）
+        - VIX 15-20: 返回 25%
+        - VIX 20-25: 返回 30%（默认）
+        - VIX > 25: 返回 35%（高波环境，提高门槛以保证质量）
+
+        Args:
+            market_type: 市场类型
+
+        Returns:
+            动态 IV Rank 阈值（0-100 scale）
+        """
+        # 获取当前波动率指数
+        if market_type == MarketType.US:
+            vix = self._get_current_vix("^VIX")
+        else:
+            vix = self._get_current_vix("^HSIL")  # 恒生波幅指数
+
+        if vix is None:
+            # 无法获取 VIX，使用配置的默认值
+            default_threshold = self.config.underlying_filter.min_iv_rank
+            logger.debug(f"无法获取 VIX，使用默认阈值 {default_threshold}%")
+            return default_threshold
+
+        # 动态阈值计算
+        if vix < 15:
+            threshold = 20.0
+        elif vix < 20:
+            threshold = 25.0
+        elif vix < 25:
+            threshold = 30.0
+        else:
+            threshold = 35.0
+
+        logger.debug(f"VIX={vix:.1f} → 动态 IV Rank 阈值={threshold}%")
+        return threshold
+
     def _get_volatility_data(self, symbol: str) -> object | None:
         """获取波动率数据
 
@@ -403,6 +476,8 @@ class UnderlyingFilter:
                 rsi_zone=rsi_zone,
                 bb_percent_b=score.bb_percent_b,
                 adx=score.adx,
+                plus_di=score.plus_di,  # 新增: +DI 方向指数
+                minus_di=score.minus_di,  # 新增: -DI 方向指数
                 sma_alignment=score.ma_alignment,
                 support_distance=support_distance,
             )
@@ -425,16 +500,53 @@ class UnderlyingFilter:
         if technical is None:
             return warnings  # 技术面数据缺失不作为警告条件
 
-        # P2: RSI 检查
+        # P2: RSI 检查（策略区分）
+        # Short Put: RSI 25-70, Covered Call: RSI 30-85
         if technical.rsi is not None:
-            if technical.rsi < config.min_rsi:
-                warnings.append(f"[P2] RSI={technical.rsi:.1f} 过低（<{config.min_rsi}），超卖风险")
-            elif technical.rsi > config.max_rsi:
-                warnings.append(f"[P2] RSI={technical.rsi:.1f} 过高（>{config.max_rsi}），超买风险")
+            rsi = technical.rsi
+
+            # RSI > 85: 极度超买，禁止卖 Call（可能逼空）
+            if rsi > 85:
+                warnings.append(
+                    f"[P1] RSI={rsi:.1f} 极度超买（>85），卖 Call 风险极高"
+                )
+            # RSI < 25: 极度超卖，仅适合 Short Put
+            elif rsi < 25:
+                warnings.append(
+                    f"[P2] RSI={rsi:.1f} 极度超卖（<25），仅适合 Short Put"
+                )
+            # RSI 25-30: 超卖区，Short Put 可行，Covered Call 需谨慎
+            elif rsi < 30:
+                warnings.append(
+                    f"[P2] RSI={rsi:.1f} 超卖区，Short Put 可行，Covered Call 需谨慎"
+                )
+            # RSI 70-85: 超买区，Covered Call 仍可行，Short Put 需谨慎
+            elif rsi > 70:
+                warnings.append(
+                    f"[P2] RSI={rsi:.1f} 超买区，Short Put 需谨慎"
+                )
 
         # P2: ADX 检查（趋势过强不利于期权卖方）
-        if technical.adx is not None and technical.adx > config.max_adx:
-            warnings.append(f"[P2] ADX={technical.adx:.1f} 过高（>{config.max_adx}），趋势过强")
+        if technical.adx is not None:
+            if technical.adx > config.max_adx:
+                warnings.append(f"[P2] ADX={technical.adx:.1f} 过高（>{config.max_adx}），趋势过强")
+            elif technical.adx >= 25:
+                # ADX >= 25 表示趋势市，添加方向信息
+                plus_di = technical.plus_di
+                minus_di = technical.minus_di
+                if plus_di is not None and minus_di is not None:
+                    if minus_di > plus_di:
+                        # 强下跌趋势: 禁止卖 Put，但允许卖 Call
+                        warnings.append(
+                            f"[P2] 强下跌趋势 ADX={technical.adx:.1f} "
+                            f"(+DI={plus_di:.1f} < -DI={minus_di:.1f})，卖 Put 风险高"
+                        )
+                    elif plus_di > minus_di:
+                        # 强上涨趋势: 禁止卖 Call，但允许卖 Put
+                        warnings.append(
+                            f"[P2] 强上涨趋势 ADX={technical.adx:.1f} "
+                            f"(+DI={plus_di:.1f} > -DI={minus_di:.1f})，卖 Call 风险高"
+                        )
 
         # P3: 均线排列检查
         alignment_order = [

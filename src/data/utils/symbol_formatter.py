@@ -235,6 +235,59 @@ class SymbolFormatter:
             return symbol
 
     @staticmethod
+    def to_futu(symbol: str) -> str:
+        """Convert any symbol format to Futu format.
+
+        Futu format:
+            - HK stocks: "HK.09988" (HK. prefix + 5 digits)
+            - US stocks: "US.AAPL" (US. prefix + symbol)
+
+        Args:
+            symbol: Symbol in any format.
+
+        Returns:
+            Futu format symbol.
+
+        Examples:
+            >>> SymbolFormatter.to_futu("9988.HK")   # "HK.09988"
+            >>> SymbolFormatter.to_futu("0700.HK")   # "HK.00700"
+            >>> SymbolFormatter.to_futu("AAPL")      # "US.AAPL"
+        """
+        standard = SymbolFormatter.to_standard(symbol)
+        market = SymbolFormatter.detect_market(symbol)
+
+        if market == Market.HK:
+            code = standard[:-3]  # Remove .HK
+            return f"HK.{code.zfill(5)}"  # Pad to 5 digits
+        elif market == Market.US:
+            return f"US.{standard}"
+        return standard
+
+    @staticmethod
+    def parse_futu_option_trading_class(symbol: str) -> str | None:
+        """Extract trading class from Futu option symbol.
+
+        Futu option format: HK.<trading_class><YYMMDD><C/P><strike*1000>
+        Example: HK.ALB260129P80000 -> ALB
+
+        Args:
+            symbol: Futu option symbol.
+
+        Returns:
+            Trading class (e.g., "ALB") or None if not a valid option symbol.
+        """
+        import re
+
+        code = symbol.upper()
+        if code.startswith("HK."):
+            code = code[3:]
+
+        # Pattern: <letters><YYMMDD><C/P><digits>
+        pattern = r"^([A-Z]+)\d{6}[CP]\d+$"
+        match = re.match(pattern, code)
+        return match.group(1) if match else None
+
+    @staticmethod
     def from_ibkr_contract(symbol: str, exchange: str | None = None) -> str:
         """Convert IBKR contract info back to standard format.
 

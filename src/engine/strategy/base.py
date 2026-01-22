@@ -415,6 +415,27 @@ class OptionStrategy(ABC):
             return None
         return premium / strike
 
+    def calc_theta_margin_ratio(self) -> float | None:
+        """Calculate Theta/Margin ratio (capital efficiency indicator).
+
+        资金效率指标：每美元保证金每天产生的 Theta 收益。
+        用于对通过筛选的合约按资金效率排序。
+
+        Formula: |Theta| / Margin
+
+        Returns:
+            Theta/Margin ratio, or None if insufficient data.
+        """
+        theta = self._get_total_theta()
+        if theta is None:
+            return None
+
+        margin = self.get_effective_margin()
+        if margin is None or margin <= 0:
+            return None
+
+        return abs(theta) / margin
+
     def calc_metrics(self) -> StrategyMetrics:
         """Calculate all metrics for the strategy.
 
@@ -441,4 +462,5 @@ class OptionStrategy(ABC):
             roc=self.calc_roc(),
             expected_roc=self.calc_expected_roc(),
             premium_rate=self.calc_premium_rate(),
+            theta_margin_ratio=self.calc_theta_margin_ratio(),
         )

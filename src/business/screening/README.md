@@ -98,9 +98,9 @@ python src/business/cli/main.py screen --push
 | 优先级 | 含义 | 处理方式 | 示例 |
 |--------|------|----------|------|
 | **P0** | 致命条件 | 不满足 = 立即排除，无例外 | 期望收益为负 |
-| **P1** | 核心条件 | 不满足 = 强烈建议不开仓 | VIX 极端、流动性不足 |
-| **P2** | 重要条件 | 不满足 = 警告，需其他条件补偿 | IV Rank 偏低 |
-| **P3** | 参考条件 | 不满足 = 可接受，记录风险 | Volume 较低 |
+| **P1** | 核心条件 | 不满足 = 强烈建议不开仓 | VIX 极端、流动性不足、IV Rank 偏低 |
+| **P2** | 重要条件 | 不满足 = 警告，需其他条件补偿 | RSI 超买超卖、Annual ROC 不足 |
+| **P3** | 参考条件 | 不满足 = 可接受，记录风险 | Sharpe Ratio、Premium Rate、Volume 较低 |
 
 ### 指标汇总表
 
@@ -120,7 +120,7 @@ python src/business/cli/main.py screen --push
 | 指标 | 优先级 | 条件 | 说明 |
 |------|--------|------|------|
 | 财报日期 | P1 | > 7天或合约在财报前到期 | 避免财报博弈 |
-| IV Rank | P2 | > 30% | 警告但不阻塞 |
+| **IV Rank** | **P1** | > 30% | **阻塞条件**，卖方必须卖"贵"的东西 |
 | IV/HV Ratio | P1 | 0.8~2.0 | 隐含波动率相对历史波动率 |
 | RSI | P2 | 30~70 | 避免超买超卖区域 |
 | ADX | P2 | < 45 | 避免强趋势行情 |
@@ -131,16 +131,17 @@ python src/business/cli/main.py screen --push
 | 指标 | 优先级 | 条件 | 说明 |
 |------|--------|------|------|
 | Annual Expected ROC | P0 | > 10% | 年化期望收益率必须为正 |
-| Premium Rate | P1 | > 1% | 费率 = Premium / Strike |
-| Sharpe Ratio | P1 | > 0.5 | 年化夏普率-收益风险比 |
 | TGR | P1 | > 0.5 | Theta/Gamma 比率（标准化） |
 | DTE | P1 | 14~60 天 | 港股到期日稀疏，范围宽松 |
-| |Delta| | P1 | 0.10~0.40 | 最优 0.20~0.30 |
+| \|Delta\| | P1 | 0.10~0.40 | 最优 0.20~0.30 |
 | Bid-Ask Spread | P1 | < 10% | 流动性指标 |
 | Open Interest | P1 | > 100 | 持仓量 |
 | Annual ROC | P2 | > 15% | 年化收益率 |
+| **Sharpe Ratio** | **P3** | > 0.5 | 参考条件，卖方收益非正态分布 |
+| **Premium Rate** | **P3** | > 1% | 参考条件，已被 Annual ROC 包含 |
 | Win Probability | P3 | > 65% | 理论胜率 |
 | Volume | P3 | > 10 | 当日成交量 |
+| **Theta/Margin** | **排序** | - | **资金效率排序指标**，用于对通过筛选的合约排序 |
 
 ---
 

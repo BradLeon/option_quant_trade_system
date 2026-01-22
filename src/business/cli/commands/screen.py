@@ -480,15 +480,18 @@ def _opportunity_to_dict(opp) -> dict:
         "expiry": opp.expiry,
         "dte": opp.dte,
         "option_type": opp.option_type,
-        # 策略指标 (按重要性排序)
+        # 策略指标 (按重要性排序: P0/P1/P2 核心指标在前，P3 参考指标在后)
         "strategy_metrics": {
+            # 核心指标 (P0/P1/P2)
             "recommended_position": opp.recommended_position,
             "expected_roc": opp.expected_roc,
+            "annual_roc": opp.annual_roc,
+            "win_probability": opp.win_probability,
+            "tgr": opp.tgr,
+            "theta_margin_ratio": opp.theta_margin_ratio,  # 资金效率排序指标
+            # 参考指标 (P3)
             "sharpe_ratio_annual": opp.sharpe_ratio_annual,
             "premium_rate": opp.premium_rate,
-            "win_probability": opp.win_probability,
-            "annual_roc": opp.annual_roc,
-            "tgr": opp.tgr,
             "sas": opp.sas,
             "prei": opp.prei,
             "kelly_fraction": opp.kelly_fraction,
@@ -563,24 +566,26 @@ def _print_opportunity_card(opp, index: int) -> None:
     click.echo(f"┌─ #{index} {opp.symbol} {opt_type} {strike_str} @ {exp_str} (DTE={opp.dte})")
     click.echo("├" + "─" * 89)
 
-    # 策略指标行 (重要的放前面)
+    # 核心策略指标行 (P0/P1/P2)
     pos_str = f"{opp.recommended_position:.2f}" if opp.recommended_position else "N/A"
     roc_str = f"{opp.expected_roc:.1%}" if opp.expected_roc else "N/A"
+    annual_roc_str = f"{opp.annual_roc:.1%}" if opp.annual_roc else "N/A"
+    win_str = f"{opp.win_probability:.1%}" if opp.win_probability else "N/A"
+    tgr_str = f"{opp.tgr:.2f}" if opp.tgr else "N/A"
+    # Theta/Margin 资金效率指标
+    tm_ratio_str = f"{opp.theta_margin_ratio:.4f}" if opp.theta_margin_ratio else "N/A"
+
+    click.echo(f"│ 核心: Pos={pos_str}  ExpROC={roc_str}  AnnROC={annual_roc_str}  WinP={win_str}  TGR={tgr_str}  Θ/Margin={tm_ratio_str}")
+
+    # 参考指标行 (P3)
     sr_str = f"{opp.sharpe_ratio_annual:.2f}" if opp.sharpe_ratio_annual else "N/A"
     rate_str = f"{opp.premium_rate:.2%}" if opp.premium_rate else "N/A"
-    win_str = f"{opp.win_probability:.1%}" if opp.win_probability else "N/A"
-    annual_roc_str = f"{opp.annual_roc:.1%}" if opp.annual_roc else "N/A"
-
-    click.echo(f"│ 策略: Pos={pos_str}  ExpROC={roc_str}  Sharpe Ratio={sr_str}  Premium Rate={rate_str}  WinP={win_str}  Annual ROC={annual_roc_str}")
-
-    # 其他策略指标
-    tgr_str = f"{opp.tgr:.2f}" if opp.tgr else "N/A"
     sas_str = f"{opp.sas:.1f}" if opp.sas else "N/A"
     prei_str = f"{opp.prei:.1f}" if opp.prei else "N/A"
     kelly_str = f"{opp.kelly_fraction:.2f}" if opp.kelly_fraction else "N/A"
     tp_ratio_str = f"{opp.theta_premium_ratio:.3f}" if opp.theta_premium_ratio else "N/A"
 
-    click.echo(f"│ 指标: TGR={tgr_str}  SAS={sas_str}  PREI={prei_str}  Kelly={kelly_str}  Θ/P={tp_ratio_str}")
+    click.echo(f"│ 参考: Sharpe={sr_str}  PremRate={rate_str}  SAS={sas_str}  PREI={prei_str}  Kelly={kelly_str}  Θ/P={tp_ratio_str}")
 
     # 合约行情
     price_str = f"{opp.underlying_price:.2f}" if opp.underlying_price else "N/A"

@@ -32,7 +32,7 @@ market_filter:
     trend_required: "bullish_or_neutral"
 
 underlying_filter:
-  min_iv_rank: 50                 # 最低 IV Rank
+  min_iv_rank: 30                # 最低 IV Rank
   max_iv_hv_ratio: 2.0            # IV/HV 上限
   min_iv_hv_ratio: 0.8            # IV/HV 下限
   technical:

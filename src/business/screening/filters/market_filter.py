@@ -30,7 +30,6 @@ from src.business.screening.models import (
     MacroEventStatus,
     MarketStatus,
     MarketType,
-    PCRStatus,
     TermStructureStatus,
     TrendStatus,
     VolatilityIndexStatus,
@@ -43,7 +42,6 @@ from src.engine.account.sentiment import (
     calc_spy_trend,
     calc_term_structure,
     calc_vix_percentile,
-    get_pcr_zone,
     get_vix_zone,
 )
 from src.engine.models.enums import TermStructure, TrendSignal
@@ -115,10 +113,7 @@ class MarketFilter:
         # 3. 检查期限结构
         term_structure = self._get_term_structure_status(us_config)
 
-        # 4. 检查 PCR
-        pcr_status = self._get_pcr_status(us_config.pcr_symbol, us_config.pcr_range)
-
-        # 5. 检查宏观事件
+        # 4. 检查宏观事件
         macro_status = self._check_macro_events(macro_config)
 
         # 评估是否有利
@@ -177,12 +172,7 @@ class MarketFilter:
                 f"(>={us_config.term_structure_threshold}), 短期恐慌"
             )
 
-        # PCR 检查（仅作参考，不作为硬性条件）
-        if pcr_status and pcr_status.filter_status == FilterStatus.UNFAVORABLE:
-            # PCR 异常只记录警告，不影响 is_favorable
-            logger.warning(
-                f"PCR={pcr_status.value:.2f} 超出范围 {us_config.pcr_range}"
-            )
+        # PCR 已删除: 0.8-1.2 是常态震荡无过滤价值，数据质量不稳定
 
         return MarketStatus(
             market_type=MarketType.US,
@@ -191,7 +181,7 @@ class MarketFilter:
             trend_indices=trend_indices,
             overall_trend=overall_trend,
             term_structure=term_structure,
-            pcr=pcr_status,
+            pcr=None,  # PCR 已删除
             macro_events=macro_status,
             unfavorable_reasons=unfavorable_reasons,
         )
@@ -595,42 +585,7 @@ class MarketFilter:
             logger.error(f"获取期限结构状态失败: {e}")
             return None
 
-    def _get_pcr_status(
-        self,
-        symbol: str,
-        pcr_range: tuple[float, float],
-    ) -> PCRStatus | None:
-        """获取 Put/Call Ratio 状态
-
-        数据来源：UnifiedDataProvider.get_put_call_ratio()
-        指标分析：engine.sentiment.pcr 模块
-        """
-        try:
-            # 从 data_layer 获取 PCR
-            pcr = self.provider.get_put_call_ratio(symbol)
-
-            if pcr is None:
-                return None
-
-            # 业务层判断
-            pcr_low, pcr_high = pcr_range
-            if pcr_low <= pcr <= pcr_high:
-                filter_status = FilterStatus.NEUTRAL
-            elif pcr > pcr_high:
-                # 高 PCR 可能是机会（逆向指标）
-                filter_status = FilterStatus.OPPORTUNITY
-            else:
-                filter_status = FilterStatus.UNFAVORABLE
-
-            return PCRStatus(
-                symbol=symbol,
-                value=pcr,
-                filter_status=filter_status,
-            )
-
-        except Exception as e:
-            logger.error(f"获取 PCR 状态失败: {e}")
-            return None
+    # _get_pcr_status 已删除: PCR 0.8-1.2 是常态震荡无过滤价值
 
     def _check_macro_events(
         self,
