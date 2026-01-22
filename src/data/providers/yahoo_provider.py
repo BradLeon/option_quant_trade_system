@@ -600,7 +600,8 @@ class YahooProvider(DataProvider):
 
         except Exception as e:
             logger.error(f"Error getting macro data for {indicator}: {e}")
-            return []
+            # Re-raise for retry logic to handle
+            raise
 
     def get_put_call_ratio(self, symbol: str = "SPY") -> float | None:
         """Calculate Put/Call Ratio from option chain volume with caching and retry.
