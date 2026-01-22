@@ -137,6 +137,7 @@ class ScreeningFormatter:
                 "prei": opp.prei,
                 "kelly_fraction": opp.kelly_fraction,
                 "theta_premium_ratio": opp.theta_premium_ratio,
+                "theta_margin_ratio": opp.theta_margin_ratio,  # 资金效率排序指标
                 # 行情数据
                 "underlying_price": opp.underlying_price,
                 "mid_price": opp.mid_price,
