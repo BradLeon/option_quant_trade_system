@@ -43,6 +43,8 @@ class RedisCache:
     DEFAULT_TTL = {
         "kline": 86400,  # 1 day for historical klines
         "fundamental": 86400,  # 1 day for fundamental data
+        "macro": 3600,  # 1 hour for macro data (VIX, VHSI, etc.)
+        "pcr": 3600,  # 1 hour for put/call ratio
     }
 
     def __init__(
@@ -202,6 +204,113 @@ class RedisCache:
             return True
         except Exception as e:
             logger.warning(f"Redis set_fundamental error: {e}")
+            return False
+
+    # ========== Macro Data Cache ==========
+
+    def get_macro_data(
+        self, indicator: str, start_date: str, end_date: str
+    ) -> list[dict] | None:
+        """Get cached macro data.
+
+        Args:
+            indicator: Macro indicator (e.g., '^VIX', '^HSIL').
+            start_date: Start date string (YYYY-MM-DD).
+            end_date: End date string (YYYY-MM-DD).
+
+        Returns:
+            List of macro data dicts, or None if not cached.
+        """
+        if not self._available:
+            return None
+
+        try:
+            key = f"macro:{indicator}:{start_date}:{end_date}"
+            data = self._client.get(key)
+            if data:
+                logger.debug(f"Redis macro cache hit: {key}")
+                return self._deserialize(data)
+            return None
+        except Exception as e:
+            logger.warning(f"Redis get_macro_data error: {e}")
+            return None
+
+    def set_macro_data(
+        self, indicator: str, start_date: str, end_date: str, data: list[dict]
+    ) -> bool:
+        """Cache macro data.
+
+        Args:
+            indicator: Macro indicator (e.g., '^VIX', '^HSIL').
+            start_date: Start date string (YYYY-MM-DD).
+            end_date: End date string (YYYY-MM-DD).
+            data: List of macro data dicts.
+
+        Returns:
+            True if cached successfully, False otherwise.
+        """
+        if not self._available:
+            return False
+
+        try:
+            key = f"macro:{indicator}:{start_date}:{end_date}"
+            ttl = self.DEFAULT_TTL["macro"]
+            self._client.setex(key, ttl, self._serialize(data))
+            logger.debug(f"Redis macro cache set: {key} (TTL={ttl}s)")
+            return True
+        except Exception as e:
+            logger.warning(f"Redis set_macro_data error: {e}")
+            return False
+
+    # ========== PCR Cache ==========
+
+    def get_pcr(self, symbol: str) -> float | None:
+        """Get cached put/call ratio.
+
+        Args:
+            symbol: Symbol (e.g., 'SPY').
+
+        Returns:
+            PCR value, or None if not cached.
+        """
+        if not self._available:
+            return None
+
+        try:
+            key = f"pcr:{symbol}"
+            data = self._client.get(key)
+            if data:
+                logger.debug(f"Redis PCR cache hit: {key}")
+                # Handle both bytes and str
+                if isinstance(data, bytes):
+                    return float(data.decode())
+                return float(data)
+            return None
+        except Exception as e:
+            logger.warning(f"Redis get_pcr error: {e}")
+            return None
+
+    def set_pcr(self, symbol: str, pcr: float) -> bool:
+        """Cache put/call ratio.
+
+        Args:
+            symbol: Symbol (e.g., 'SPY').
+            pcr: Put/Call Ratio value.
+
+        Returns:
+            True if cached successfully, False otherwise.
+        """
+        if not self._available:
+            return False
+
+        try:
+            key = f"pcr:{symbol}"
+            ttl = self.DEFAULT_TTL["pcr"]
+            self._client.setex(key, ttl, str(pcr))
+            logger.debug(f"Redis PCR cache set: {key} (TTL={ttl}s)")
+            return True
+        except Exception as e:
+            logger.warning(f"Redis set_pcr error: {e}")
             return False
 
     # ========== Utility Methods ==========

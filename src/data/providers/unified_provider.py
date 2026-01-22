@@ -1045,15 +1045,17 @@ class UnifiedDataProvider:
         indicator: str,
         start_date: date | None = None,
         end_date: date | None = None,
+        force_refresh: bool = False,
     ) -> list[MacroData]:
-        """Get macro economic data.
+        """Get macro economic data with Redis caching.
 
         Routing: Always uses Yahoo (最全面的宏观数据).
 
         Args:
             indicator: Macro indicator symbol (e.g., '^VIX', '^TNX').
-            start_date: Start date (default: 30 days ago).
+            start_date: Start date (default: 365 days ago for percentile calculation).
             end_date: End date (default: today).
+            force_refresh: Force fetch from API, ignoring cache.
 
         Returns:
             List of MacroData instances sorted by date.
@@ -1061,28 +1063,77 @@ class UnifiedDataProvider:
         if end_date is None:
             end_date = date.today()
         if start_date is None:
-            start_date = end_date - timedelta(days=30)
+            start_date = end_date - timedelta(days=365)
 
+        start_str = start_date.strftime("%Y-%m-%d")
+        end_str = end_date.strftime("%Y-%m-%d")
+
+        # Try Redis cache first (TTL=1 hour)
+        if self._redis_cache and not force_refresh:
+            cached = self._redis_cache.get_macro_data(indicator, start_str, end_str)
+            if cached:
+                logger.debug(f"Redis macro cache hit: {indicator}")
+                return [MacroData.from_dict(item) for item in cached]
+
+        # Cache miss, fetch from provider
         providers = self._route(DataType.MACRO_DATA, indicator)
         result = self._execute_with_fallback(
             providers, "get_macro_data", indicator, start_date, end_date
         )
-        return result or []
+        result = result or []
 
-    def get_put_call_ratio(self, symbol: str = "SPY") -> float | None:
-        """Get Put/Call Ratio from option chain.
+        # Write to Redis cache
+        if self._redis_cache and result:
+            try:
+                macro_data = [
+                    {
+                        "indicator": item.indicator,
+                        "date": item.date.isoformat(),
+                        "value": item.value,
+                        "source": item.source,
+                    }
+                    for item in result
+                ]
+                self._redis_cache.set_macro_data(indicator, start_str, end_str, macro_data)
+            except Exception as e:
+                logger.warning(f"Failed to cache macro data to Redis: {e}")
+
+        return result
+
+    def get_put_call_ratio(
+        self, symbol: str = "SPY", force_refresh: bool = False
+    ) -> float | None:
+        """Get Put/Call Ratio from option chain with Redis caching.
 
         This is only available from Yahoo provider.
 
         Args:
             symbol: Symbol to calculate PCR for (default: SPY).
+            force_refresh: Force fetch from API, ignoring cache.
 
         Returns:
             Put/Call Ratio or None if unavailable.
         """
+        # Try Redis cache first (TTL=1 hour)
+        if self._redis_cache and not force_refresh:
+            cached = self._redis_cache.get_pcr(symbol)
+            if cached is not None:
+                logger.debug(f"Redis PCR cache hit: {symbol}")
+                return cached
+
+        # Cache miss, fetch from provider
         yahoo = self._providers.get("yahoo")
         if yahoo and hasattr(yahoo, "get_put_call_ratio"):
-            return yahoo.get_put_call_ratio(symbol)
+            pcr = yahoo.get_put_call_ratio(symbol)
+
+            # Write to Redis cache
+            if self._redis_cache and pcr is not None:
+                try:
+                    self._redis_cache.set_pcr(symbol, pcr)
+                except Exception as e:
+                    logger.warning(f"Failed to cache PCR to Redis: {e}")
+
+            return pcr
         return None
 
     # =========================================================================

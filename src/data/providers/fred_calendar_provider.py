@@ -13,6 +13,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 import requests
+from dotenv import load_dotenv
 
 from src.data.models.event import (
     EconomicEvent,
@@ -88,6 +89,9 @@ class FredCalendarProvider:
                 FRED_API_KEY environment variable.
             rate_limit: Minimum seconds between requests (default 0.5).
         """
+        # 加载环境变量（如果尚未加载）
+        load_dotenv()
+
         self._api_key = api_key or os.environ.get("FRED_API_KEY")
         self._rate_limit = rate_limit
         self._last_request_time = 0.0

@@ -41,11 +41,24 @@ class YahooProvider(DataProvider):
     No authentication required, but has rate limits.
     """
 
-    def __init__(self, rate_limit: float = 0.5) -> None:
+    # 宏观数据缓存 (类级别共享，所有实例共用)
+    # key: "indicator_startdate_enddate", value: (timestamp, data)
+    _macro_cache: dict[str, tuple[float, list[MacroData]]] = {}
+    _MACRO_CACHE_TTL = 1800  # 30 分钟
+
+    # PCR 数据缓存 (类级别共享)
+    # key: "symbol", value: (timestamp, pcr_value)
+    _pcr_cache: dict[str, tuple[float, float]] = {}
+    _PCR_CACHE_TTL = 1800  # 30 分钟 (PCR 数据不需要频繁更新)
+
+    def __init__(self, rate_limit: float = 1.0) -> None:
         """Initialize Yahoo Finance provider.
 
         Args:
-            rate_limit: Minimum seconds between requests (default 0.5).
+            rate_limit: 请求间隔（秒）
+                - 默认 1.0s: 基于社区成功案例 (GitHub #2125, 320+ tickers)
+                - Yahoo 2024年11月加强限制后的安全值
+                - 推荐范围: 1.0-2.0s
         """
         self._rate_limit = rate_limit
         self._last_request_time = 0.0
@@ -70,6 +83,55 @@ class YahooProvider(DataProvider):
             time.sleep(sleep_time)
 
         self._last_request_time = time.time()
+
+    def _retry_with_backoff(
+        self,
+        func: callable,
+        *args,
+        max_retries: int = 3,
+        **kwargs
+    ) -> Any:
+        """429 错误时使用指数退避重试
+
+        Args:
+            func: 要调用的函数
+            max_retries: 最大重试次数（默认 3）
+            *args, **kwargs: 传递给函数的参数
+
+        Returns:
+            函数返回值
+
+        Raises:
+            RateLimitError: 超过最大重试次数
+            Exception: 其他错误直接抛出
+        """
+        for attempt in range(max_retries):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                error_msg = str(e)
+                # 检查是否为速率限制错误
+                is_rate_limit = any(
+                    keyword in error_msg
+                    for keyword in ["Too Many Requests", "429", "Rate limit", "rate limit"]
+                )
+
+                if is_rate_limit and attempt < max_retries - 1:
+                    wait_time = 2 ** attempt  # 2s, 4s, 8s
+                    logger.warning(
+                        f"Rate limited, retry {attempt + 1}/{max_retries} "
+                        f"after {wait_time}s: {error_msg}"
+                    )
+                    time.sleep(wait_time)
+                else:
+                    # 最后一次重试失败或非速率限制错误
+                    if is_rate_limit:
+                        raise RateLimitError(
+                            f"Exceeded max retries ({max_retries}) due to rate limiting: {error_msg}"
+                        )
+                    else:
+                        # 非速率限制错误，直接抛出
+                        raise
 
     def normalize_symbol(self, symbol: str) -> str:
         """Normalize symbol for Yahoo Finance.
@@ -142,9 +204,22 @@ class YahooProvider(DataProvider):
         start_date: date,
         end_date: date,
     ) -> list[KlineBar]:
-        """Get historical K-line data."""
+        """Get historical K-line data with retry on rate limit."""
         self._check_rate_limit()
         symbol = self.normalize_symbol(symbol)
+
+        return self._retry_with_backoff(
+            self._get_history_kline_impl, symbol, ktype, start_date, end_date
+        )
+
+    def _get_history_kline_impl(
+        self,
+        symbol: str,
+        ktype: KlineType,
+        start_date: date,
+        end_date: date,
+    ) -> list[KlineBar]:
+        """实际的获取 K 线数据逻辑"""
         interval = KLINE_INTERVAL_MAP.get(ktype, "1d")
 
         try:
@@ -178,7 +253,8 @@ class YahooProvider(DataProvider):
 
         except Exception as e:
             logger.error(f"Error getting history kline for {symbol}: {e}")
-            return []
+            # Re-raise for retry logic to handle
+            raise
 
     def get_option_chain(
         self,
@@ -314,10 +390,14 @@ class YahooProvider(DataProvider):
         return None
 
     def get_fundamental(self, symbol: str) -> Fundamental | None:
-        """Get fundamental data for a stock."""
+        """Get fundamental data for a stock with retry."""
         self._check_rate_limit()
         symbol = self.normalize_symbol(symbol)
 
+        return self._retry_with_backoff(self._get_fundamental_impl, symbol)
+
+    def _get_fundamental_impl(self, symbol: str) -> Fundamental | None:
+        """实际的获取基本面数据逻辑"""
         try:
             ticker = yf.Ticker(symbol)
             info = ticker.info
@@ -451,12 +531,45 @@ class YahooProvider(DataProvider):
         start_date: date,
         end_date: date,
     ) -> list[MacroData]:
-        """Get macro economic data.
+        """Get macro economic data with caching and retry.
 
         Supports indices like ^VIX, ^GSPC, ^TNX, etc.
+        Uses 5-minute cache to reduce API calls for repeated queries.
         """
         self._check_rate_limit()
 
+        # 检查缓存
+        cache_key = f"{indicator}_{start_date}_{end_date}"
+        now = time.time()
+
+        if cache_key in self._macro_cache:
+            cached_time, cached_data = self._macro_cache[cache_key]
+            if now - cached_time < self._MACRO_CACHE_TTL:
+                logger.debug(f"Macro cache HIT: {cache_key}")
+                return cached_data
+
+        # 缓存未命中，获取数据（使用重试）
+        logger.debug(f"Macro cache MISS: {cache_key}")
+        data = self._retry_with_backoff(
+            self._get_macro_data_impl,
+            indicator,
+            start_date,
+            end_date
+        )
+
+        # 存入缓存
+        if data:
+            self._macro_cache[cache_key] = (now, data)
+
+        return data
+
+    def _get_macro_data_impl(
+        self,
+        indicator: str,
+        start_date: date,
+        end_date: date,
+    ) -> list[MacroData]:
+        """实际的获取宏观数据逻辑"""
         try:
             ticker = yf.Ticker(indicator)
             hist = ticker.history(
@@ -487,10 +600,11 @@ class YahooProvider(DataProvider):
 
         except Exception as e:
             logger.error(f"Error getting macro data for {indicator}: {e}")
-            return []
+            # Re-raise for retry logic to handle
+            raise
 
     def get_put_call_ratio(self, symbol: str = "SPY") -> float | None:
-        """Calculate Put/Call Ratio from option chain volume.
+        """Calculate Put/Call Ratio from option chain volume with caching and retry.
 
         CBOE Put/Call Ratio is not directly available via yfinance.
         This method calculates PCR from option chain data for a given symbol.
@@ -507,6 +621,26 @@ class YahooProvider(DataProvider):
         self._check_rate_limit()
         symbol = self.normalize_symbol(symbol)
 
+        # 检查缓存
+        now = time.time()
+        if symbol in self._pcr_cache:
+            cached_time, cached_pcr = self._pcr_cache[symbol]
+            if now - cached_time < self._PCR_CACHE_TTL:
+                logger.debug(f"PCR cache HIT: {symbol}")
+                return cached_pcr
+
+        # 缓存未命中，获取数据（使用重试）
+        logger.debug(f"PCR cache MISS: {symbol}")
+        pcr = self._retry_with_backoff(self._get_put_call_ratio_impl, symbol)
+
+        # 存入缓存
+        if pcr is not None:
+            self._pcr_cache[symbol] = (now, pcr)
+
+        return pcr
+
+    def _get_put_call_ratio_impl(self, symbol: str) -> float | None:
+        """实际的 PCR 计算逻辑"""
         try:
             ticker = yf.Ticker(symbol)
             expiry_dates = ticker.options
@@ -536,4 +670,5 @@ class YahooProvider(DataProvider):
 
         except Exception as e:
             logger.error(f"Error calculating put/call ratio for {symbol}: {e}")
-            return None
+            # Re-raise for retry logic to handle
+            raise

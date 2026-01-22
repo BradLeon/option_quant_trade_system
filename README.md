@@ -1221,6 +1221,8 @@ python -m src.business.cli.main monitor -p positions.json -C capital.json
 
 ## 环境配置
 
+### 基础配置
+
 创建 `.env` 文件：
 
 ```env
@@ -1236,7 +1238,108 @@ IBKR_CLIENT_ID=1
 # Supabase (可选，用于数据缓存)
 SUPABASE_URL=your-project-url
 SUPABASE_KEY=your-anon-key
+
+# FRED API (可选，用于经济日历)
+FRED_API_KEY=your-fred-api-key
 ```
+
+### 代理配置（重要）
+
+Yahoo Finance 数据提供者需要通过代理访问，否则会触发 429 频率限制错误。
+
+**交互式 Shell 配置** (添加到 `~/.zshrc` 或 `~/.bashrc`)：
+
+```bash
+export HTTP_PROXY="http://127.0.0.1:33210"
+export HTTPS_PROXY="http://127.0.0.1:33210"
+```
+
+**注意**：代理端口需要根据你实际使用的代理软件配置（如 Clash、V2Ray 等）。
+
+### Crontab 定时任务配置
+
+Crontab 环境不会加载 shell 配置文件（如 `.zshrc`），需要在 crontab 中显式设置代理环境变量。
+
+**配置步骤**：
+
+```bash
+# 编辑 crontab
+crontab -e
+```
+
+**Crontab 配置示例**：
+
+```crontab
+# ============================================================
+# Option Quant Trade System - 定时任务
+# 本机时区: Asia/Shanghai (北京时间)
+# ============================================================
+
+# 环境变量
+SHELL=/bin/zsh
+PATH=/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:/Users/yourname/.local/bin
+PROJECT_DIR=/path/to/option_quant_trade_system
+
+# 代理设置（必须！否则 Yahoo Finance 会触发 429 限流）
+HTTP_PROXY=http://127.0.0.1:33210
+HTTPS_PROXY=http://127.0.0.1:33210
+
+# ------------------------------------------------------------
+# HK 市场筛选: 北京时间 9:30-16:30，每半小时，周一到周五
+# ------------------------------------------------------------
+0 10,11,12,13,14,15,16 * * 1-5 cd $PROJECT_DIR && uv run optrade screen -m hk --push >> logs/screen_hk_$(date +\%Y\%m\%d).log 2>&1
+30 9,10,11,12,13,14,15,16 * * 1-5 cd $PROJECT_DIR && uv run optrade screen -m hk --push >> logs/screen_hk_$(date +\%Y\%m\%d).log 2>&1
+
+# ------------------------------------------------------------
+# US 市场筛选: 北京时间 21:30-6:30，每小时，排除周末
+# ------------------------------------------------------------
+30 21,22,23 * * 1-5 cd $PROJECT_DIR && uv run optrade screen -m us --push >> logs/screen_us_$(date +\%Y\%m\%d).log 2>&1
+30 0,1,2,3,4,5,6 * * 2-6 cd $PROJECT_DIR && uv run optrade screen -m us --push >> logs/screen_us_$(date +\%Y\%m\%d).log 2>&1
+
+# ------------------------------------------------------------
+# Dashboard 持仓监控: 每天 9:30, 16:30, 22:30
+# ------------------------------------------------------------
+30 9,16,22 * * * cd $PROJECT_DIR && uv run optrade dashboard -a real --push >> logs/dashboard_$(date +\%Y\%m\%d).log 2>&1
+```
+
+**常见问题排查**：
+
+如果 crontab 任务中 Yahoo Finance 数据获取失败（429 错误），请检查：
+
+1. **代理服务是否运行**：确保代理软件在定时任务执行时保持运行
+2. **代理环境变量**：确认 crontab 中设置了 `HTTP_PROXY` 和 `HTTPS_PROXY`
+3. **验证方法**：
+   ```bash
+   # 手动执行命令验证
+   uv run optrade screen -m hk -v
+
+   # 检查日志中是否有 429 错误
+   tail -f logs/screen_hk_$(date +%Y%m%d).log
+   ```
+
+### Redis 缓存配置（可选）
+
+系统支持 Redis 缓存以减少 API 请求频率，缓存 TTL 配置：
+
+| 数据类型 | TTL | 说明 |
+|---------|-----|------|
+| K线数据 | 24小时 | 历史K线变化频率低 |
+| 基本面数据 | 24小时 | 财报数据更新频率低 |
+| 宏观数据 (VIX/VHSI) | 1小时 | 盘中更新频率适中 |
+| Put/Call Ratio | 1小时 | 盘中更新频率适中 |
+
+**安装 Redis**：
+
+```bash
+# macOS
+brew install redis
+brew services start redis
+
+# 验证
+redis-cli ping  # 应返回 PONG
+```
+
+Redis 缓存默认启用，如果 Redis 不可用，系统会自动降级为每次请求 API。
 
 ## License
 
