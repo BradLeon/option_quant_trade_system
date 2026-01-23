@@ -1,7 +1,73 @@
 """
 Screening Configuration - 筛选配置管理
 
-加载和管理开仓筛选系统的配置参数
+加载和管理开仓筛选系统的配置参数。
+
+## 系统概述
+
+筛选系统采用 **三层漏斗架构**：
+
+| 层级 | 名称 | 核心问题 | 过滤对象 |
+|------|------|----------|----------|
+| **Layer 1** | 市场过滤 | 现在是卖期权的好时机吗？ | 市场环境 |
+| **Layer 2** | 标的过滤 | 这个标的适合卖期权吗？ | 股票池中的每个标的 |
+| **Layer 3** | 合约过滤 | 选择哪个 Strike 和到期日？ | 每个标的的期权合约 |
+
+## 指标优先级体系
+
+| 优先级 | 含义 | 处理方式 | 示例 |
+|--------|------|----------|------|
+| **P0** | 致命条件 | 不满足 = 立即排除 | Expected ROC < 10% |
+| **P1** | 核心条件 | 不满足 = 强烈建议不开仓 | IV Rank < 30%, VIX 极端 |
+| **P2** | 重要条件 | 不满足 = 警告，需其他条件补偿 | RSI 超买超卖, Annual ROC |
+| **P3** | 参考条件 | 不满足 = 可接受，记录风险 | Sharpe Ratio, Volume |
+
+## Layer 1: 市场过滤器 (MarketFilterConfig)
+
+| 指标 | 优先级 | 条件 | 说明 |
+|------|--------|------|------|
+| 宏观事件 | P1 | FOMC/CPI/NFP 前2天 | 事件前暂停新开仓 |
+| VIX 水平 | P1 | 15~999 (无上限) | VIX > 30 是卖方黄金时刻 |
+| VIX 期限结构 | P1 | VIX/VIX3M < 0.9 | >1.0 反向结构=近期风险 |
+| VIX Percentile | P2 | 20%~80% | 50%-80% 最佳 |
+| SPY/盈富 趋势 | P2 | 符合策略方向 | Short Put 要求看涨/震荡 |
+
+## Layer 2: 标的过滤器 (UnderlyingFilterConfig)
+
+| 指标 | 优先级 | 条件 | 说明 |
+|------|--------|------|------|
+| **IV Rank** | **P1** | > 30% | 阻塞条件，卖方必须卖"贵"的东西 |
+| IV/HV Ratio | P1 | 0.8~2.0 | 隐含波动率相对历史波动率 |
+| 财报日期 | P1 | > 7天 | 避免财报博弈 |
+| RSI | P2 | 25~85 (策略差异) | Short Put 允许更低 RSI |
+| ADX | P2 | < 45 | 避免强趋势行情 |
+
+## Layer 3: 合约过滤器 (ContractFilterConfig)
+
+| 指标 | 优先级 | 条件 | 说明 |
+|------|--------|------|------|
+| Annual Expected ROC | P0 | > 10% | 年化期望收益率必须为正 |
+| TGR | P1 | > 0.5 | Theta/Gamma 比率（标准化） |
+| DTE | P1 | 7~45 天 | 港股到期日稀疏，范围宽松 |
+| |Delta| | P1 | 0.05~0.35 | 最优 0.20~0.30 |
+| Bid-Ask Spread | P1 | < 10% | 流动性指标 |
+| Open Interest | P1 | > 100 | 持仓量 |
+| Annual ROC | P2 | > 15% | 年化收益率 |
+| Win Probability | P3 | > 65% | 理论胜率 |
+
+## 配置文件层次
+
+```
+config/screening/
+├── stock_pools.yaml       # 股票池定义
+├── short_put.yaml         # Short Put 策略配置（覆盖默认值）
+└── covered_call.yaml      # Covered Call 策略配置（覆盖默认值）
+
+src/business/config/
+└── screening_config.py    # 默认值和数据类定义（本文件）
+```
+
+**配置优先级**: YAML 文件 > screening_config.py 默认值
 """
 
 from dataclasses import dataclass, field

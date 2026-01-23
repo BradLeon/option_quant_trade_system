@@ -73,7 +73,6 @@ ALERT_ACTION_MAP: dict[tuple[AlertType, AlertLevel], tuple[ActionType, UrgencyLe
     (AlertType.MONEYNESS, AlertLevel.RED): (ActionType.ROLL, UrgencyLevel.IMMEDIATE),
     (AlertType.DELTA_CHANGE, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
     (AlertType.GAMMA_EXPOSURE, AlertLevel.RED): (ActionType.REDUCE, UrgencyLevel.IMMEDIATE),
-    (AlertType.PREI_HIGH, AlertLevel.RED): (ActionType.REDUCE, UrgencyLevel.IMMEDIATE),
     (AlertType.TGR_LOW, AlertLevel.RED): (ActionType.ADJUST, UrgencyLevel.IMMEDIATE),
     # Capital 级 - 核心风控四大支柱
     (AlertType.MARGIN_UTILIZATION, AlertLevel.RED): (ActionType.REDUCE, UrgencyLevel.IMMEDIATE),
@@ -88,7 +87,6 @@ ALERT_ACTION_MAP: dict[tuple[AlertType, AlertLevel], tuple[ActionType, UrgencyLe
     (AlertType.DELTA_CHANGE, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
     (AlertType.GAMMA_EXPOSURE, AlertLevel.YELLOW): (ActionType.SET_STOP, UrgencyLevel.SOON),
     (AlertType.GAMMA_NEAR_EXPIRY, AlertLevel.YELLOW): (ActionType.ROLL, UrgencyLevel.SOON),
-    (AlertType.PREI_HIGH, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
     (AlertType.IV_HV_CHANGE, AlertLevel.YELLOW): (ActionType.REVIEW, UrgencyLevel.MONITOR),
     (AlertType.TGR_LOW, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
     (AlertType.VEGA_EXPOSURE, AlertLevel.YELLOW): (ActionType.REDUCE, UrgencyLevel.SOON),
@@ -110,6 +108,129 @@ ALERT_ACTION_MAP: dict[tuple[AlertType, AlertLevel], tuple[ActionType, UrgencyLe
     ),
 }
 
+# =============================================================================
+# STRATEGY_SPECIFIC_SUGGESTIONS 配置
+# 映射结构: (AlertType, AlertLevel, strategy_type) → (ActionType, UrgencyLevel, suggestion_text)
+# 当持仓有 strategy_type 时，优先使用此映射来生成更具针对性的建议
+# =============================================================================
+
+STRATEGY_SPECIFIC_SUGGESTIONS: dict[
+    tuple[AlertType, AlertLevel, str],
+    tuple[ActionType, UrgencyLevel, str]
+] = {
+    # === DTE < 7 天 (RED) - 按策略区分 ===
+    (AlertType.DTE_WARNING, AlertLevel.RED, "short_put"): (
+        ActionType.ROLL, UrgencyLevel.IMMEDIATE,
+        "强制平仓或展期到下月"
+    ),
+    (AlertType.DTE_WARNING, AlertLevel.RED, "covered_call"): (
+        ActionType.HOLD, UrgencyLevel.MONITOR,
+        "可持有到期（Gamma 风险由正股覆盖）"
+    ),
+    (AlertType.DTE_WARNING, AlertLevel.RED, "short_strangle"): (
+        ActionType.ROLL, UrgencyLevel.IMMEDIATE,
+        "强制平仓或双腿同时展期"
+    ),
+
+    # === |Delta| > 0.50 (RED) - 按策略区分 ===
+    (AlertType.DELTA_CHANGE, AlertLevel.RED, "short_put"): (
+        ActionType.ROLL, UrgencyLevel.IMMEDIATE,
+        "展期到更低 Strike 或平仓止损"
+    ),
+    (AlertType.DELTA_CHANGE, AlertLevel.RED, "covered_call"): (
+        ActionType.ADJUST, UrgencyLevel.SOON,
+        "可接受行权（卖出正股）或展期到更高 Strike"
+    ),
+    (AlertType.DELTA_CHANGE, AlertLevel.RED, "short_strangle"): (
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "平仓 Delta 恶化的腿，保留另一腿"
+    ),
+
+    # === OTM% < 5% (RED) - 按策略区分 ===
+    (AlertType.OTM_PCT, AlertLevel.RED, "short_put"): (
+        ActionType.ROLL, UrgencyLevel.IMMEDIATE,
+        "展期到下月或更低 Strike"
+    ),
+    (AlertType.OTM_PCT, AlertLevel.RED, "covered_call"): (
+        ActionType.ADJUST, UrgencyLevel.SOON,
+        "展期到更高 Strike 或接受行权"
+    ),
+    (AlertType.OTM_PCT, AlertLevel.RED, "short_strangle"): (
+        ActionType.ROLL, UrgencyLevel.IMMEDIATE,
+        "展期恶化的腿"
+    ),
+
+    # === P&L < -100% (RED) - 按策略区分 ===
+    (AlertType.STOP_LOSS, AlertLevel.RED, "short_put"): (
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "无条件平仓止损，不抗单"
+    ),
+    (AlertType.STOP_LOSS, AlertLevel.RED, "covered_call"): (
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "平仓 Call 腿止损"
+    ),
+    (AlertType.STOP_LOSS, AlertLevel.RED, "short_strangle"): (
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "平仓亏损腿或整体止损"
+    ),
+
+    # === TGR < 1.0 (RED) - 按策略区分 ===
+    (AlertType.POSITION_TGR, AlertLevel.RED, "short_put"): (
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "平仓换到更高效的合约"
+    ),
+    (AlertType.POSITION_TGR, AlertLevel.RED, "covered_call"): (
+        ActionType.CLOSE, UrgencyLevel.SOON,
+        "平仓换到更高效的合约"
+    ),
+    (AlertType.POSITION_TGR, AlertLevel.RED, "short_strangle"): (
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "平仓换到更高效的合约"
+    ),
+
+    # === Gamma Risk > 1% (RED) - 按策略区分 ===
+    (AlertType.GAMMA_RISK_PCT, AlertLevel.RED, "short_put"): (
+        ActionType.ROLL, UrgencyLevel.IMMEDIATE,
+        "平仓或展期到更远 Strike"
+    ),
+    (AlertType.GAMMA_RISK_PCT, AlertLevel.RED, "covered_call"): (
+        ActionType.HOLD, UrgencyLevel.MONITOR,
+        "一般不触发（正股覆盖）"
+    ),
+    (AlertType.GAMMA_RISK_PCT, AlertLevel.RED, "short_strangle"): (
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "平仓 Put 腿或整体平仓"
+    ),
+
+    # === IV/HV < 0.8 (RED) - 按策略区分 ===
+    (AlertType.POSITION_IV_HV, AlertLevel.RED, "short_put"): (
+        ActionType.TAKE_PROFIT, UrgencyLevel.SOON,
+        "如盈利可提前止盈，禁止在该标的继续卖出"
+    ),
+    (AlertType.POSITION_IV_HV, AlertLevel.RED, "covered_call"): (
+        ActionType.TAKE_PROFIT, UrgencyLevel.SOON,
+        "如盈利可提前止盈，禁止在该标的继续卖出"
+    ),
+    (AlertType.POSITION_IV_HV, AlertLevel.RED, "short_strangle"): (
+        ActionType.TAKE_PROFIT, UrgencyLevel.SOON,
+        "如盈利可提前止盈，禁止在该标的继续卖出"
+    ),
+
+    # === Expected ROC < 0% (RED) - 按策略区分 ===
+    (AlertType.EXPECTED_ROC_LOW, AlertLevel.RED, "short_put"): (
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "立即平仓，策略已失效"
+    ),
+    (AlertType.EXPECTED_ROC_LOW, AlertLevel.RED, "covered_call"): (
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "立即平仓，策略已失效"
+    ),
+    (AlertType.EXPECTED_ROC_LOW, AlertLevel.RED, "short_strangle"): (
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "立即平仓，策略已失效"
+    ),
+}
+
 # 优先级顺序（用于排序）
 ALERT_PRIORITY = {
     # RED alerts - 按危险程度
@@ -123,7 +244,6 @@ ALERT_PRIORITY = {
     AlertType.DTE_WARNING: 70,
     AlertType.DELTA_CHANGE: 65,
     AlertType.GAMMA_EXPOSURE: 60,
-    AlertType.PREI_HIGH: 55,
     AlertType.DELTA_EXPOSURE: 50,
     AlertType.TGR_LOW: 45,
     AlertType.CONCENTRATION: 40,
@@ -264,6 +384,9 @@ class SuggestionGenerator:
     ) -> PositionSuggestion | None:
         """为单个持仓生成建议
 
+        优先查找策略特定建议（STRATEGY_SPECIFIC_SUGGESTIONS），
+        若无则使用通用映射（ALERT_ACTION_MAP）。
+
         Args:
             position_id: 持仓 ID
             alerts: 该持仓的 alerts
@@ -278,17 +401,41 @@ class SuggestionGenerator:
         # 获取最高优先级 alert
         primary_alert = self._get_highest_priority_alert(alerts)
 
-        # 查表获取 action 和 urgency
-        key = (primary_alert.alert_type, primary_alert.level)
-        if key not in self._action_map:
-            # 默认建议
-            action = ActionType.MONITOR
-            urgency = UrgencyLevel.MONITOR
-        else:
-            action, urgency = self._action_map[key]
+        # 获取策略类型
+        strategy_type: str | None = None
+        if positions:
+            pos = next((p for p in positions if p.position_id == position_id), None)
+            if pos:
+                strategy_type = pos.strategy_type
 
-        # 构建原因说明
-        reason = self._build_reason(primary_alert, alerts)
+        # 优先查找策略特定建议
+        suggestion_text: str | None = None
+        if strategy_type:
+            strategy_key = (primary_alert.alert_type, primary_alert.level, strategy_type)
+            if strategy_key in STRATEGY_SPECIFIC_SUGGESTIONS:
+                action, urgency, suggestion_text = STRATEGY_SPECIFIC_SUGGESTIONS[strategy_key]
+            else:
+                # 回退到通用映射
+                key = (primary_alert.alert_type, primary_alert.level)
+                if key in self._action_map:
+                    action, urgency = self._action_map[key]
+                else:
+                    action = ActionType.MONITOR
+                    urgency = UrgencyLevel.MONITOR
+        else:
+            # 无策略类型，使用通用映射
+            key = (primary_alert.alert_type, primary_alert.level)
+            if key in self._action_map:
+                action, urgency = self._action_map[key]
+            else:
+                action = ActionType.MONITOR
+                urgency = UrgencyLevel.MONITOR
+
+        # 构建原因说明（使用策略特定建议文本优先）
+        if suggestion_text:
+            reason = f"{primary_alert.message} → {suggestion_text}"
+        else:
+            reason = self._build_reason(primary_alert, alerts)
 
         # 构建详细说明
         details = self._build_details(primary_alert, alerts, positions, position_id)

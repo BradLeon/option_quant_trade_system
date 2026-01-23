@@ -51,12 +51,10 @@ class AlertType(str, Enum):
     POSITION_IV_HV = "position_iv_hv"  # 持仓级 IV/HV 比率
     POSITION_TGR = "position_tgr"  # 持仓级 TGR
     IV_HV_CHANGE = "iv_hv_change"  # IV/HV 变化
-    PREI_HIGH = "prei_high"  # PREI 过高
     DTE_WARNING = "dte_warning"  # 临近到期
     PROFIT_TARGET = "profit_target"  # 达到止盈
     STOP_LOSS = "stop_loss"  # 达到止损
     PNL_TARGET = "pnl_target"  # 盈亏目标（通用）
-    SAS_SCORE = "sas_score"  # SAS 策略吸引力分数
     ROC_LOW = "roc_low"  # ROC 过低
     EXPECTED_ROC_LOW = "expected_roc_low"  # Expected ROC 过低
     WIN_PROB_LOW = "win_prob_low"  # Win Probability 过低

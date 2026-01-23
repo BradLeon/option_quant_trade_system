@@ -3,7 +3,7 @@
 Renders the monitoring dashboard with multiple panels:
 - Portfolio Health (Greeks, TGR, HHI)
 - Capital Management (Sharpe, Kelly, Margin, Drawdown)
-- Risk Heatmap (PREI/SAS by symbol)
+- Risk Heatmap (TGR/Expected ROC by symbol)
 - Todo List (Suggestions)
 - Option Positions Table
 - Stock Positions Table
@@ -231,7 +231,7 @@ class DashboardRenderer:
     def _render_risk_heatmap(self, positions: list[PositionData]) -> list[str]:
         """Render Risk Heatmap panel.
 
-        Shows PREI and SAS scores by symbol with alert indicators.
+        Shows TGR and Expected ROC by symbol with alert indicators.
 
         Args:
             positions: List of option positions
@@ -261,31 +261,31 @@ class DashboardRenderer:
         header = "      " + "".join(f"{s:>6}" for s in symbols)
         lines.append(box_line(header, width))
 
-        # PREI row
-        prei_vals = []
+        # TGR row
+        tgr_vals = []
         for sym in symbols:
             pos = next((p for p in positions if (p.underlying or p.symbol) == sym), None)
-            if pos and pos.prei is not None:
-                level = self.checker.check_prei(pos.prei)
+            if pos and pos.tgr is not None:
+                level = self.checker.check_position_tgr(pos.tgr)
                 icon = alert_icon(level) if level == AlertLevel.RED else ""
-                prei_vals.append(f"{pos.prei:>4.0f}{icon}")
+                tgr_vals.append(f"{pos.tgr:>4.2f}{icon}")
             else:
-                prei_vals.append("   -")
-        prei_line = "PREI  " + "".join(f"{v:>6}" for v in prei_vals)
-        lines.append(box_line(prei_line, width))
+                tgr_vals.append("   -")
+        tgr_line = "TGR   " + "".join(f"{v:>6}" for v in tgr_vals)
+        lines.append(box_line(tgr_line, width))
 
-        # SAS row
-        sas_vals = []
+        # Expected ROC row
+        eroc_vals = []
         for sym in symbols:
             pos = next((p for p in positions if (p.underlying or p.symbol) == sym), None)
-            if pos and pos.sas is not None:
-                level = self.checker.check_sas(pos.sas)
+            if pos and pos.expected_roc is not None:
+                level = self.checker.check_expected_roc(pos.expected_roc)
                 icon = alert_icon(level) if level == AlertLevel.GREEN else ""
-                sas_vals.append(f"{pos.sas:>4.0f}{icon}")
+                eroc_vals.append(f"{pos.expected_roc:>4.0%}{icon}")
             else:
-                sas_vals.append("   -")
-        sas_line = "SAS   " + "".join(f"{v:>6}" for v in sas_vals)
-        lines.append(box_line(sas_line, width))
+                eroc_vals.append("   -")
+        eroc_line = "E[ROC]" + "".join(f"{v:>6}" for v in eroc_vals)
+        lines.append(box_line(eroc_line, width))
 
         lines.append(box_bottom(width))
         return lines
@@ -405,7 +405,6 @@ class DashboardRenderer:
             pnl_str = f"{pos.unrealized_pnl_pct:+.1%}" if pos.unrealized_pnl_pct else "-"
 
             level = self.checker.get_position_overall_level(
-                prei=pos.prei,
                 dte=pos.dte,
                 tgr=pos.tgr,
                 otm_pct=pos.otm_pct,
@@ -528,11 +527,10 @@ class DashboardRenderer:
             ("策略", 12),
             ("行权价", 7),
             ("Expiry", 8),
-            ("PREI", 5),
-            ("SAS", 5),
             ("TGR", 6),
             ("ROC", 6),
-            ("E[ROC]", 6),
+            ("E[ROC]", 8),
+            ("WinPr", 6),
             ("Sharpe", 6),
             ("Kelly", 6),
         ]
@@ -541,20 +539,18 @@ class DashboardRenderer:
         lines.append(table_separator(columns4))
 
         for pos in positions:
-            prei_str = f"{pos.prei:.1f}" if pos.prei is not None else "-"
-            sas_str = f"{pos.sas:.1f}" if pos.sas is not None else "-"
             tgr_str = f"{pos.tgr:.3f}" if pos.tgr is not None else "-"
             roc_str = f"{pos.roc:.1%}" if pos.roc is not None else "-"
             eroc_str = f"{pos.expected_roc:.1%}" if pos.expected_roc is not None else "-"
+            win_prob_str = f"{pos.win_probability:.0%}" if pos.win_probability is not None else "-"
             sharpe_str = f"{pos.sharpe:.3f}" if pos.sharpe is not None else "-"
             kelly_str = f"{pos.kelly:.1%}" if pos.kelly is not None else "-"
 
             values = common_prefix(pos) + [
-                prei_str,
-                sas_str,
                 tgr_str,
                 roc_str,
                 eroc_str,
+                win_prob_str,
                 sharpe_str,
                 kelly_str,
             ]

@@ -130,10 +130,11 @@ python src/business/cli/main.py screen --push
 
 | 指标 | 优先级 | 条件 | 说明 |
 |------|--------|------|------|
-| Annual Expected ROC | P0 | > 10% | 年化期望收益率必须为正 |
+| Annual Expected ROC | P0 | > 10% | 年化期望收益率必须为正，致命条件 |
 | TGR | P1 | > 0.5 | Theta/Gamma 比率（标准化） |
-| DTE | P1 | 14~60 天 | 港股到期日稀疏，范围宽松 |
-| \|Delta\| | P1 | 0.10~0.40 | 最优 0.20~0.30 |
+| DTE | P1 | 7~45 天 | 港股到期日稀疏，范围宽松 |
+| \|Delta\| | P1 | 0.05~0.35 | 最优 0.20~0.30 |
+| OTM% | P2 | 7%~30% | 虚值百分比 |
 | Bid-Ask Spread | P1 | < 10% | 流动性指标 |
 | Open Interest | P1 | > 100 | 持仓量 |
 | Annual ROC | P2 | > 15% | 年化收益率 |
@@ -271,12 +272,15 @@ underlying_filter:
 @dataclass
 class ContractFilterConfig:
     # DTE 范围（港股期权到期日稀疏，使用宽范围）
-    dte_range: tuple[int, int] = (14, 60)
+    dte_range: tuple[int, int] = (7, 45)
     optimal_dte_range: tuple[int, int] = (25, 45)
 
     # |Delta| 范围（绝对值，覆盖两种策略）
-    delta_range: tuple[float, float] = (0.10, 0.40)
+    delta_range: tuple[float, float] = (0.05, 0.35)
     optimal_delta_range: tuple[float, float] = (0.20, 0.30)
+
+    # OTM% 范围
+    otm_range: tuple[float, float] = (0.07, 0.30)
 
 @dataclass
 class LiquidityConfig:
@@ -286,11 +290,12 @@ class LiquidityConfig:
 
 @dataclass
 class MetricsConfig:
-    min_sharpe_ratio: float = 0.5
-    min_tgr: float = 0.5
-    min_expected_roc: float = 0.10    # 10%
-    min_annual_roc: float = 0.15      # 15%
-    min_premium_rate: float = 0.01    # 1%
+    min_sharpe_ratio: float = 0.5     # P3: 参考条件
+    min_tgr: float = 0.5              # P1: 核心条件
+    min_expected_roc: float = 0.10    # P0: 致命条件 (10%)
+    min_annual_roc: float = 0.15      # P2: 重要条件 (15%)
+    min_win_probability: float = 0.65 # P3: 参考条件 (65%)
+    min_premium_rate: float = 0.01    # P3: 参考条件 (1%)
 ```
 
 ---
@@ -484,6 +489,7 @@ A:
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.1 | 2026-01 | 更新文档：同步指标阈值，完善配置说明 |
 | 2.0 | 2025-01 | 统一合约配置，简化 CLI 默认行为 |
 | 1.2 | 2025-01 | 添加事件日历集成，港股 DTE 范围优化 |
 | 1.1 | 2025-01 | 添加股票池管理 (StockPoolManager) |

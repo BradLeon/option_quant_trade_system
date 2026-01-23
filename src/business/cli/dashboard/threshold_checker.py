@@ -377,38 +377,6 @@ class ThresholdChecker:
             return AlertLevel.GREEN
         return self._check_range(value, self.config.position.pnl)
 
-    def check_prei(self, value: Optional[float]) -> AlertLevel:
-        """Check PREI (Position Risk Exposure Index) threshold.
-
-        Lower PREI is better (less risk per unit return).
-        Uses unified ThresholdRange configuration.
-
-        Args:
-            value: PREI value
-
-        Returns:
-            AlertLevel
-        """
-        if value is None:
-            return AlertLevel.GREEN
-        return self._check_range(value, self.config.position.prei)
-
-    def check_sas(self, value: Optional[float]) -> AlertLevel:
-        """Check SAS (Strategy Assessment Score) threshold.
-
-        Higher SAS is better.
-        Uses unified ThresholdRange configuration.
-
-        Args:
-            value: SAS score
-
-        Returns:
-            AlertLevel
-        """
-        if value is None:
-            return AlertLevel.GREEN
-        return self._check_range(value, self.config.position.sas)
-
     def check_position_tgr(self, value: Optional[float]) -> AlertLevel:
         """Check position-level TGR threshold.
 
@@ -488,7 +456,6 @@ class ThresholdChecker:
 
     def get_position_overall_level(
         self,
-        prei: Optional[float] = None,
         dte: Optional[int] = None,
         tgr: Optional[float] = None,
         otm_pct: Optional[float] = None,
@@ -507,11 +474,9 @@ class ThresholdChecker:
         - DTE (time to expiration)
         - Expected ROC (expected return)
         - Win Probability (probability of profit)
-        - PREI (risk exposure)
         - TGR (theta/gamma efficiency)
 
         Args:
-            prei: PREI value
             dte: Days to expiration
             tgr: Position TGR
             otm_pct: OTM percentage
@@ -528,7 +493,6 @@ class ThresholdChecker:
             self.check_dte(dte),
             self.check_expected_roc(expected_roc),
             self.check_win_probability(win_probability),
-            self.check_prei(prei),
             self.check_position_tgr(tgr),
         ]
 
