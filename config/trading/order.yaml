@@ -1,0 +1,27 @@
+# Order Manager Configuration
+# 订单管理配置
+
+# 存储配置
+storage_path: "data/trading/orders"
+storage_format: "json"  # json or sqlite
+
+# 订单默认值
+default_time_in_force: "DAY"  # DAY, GTC, IOC
+default_order_type: "limit"  # limit, market
+
+# 价格偏离限制
+max_price_deviation_pct: 0.05  # 5%
+
+# 重试配置
+max_retries: 3
+retry_delay_seconds: 5
+
+# 通知配置
+notify_on_submit: true
+notify_on_fill: true
+notify_on_reject: true
+notify_on_cancel: true
+
+# 执行模式
+execution_mode: "manual"  # manual or auto
+require_confirm: true  # CLI 需要 --confirm

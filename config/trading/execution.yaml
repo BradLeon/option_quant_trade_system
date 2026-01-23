@@ -1,0 +1,17 @@
+# Execution Mode Configuration
+# 执行模式配置
+
+execution:
+  mode: "manual"  # "manual" | "auto"
+
+  manual:
+    require_confirm: true  # CLI 需要 --confirm
+
+  auto:
+    enabled: false  # 默认关闭
+    require_explicit_flag: true  # 启用需要 --auto-execute
+
+  # 无论哪种模式，以下情况始终需要确认
+  always_confirm:
+    - decision_type: "CLOSE"
+      priority: "CRITICAL"  # 止损单除外
