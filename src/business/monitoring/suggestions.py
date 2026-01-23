@@ -18,6 +18,7 @@ from src.business.monitoring.models import (
     MonitorResult,
     PositionData,
 )
+from src.engine.models.enums import StrategyType
 
 logger = logging.getLogger(__name__)
 
@@ -110,122 +111,122 @@ ALERT_ACTION_MAP: dict[tuple[AlertType, AlertLevel], tuple[ActionType, UrgencyLe
 
 # =============================================================================
 # STRATEGY_SPECIFIC_SUGGESTIONS 配置
-# 映射结构: (AlertType, AlertLevel, strategy_type) → (ActionType, UrgencyLevel, suggestion_text)
+# 映射结构: (AlertType, AlertLevel, StrategyType) → (ActionType, UrgencyLevel, suggestion_text)
 # 当持仓有 strategy_type 时，优先使用此映射来生成更具针对性的建议
 # =============================================================================
 
 STRATEGY_SPECIFIC_SUGGESTIONS: dict[
-    tuple[AlertType, AlertLevel, str],
+    tuple[AlertType, AlertLevel, StrategyType],
     tuple[ActionType, UrgencyLevel, str]
 ] = {
     # === DTE < 7 天 (RED) - 按策略区分 ===
-    (AlertType.DTE_WARNING, AlertLevel.RED, "short_put"): (
+    (AlertType.DTE_WARNING, AlertLevel.RED, StrategyType.SHORT_PUT): (
         ActionType.ROLL, UrgencyLevel.IMMEDIATE,
         "强制平仓或展期到下月"
     ),
-    (AlertType.DTE_WARNING, AlertLevel.RED, "covered_call"): (
+    (AlertType.DTE_WARNING, AlertLevel.RED, StrategyType.COVERED_CALL): (
         ActionType.HOLD, UrgencyLevel.MONITOR,
         "可持有到期（Gamma 风险由正股覆盖）"
     ),
-    (AlertType.DTE_WARNING, AlertLevel.RED, "short_strangle"): (
+    (AlertType.DTE_WARNING, AlertLevel.RED, StrategyType.SHORT_STRANGLE): (
         ActionType.ROLL, UrgencyLevel.IMMEDIATE,
         "强制平仓或双腿同时展期"
     ),
 
     # === |Delta| > 0.50 (RED) - 按策略区分 ===
-    (AlertType.DELTA_CHANGE, AlertLevel.RED, "short_put"): (
+    (AlertType.DELTA_CHANGE, AlertLevel.RED, StrategyType.SHORT_PUT): (
         ActionType.ROLL, UrgencyLevel.IMMEDIATE,
         "展期到更低 Strike 或平仓止损"
     ),
-    (AlertType.DELTA_CHANGE, AlertLevel.RED, "covered_call"): (
+    (AlertType.DELTA_CHANGE, AlertLevel.RED, StrategyType.COVERED_CALL): (
         ActionType.ADJUST, UrgencyLevel.SOON,
         "可接受行权（卖出正股）或展期到更高 Strike"
     ),
-    (AlertType.DELTA_CHANGE, AlertLevel.RED, "short_strangle"): (
+    (AlertType.DELTA_CHANGE, AlertLevel.RED, StrategyType.SHORT_STRANGLE): (
         ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
         "平仓 Delta 恶化的腿，保留另一腿"
     ),
 
     # === OTM% < 5% (RED) - 按策略区分 ===
-    (AlertType.OTM_PCT, AlertLevel.RED, "short_put"): (
+    (AlertType.OTM_PCT, AlertLevel.RED, StrategyType.SHORT_PUT): (
         ActionType.ROLL, UrgencyLevel.IMMEDIATE,
         "展期到下月或更低 Strike"
     ),
-    (AlertType.OTM_PCT, AlertLevel.RED, "covered_call"): (
+    (AlertType.OTM_PCT, AlertLevel.RED, StrategyType.COVERED_CALL): (
         ActionType.ADJUST, UrgencyLevel.SOON,
         "展期到更高 Strike 或接受行权"
     ),
-    (AlertType.OTM_PCT, AlertLevel.RED, "short_strangle"): (
+    (AlertType.OTM_PCT, AlertLevel.RED, StrategyType.SHORT_STRANGLE): (
         ActionType.ROLL, UrgencyLevel.IMMEDIATE,
         "展期恶化的腿"
     ),
 
     # === P&L < -100% (RED) - 按策略区分 ===
-    (AlertType.STOP_LOSS, AlertLevel.RED, "short_put"): (
+    (AlertType.STOP_LOSS, AlertLevel.RED, StrategyType.SHORT_PUT): (
         ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
         "无条件平仓止损，不抗单"
     ),
-    (AlertType.STOP_LOSS, AlertLevel.RED, "covered_call"): (
+    (AlertType.STOP_LOSS, AlertLevel.RED, StrategyType.COVERED_CALL): (
         ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
         "平仓 Call 腿止损"
     ),
-    (AlertType.STOP_LOSS, AlertLevel.RED, "short_strangle"): (
+    (AlertType.STOP_LOSS, AlertLevel.RED, StrategyType.SHORT_STRANGLE): (
         ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
         "平仓亏损腿或整体止损"
     ),
 
     # === TGR < 1.0 (RED) - 按策略区分 ===
-    (AlertType.POSITION_TGR, AlertLevel.RED, "short_put"): (
+    (AlertType.POSITION_TGR, AlertLevel.RED, StrategyType.SHORT_PUT): (
         ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
         "平仓换到更高效的合约"
     ),
-    (AlertType.POSITION_TGR, AlertLevel.RED, "covered_call"): (
+    (AlertType.POSITION_TGR, AlertLevel.RED, StrategyType.COVERED_CALL): (
         ActionType.CLOSE, UrgencyLevel.SOON,
         "平仓换到更高效的合约"
     ),
-    (AlertType.POSITION_TGR, AlertLevel.RED, "short_strangle"): (
+    (AlertType.POSITION_TGR, AlertLevel.RED, StrategyType.SHORT_STRANGLE): (
         ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
         "平仓换到更高效的合约"
     ),
 
     # === Gamma Risk > 1% (RED) - 按策略区分 ===
-    (AlertType.GAMMA_RISK_PCT, AlertLevel.RED, "short_put"): (
+    (AlertType.GAMMA_RISK_PCT, AlertLevel.RED, StrategyType.SHORT_PUT): (
         ActionType.ROLL, UrgencyLevel.IMMEDIATE,
         "平仓或展期到更远 Strike"
     ),
-    (AlertType.GAMMA_RISK_PCT, AlertLevel.RED, "covered_call"): (
+    (AlertType.GAMMA_RISK_PCT, AlertLevel.RED, StrategyType.COVERED_CALL): (
         ActionType.HOLD, UrgencyLevel.MONITOR,
         "一般不触发（正股覆盖）"
     ),
-    (AlertType.GAMMA_RISK_PCT, AlertLevel.RED, "short_strangle"): (
+    (AlertType.GAMMA_RISK_PCT, AlertLevel.RED, StrategyType.SHORT_STRANGLE): (
         ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
         "平仓 Put 腿或整体平仓"
     ),
 
     # === IV/HV < 0.8 (RED) - 按策略区分 ===
-    (AlertType.POSITION_IV_HV, AlertLevel.RED, "short_put"): (
+    (AlertType.POSITION_IV_HV, AlertLevel.RED, StrategyType.SHORT_PUT): (
         ActionType.TAKE_PROFIT, UrgencyLevel.SOON,
         "如盈利可提前止盈，禁止在该标的继续卖出"
     ),
-    (AlertType.POSITION_IV_HV, AlertLevel.RED, "covered_call"): (
+    (AlertType.POSITION_IV_HV, AlertLevel.RED, StrategyType.COVERED_CALL): (
         ActionType.TAKE_PROFIT, UrgencyLevel.SOON,
         "如盈利可提前止盈，禁止在该标的继续卖出"
     ),
-    (AlertType.POSITION_IV_HV, AlertLevel.RED, "short_strangle"): (
+    (AlertType.POSITION_IV_HV, AlertLevel.RED, StrategyType.SHORT_STRANGLE): (
         ActionType.TAKE_PROFIT, UrgencyLevel.SOON,
         "如盈利可提前止盈，禁止在该标的继续卖出"
     ),
 
     # === Expected ROC < 0% (RED) - 按策略区分 ===
-    (AlertType.EXPECTED_ROC_LOW, AlertLevel.RED, "short_put"): (
+    (AlertType.EXPECTED_ROC_LOW, AlertLevel.RED, StrategyType.SHORT_PUT): (
         ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
         "立即平仓，策略已失效"
     ),
-    (AlertType.EXPECTED_ROC_LOW, AlertLevel.RED, "covered_call"): (
+    (AlertType.EXPECTED_ROC_LOW, AlertLevel.RED, StrategyType.COVERED_CALL): (
         ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
         "立即平仓，策略已失效"
     ),
-    (AlertType.EXPECTED_ROC_LOW, AlertLevel.RED, "short_strangle"): (
+    (AlertType.EXPECTED_ROC_LOW, AlertLevel.RED, StrategyType.SHORT_STRANGLE): (
         ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
         "立即平仓，策略已失效"
     ),
@@ -402,7 +403,7 @@ class SuggestionGenerator:
         primary_alert = self._get_highest_priority_alert(alerts)
 
         # 获取策略类型
-        strategy_type: str | None = None
+        strategy_type: StrategyType | None = None
         if positions:
             pos = next((p for p in positions if p.position_id == position_id), None)
             if pos:

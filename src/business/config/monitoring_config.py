@@ -142,6 +142,8 @@ from typing import Any
 
 import yaml
 
+from src.engine.models.enums import StrategyType
+
 
 @dataclass
 class ThresholdRange:
@@ -484,7 +486,7 @@ class StrategyPositionThresholds:
     这个类用于存储策略特定的阈值覆盖，会与 PositionThresholds 合并使用。
     """
 
-    strategy_type: str = "default"
+    strategy_type: StrategyType = StrategyType.UNKNOWN
     description: str = ""
 
     # 策略特定覆盖（None 表示使用默认值）
@@ -526,16 +528,16 @@ class StrategyPositionThresholds:
 
 
 # 预定义策略配置
-STRATEGY_POSITION_CONFIGS: dict[str, StrategyPositionThresholds] = {
+STRATEGY_POSITION_CONFIGS: dict[StrategyType, StrategyPositionThresholds] = {
     # Short Put: 标准阈值
-    "short_put": StrategyPositionThresholds(
-        strategy_type="short_put",
+    StrategyType.SHORT_PUT: StrategyPositionThresholds(
+        strategy_type=StrategyType.SHORT_PUT,
         description="Short Put 策略：标准阈值，裸卖需严格风控",
     ),
 
     # Covered Call: 有正股覆盖，阈值更宽松
-    "covered_call": StrategyPositionThresholds(
-        strategy_type="covered_call",
+    StrategyType.COVERED_CALL: StrategyPositionThresholds(
+        strategy_type=StrategyType.COVERED_CALL,
         description="Covered Call 策略：有正股覆盖，Gamma/DTE/Delta 可放宽",
         # DTE 放宽：可持有到期（正股覆盖 Gamma 风险）
         dte=ThresholdRange(
@@ -588,14 +590,14 @@ STRATEGY_POSITION_CONFIGS: dict[str, StrategyPositionThresholds] = {
     ),
 
     # Short Strangle: 双向风险，使用标准阈值
-    "short_strangle": StrategyPositionThresholds(
-        strategy_type="short_strangle",
+    StrategyType.SHORT_STRANGLE: StrategyPositionThresholds(
+        strategy_type=StrategyType.SHORT_STRANGLE,
         description="Short Strangle 策略：双向裸卖，需严格风控",
     ),
 
     # 默认配置
-    "default": StrategyPositionThresholds(
-        strategy_type="default",
+    StrategyType.UNKNOWN: StrategyPositionThresholds(
+        strategy_type=StrategyType.UNKNOWN,
         description="默认配置：使用标准阈值",
     ),
 }
@@ -723,11 +725,13 @@ class MonitoringConfig:
     dynamic: DynamicAdjustment = field(default_factory=DynamicAdjustment)
 
     # 策略特定配置缓存
-    _strategy_position_cache: dict[str, PositionThresholds] = field(
+    _strategy_position_cache: dict[StrategyType, PositionThresholds] = field(
         default_factory=dict, repr=False
     )
 
-    def get_position_thresholds(self, strategy_type: str | None = None) -> PositionThresholds:
+    def get_position_thresholds(
+        self, strategy_type: StrategyType | str | None = None
+    ) -> PositionThresholds:
         """获取策略特定的 Position 级阈值
 
         根据策略类型返回合并后的阈值配置：
@@ -735,13 +739,17 @@ class MonitoringConfig:
         - 如果没有特定配置，返回基础配置
 
         Args:
-            strategy_type: 策略类型（short_put, covered_call, short_strangle 等）
+            strategy_type: 策略类型（StrategyType 枚举或字符串）
 
         Returns:
             合并后的 PositionThresholds
         """
         if not strategy_type:
             return self.position
+
+        # 将字符串转换为枚举（向后兼容）
+        if isinstance(strategy_type, str):
+            strategy_type = StrategyType.from_string(strategy_type)
 
         # 检查缓存
         if strategy_type in self._strategy_position_cache:
@@ -750,7 +758,7 @@ class MonitoringConfig:
         # 获取策略配置并合并
         strategy_config = STRATEGY_POSITION_CONFIGS.get(
             strategy_type,
-            STRATEGY_POSITION_CONFIGS["default"]
+            STRATEGY_POSITION_CONFIGS[StrategyType.UNKNOWN]
         )
         merged = strategy_config.merge_with_base(self.position)
 

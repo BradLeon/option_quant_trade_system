@@ -14,6 +14,7 @@ from enum import Enum
 from typing import Optional
 
 from src.data.models.event import EconomicEvent
+from src.engine.models.enums import StrategyType
 
 
 class MarketType(str, Enum):
@@ -361,7 +362,7 @@ class ScreeningResult:
     """筛选结果"""
 
     passed: bool
-    strategy_type: str  # "short_put" or "covered_call"
+    strategy_type: StrategyType  # StrategyType.SHORT_PUT or StrategyType.COVERED_CALL
     timestamp: datetime = field(default_factory=datetime.now)
 
     # 市场状态

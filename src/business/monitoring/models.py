@@ -16,6 +16,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional
 
 from src.data.models.option import Greeks
+from src.engine.models.enums import StrategyType
 
 if TYPE_CHECKING:
     from src.business.monitoring.suggestions import PositionSuggestion
@@ -178,7 +179,7 @@ class PositionData:
     is_dangerous_period: Optional[bool] = None
 
     # === 策略指标（由 DataBridge 调用 strategy.calc_metrics() 填充）===
-    strategy_type: Optional[str] = None  # "short_put" / "covered_call" 等
+    strategy_type: Optional[StrategyType] = None  # StrategyType 枚举
     prei: Optional[float] = None  # 来自 StrategyMetrics.prei
     tgr: Optional[float] = None  # 来自 StrategyMetrics.tgr
     sas: Optional[float] = None  # 来自 StrategyMetrics.sas

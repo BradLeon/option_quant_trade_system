@@ -19,6 +19,7 @@ from src.business.screening.pipeline import ScreeningPipeline
 from src.business.screening.stock_pool import StockPoolManager, StockPoolError
 from src.business.notification.dispatcher import MessageDispatcher
 from src.data.providers.unified_provider import UnifiedDataProvider
+from src.engine.models.enums import StrategyType
 
 
 logger = logging.getLogger(__name__)
@@ -128,12 +129,13 @@ def screen(
 
     # 解析市场和策略列表
     markets = ["us", "hk"] if market.lower() == "all" else [market.lower()]
-    strategies = ["short_put", "covered_call"] if strategy.lower() == "all" else [strategy.lower()]
+    strategy_strs = ["short_put", "covered_call"] if strategy.lower() == "all" else [strategy.lower()]
+    strategies = [StrategyType.from_string(s) for s in strategy_strs]
 
     click.echo("=" * 60)
     click.echo(f"📊 开仓筛选")
     click.echo(f"   市场: {', '.join(m.upper() for m in markets)}")
-    click.echo(f"   策略: {', '.join(strategies)}")
+    click.echo(f"   策略: {', '.join(s.value for s in strategies)}")
     if skip_market_check:
         click.echo("   ⏭️  跳过市场环境检查")
     click.echo("=" * 60)
@@ -169,11 +171,11 @@ def screen(
                 for strat in strategies:
                     click.echo()
                     click.echo("-" * 60)
-                    click.echo(f"🔍 {mkt.upper()} | {strat} | {len(symbol_list)} 只标的")
+                    click.echo(f"🔍 {mkt.upper()} | {strat.value} | {len(symbol_list)} 只标的")
                     click.echo("-" * 60)
 
-                    # 加载策略配置
-                    screening_config = ScreeningConfig.load(strat)
+                    # 加载策略配置（使用字符串值作为文件名）
+                    screening_config = ScreeningConfig.load(strat.value)
 
                     # 创建筛选管道
                     pipeline = ScreeningPipeline(screening_config, provider)
@@ -192,7 +194,7 @@ def screen(
                     total_opportunities += len(confirmed)
                     all_results.append({
                         "market": mkt,
-                        "strategy": strat,
+                        "strategy": strat.value,
                         "result": result,
                         "qualified": confirmed,  # 兼容下游代码
                         "candidates": candidates,

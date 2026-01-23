@@ -60,3 +60,46 @@ class MarketType(Enum):
 
     US = "us"
     HK = "hk"
+
+
+class StrategyType(str, Enum):
+    """期权策略类型枚举
+
+    继承 str 确保 JSON 序列化兼容性：
+    - StrategyType.SHORT_PUT.value == "short_put"
+    - str(StrategyType.SHORT_PUT) == "short_put"
+
+    策略类型说明:
+    - SHORT_PUT: 裸卖 Put（核心策略）
+    - COVERED_CALL: 备兑 Call（核心策略）
+    - PARTIAL_COVERED_CALL: 部分备兑 Call
+    - NAKED_CALL: 裸卖 Call
+    - SHORT_STRANGLE: 宽跨式（同时卖 Put 和 Call）
+    - UNKNOWN: 未知策略
+    - NOT_OPTION: 非期权持仓
+    """
+
+    SHORT_PUT = "short_put"
+    COVERED_CALL = "covered_call"
+    PARTIAL_COVERED_CALL = "partial_covered_call"
+    NAKED_CALL = "naked_call"
+    SHORT_STRANGLE = "short_strangle"
+    UNKNOWN = "unknown"
+    NOT_OPTION = "not_option"
+
+    @classmethod
+    def from_string(cls, value: str | None) -> "StrategyType":
+        """从字符串安全转换
+
+        Args:
+            value: 策略类型字符串
+
+        Returns:
+            对应的 StrategyType 枚举值，无效值返回 UNKNOWN
+        """
+        if not value:
+            return cls.UNKNOWN
+        try:
+            return cls(value)
+        except ValueError:
+            return cls.UNKNOWN
