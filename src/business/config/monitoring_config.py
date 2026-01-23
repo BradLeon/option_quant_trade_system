@@ -31,36 +31,21 @@ Monitoring Configuration - 监控配置管理
 | Theta%         | 0.05%~0.15%     | 0.15%~0.25%       | >0.30% 或 <0%      | 日时间衰减率          | 平仓部分 Short 头寸（过高意味 Gamma 过大）|
 | IV/HV Quality  | >1.0            | 0.8~1.2           | <0.8               | 持仓定价质量          | 停止做空，仅允许 Debit 策略               |
 
-## Position 级阈值配置参考（12个指标）
+## Position 级阈值配置参考（9个指标）
 
 | 指标            | 绿色（正常）  | 黄色（关注）  | 红色（风险）  | 说明                    | RED 建议操作                              |
 |-----------------|---------------|---------------|---------------|-------------------------|-------------------------------------------|
 | OTM%            | ≥10%          | 5%~10%        | <5%           | 虚值百分比（统一公式）  | 立即 Roll 到下个月或更远行权价            |
 | |Delta|         | ≤0.20         | 0.20~0.40     | >0.50         | 方向性风险（绝对值）    | 必须行动：对冲正股或平仓                  |
 | DTE             | ≥14 天        | 7~14 天       | <7 天         | 到期天数                | 强制平仓或展期，绝不持有进入最后一周      |
-| P&L%            | ≥50%          | 0%~50%        | <0%           | 持仓盈亏                | 无条件止损，不要抗单                      |
+| P&L%            | ≥50%          | -100%~50%     | <-100%        | 持仓盈亏                | 无条件止损，不要抗单                      |
 | Gamma Risk%     | ≤0.5%         | 0.5%~1%       | >1%           | Gamma/Margin 百分比     | 减仓或平仓，降低 Gamma 风险敞口           |
 | TGR             | ≥1.5          | 1.0~1.5       | <1.0          | 标准化 Theta/Gamma 比   | 平仓，换到更高效的合约                    |
 | IV/HV           | ≥1.2          | 0.8~1.2       | <0.8          | 期权定价质量            | 如盈利可提前止盈，避免继续卖出            |
-| ROC             | ≥20%          | 10%~20%       | <10%          | 资金使用效率            | 考虑平仓，寻找更高效策略                  |
 | Expected ROC    | ≥10%          | 0%~10%        | <0%           | 预期资本回报率          | 立即平仓，策略已失效                      |
-| Win Prob        | ≥70%          | 55%~70%       | <55%          | 胜率                    | 考虑平仓，寻找更高效策略                  |
-| PREI            | <40           | 40~60         | >60           | 风险暴露指数            | 风险暴露过高，考虑减仓或对冲              |
-| SAS             | ≥70           | 50~70         | <50           | 策略吸引力分数          | 考虑平仓或调整策略                        |
+| Win Probability | ≥70%          | 55%~70%       | <55%          | 理论胜率                | 考虑平仓，寻找更高效策略                  |
 
 ## Capital 级阈值配置参考
-
-| 指标         | 绿色（正常） | 黄色（关注）  | 红色（风险） | 说明              | RED 建议操作                      |
-|--------------|--------------|---------------|--------------|-------------------|-----------------------------------|
-| Sharpe Ratio | ≥1.5         | 1.0~1.5       | <1.0         | 风险调整收益      | 检视策略执行，优化风险收益比      |
-| Kelly Usage  | 50%~100%     | 30%~50%       | >100%        | 仓位/最优仓位     | 仓位过重，考虑减仓                |
-| Margin Usage | <60%         | 60%~80%       | >90%         | 保证金使用率      | 立即减仓，降低保证金占用          |
-| Drawdown     | <10%         | 10%~15%       | >15%         | 回撤比例          | 执行风险控制，考虑减仓或暂停交易  |
-
-TODO：
-这是为您量身定制的 **Capital 级核心量化风控体系**。这四个指标构成了账户风控的“四大支柱”：生存空间、流动性缓冲、总敞口规模、极端抗压能力。
-
-### 🛡️ Capital 级核心风控配置表
 
 | 维度 | 指标 | 绿色 (安全) | 黄色 (警戒) | 红色 (高危) | 说明 (意义与公式) | 红色时操作 (Action) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -69,7 +54,7 @@ TODO：
 | **敞口** | **Gross Leverage**<br>(总名义杠杆) | **< 2.0x** | **2.0x ~ 4.0x** | **> 4.0x** | **意义**：衡量总资产规模。期权按名义本金计算，防止“赚小钱担大风险”。<br>**公式**：`(Σ|Stock Value| + Σ|Option Notional|) / NLV`<br>*注：Option Notional = Strike × Multiplier × Qty* | **缩减规模 (Scale Down)**：<br>账户“虚胖”，抗风险能力差。<br>需按比例缩减所有策略的仓位规模，降低整体风险暴露。 |
 | **稳健** | **Stress Test Loss**<br>(压力测试风险) | **< 10%** | **10% ~ 20%** | **> 20%** | **意义**：预测在黑天鹅事件下的净值回撤。防止平时赚小钱，一波回到解放前。<br>**公式**：`(Curr_NLV - Sim_NLV) / Curr_NLV`<br>*场景：假设 Spot -15% 且 IV +40%* | **切断尾部 (Cut Tails)**：<br>1. 买入深虚值 Put (VIX Call) 进行尾部保护。<br>2. 平掉 Short Gamma 最大的头寸（通常是临期平值期权）。 |
 
----
+
 
 ### 💡 深度解读：为什么这四个是“黄金组合”？
 
@@ -156,6 +141,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+from src.engine.models.enums import StrategyType
 
 
 @dataclass
@@ -375,17 +362,20 @@ class PositionThresholds:
     )
 
     # P&L% (持仓未实现收益率)
+    # 新规范: 绿色 ≥50% (止盈), 黄色 -100%~50%, 红色 < -100% (亏损超过原始权利金)
     pnl: ThresholdRange = field(
         default_factory=lambda: ThresholdRange(
-            green=(0.50, float("inf")),    # 盈利 ≥ 50%
-            yellow=(0.0, 0.50),            # 0% ~ 50%
-            red_below=0.0,                 # 亏损 < 0%
+            green=(0.50, float("inf")),    # 盈利 ≥ 50% (止盈目标)
+            yellow=(-1.0, 0.50),           # -100% ~ 50%
+            red_below=-1.0,                # 亏损 < -100% (亏损超过原始权利金)
             hysteresis=0.05,
-            alert_type="PNL_TARGET",
-            red_below_message="持仓亏损: {value:.1%}",
-            yellow_message="持仓盈利: {value:.1%}",
+            alert_type="STOP_LOSS",
+            red_below_message="持仓亏损超过原始权利金: {value:.1%}，触发止损线",
+            yellow_message="持仓盈亏: {value:.1%}",
+            green_message="持仓达到止盈目标: {value:.1%}",
             red_below_action="无条件止损，不要抗单",
             yellow_action="关注盈亏变化",
+            green_action="考虑止盈平仓，锁定利润",
         )
     )
 
@@ -480,36 +470,137 @@ class PositionThresholds:
         )
     )
 
-    # PREI (Position Risk Exposure Index) - 红色阈值调整
-    prei: ThresholdRange = field(
-        default_factory=lambda: ThresholdRange(
-            green=(0, 40),                 # PREI < 40
-            yellow=(40, 60),               # 40 ~ 60
-            red_above=60,                  # PREI > 60
-            hysteresis=5,
-            alert_type="PREI_HIGH",
-            red_above_message="PREI 过高: {value:.1f}，风险暴露超标",
-            yellow_message="PREI 偏高: {value:.1f}",
-            red_above_action="风险暴露过高，考虑减仓或对冲",
-            yellow_action="关注风险暴露变化",
-        )
-    )
+    # 注意: PREI、SAS 和 Dividend Risk 已移除
 
-    # SAS (Strategy Attractiveness Score) - 阈值调整
-    sas: ThresholdRange = field(
-        default_factory=lambda: ThresholdRange(
-            green=(70, float("inf")),      # SAS ≥ 70
-            yellow=(50, 70),               # 50 ~ 70
-            red_below=50,                  # SAS < 50
-            hysteresis=5,
-            alert_type="SAS_SCORE",
-            red_below_message="SAS 过低: {value:.0f}，策略吸引力不足",
-            yellow_message="SAS 偏低: {value:.0f}",
-            red_below_action="考虑平仓或调整策略",
-            yellow_action="关注策略表现",
-        )
-    )
 
+
+@dataclass
+class StrategyPositionThresholds:
+    """策略特定的持仓级阈值覆盖
+
+    不同策略类型有不同的风险特征：
+    - Short Put: 标准阈值，需严格控制 Gamma 和 DTE
+    - Covered Call: 有正股覆盖，DTE/Delta/Gamma 可放宽
+    - Short Strangle: 双向风险，使用标准阈值
+
+    这个类用于存储策略特定的阈值覆盖，会与 PositionThresholds 合并使用。
+    """
+
+    strategy_type: StrategyType = StrategyType.UNKNOWN
+    description: str = ""
+
+    # 策略特定覆盖（None 表示使用默认值）
+    dte: ThresholdRange | None = None
+    delta: ThresholdRange | None = None
+    otm_pct: ThresholdRange | None = None
+    gamma_risk_pct: ThresholdRange | None = None
+    tgr: ThresholdRange | None = None
+    pnl: ThresholdRange | None = None
+
+    def merge_with_base(self, base: "PositionThresholds") -> "PositionThresholds":
+        """与基础配置合并，返回新的 PositionThresholds
+
+        策略特定配置覆盖基础配置中的对应字段。
+
+        Args:
+            base: 基础 PositionThresholds
+
+        Returns:
+            合并后的 PositionThresholds
+        """
+        from copy import deepcopy
+        merged = deepcopy(base)
+
+        if self.dte is not None:
+            merged.dte = self.dte
+        if self.delta is not None:
+            merged.delta = self.delta
+        if self.otm_pct is not None:
+            merged.otm_pct = self.otm_pct
+        if self.gamma_risk_pct is not None:
+            merged.gamma_risk_pct = self.gamma_risk_pct
+        if self.tgr is not None:
+            merged.tgr = self.tgr
+        if self.pnl is not None:
+            merged.pnl = self.pnl
+
+        return merged
+
+
+# 预定义策略配置
+STRATEGY_POSITION_CONFIGS: dict[StrategyType, StrategyPositionThresholds] = {
+    # Short Put: 标准阈值
+    StrategyType.SHORT_PUT: StrategyPositionThresholds(
+        strategy_type=StrategyType.SHORT_PUT,
+        description="Short Put 策略：标准阈值，裸卖需严格风控",
+    ),
+
+    # Covered Call: 有正股覆盖，阈值更宽松
+    StrategyType.COVERED_CALL: StrategyPositionThresholds(
+        strategy_type=StrategyType.COVERED_CALL,
+        description="Covered Call 策略：有正股覆盖，Gamma/DTE/Delta 可放宽",
+        # DTE 放宽：可持有到期（正股覆盖 Gamma 风险）
+        dte=ThresholdRange(
+            green=(7, float("inf")),       # DTE ≥ 7 天即可
+            yellow=(3, 7),                 # 3~7 天
+            red_below=3,                   # DTE < 3 天
+            hysteresis=1,
+            alert_type="DTE_WARNING",
+            red_below_message="DTE < 3 天: {value:.0f} 天，接近到期",
+            yellow_message="DTE 进入一周内: {value:.0f} 天",
+            red_below_action="考虑展期或接受行权",
+            yellow_action="准备展期计划或接受行权",
+        ),
+        # Delta 放宽：被行权等于卖出正股，可接受
+        delta=ThresholdRange(
+            green=(0, 0.40),               # |Delta| ≤ 0.40
+            yellow=(0.40, 0.60),           # 0.40 ~ 0.60
+            red_above=0.70,                # |Delta| > 0.70
+            hysteresis=0.03,
+            alert_type="DELTA_CHANGE",
+            red_above_message="|Delta| 过大: {value:.2f}，接近行权",
+            yellow_message="|Delta| 偏大: {value:.2f}",
+            red_above_action="准备接受行权（卖出正股）或展期到更高 Strike",
+            yellow_action="关注行权风险，评估是否展期",
+        ),
+        # OTM% 放宽：被行权是收益
+        otm_pct=ThresholdRange(
+            green=(0.05, float("inf")),    # OTM ≥ 5%
+            yellow=(0.02, 0.05),           # 2% ~ 5%
+            red_below=0.02,                # OTM < 2%
+            hysteresis=0.01,
+            alert_type="OTM_PCT",
+            red_below_message="OTM% 过低: {value:.1%}，接近行权",
+            yellow_message="OTM% 偏低: {value:.1%}",
+            red_below_action="准备接受行权或展期到更高 Strike",
+            yellow_action="关注行权风险",
+        ),
+        # Gamma Risk 放宽：正股覆盖
+        gamma_risk_pct=ThresholdRange(
+            green=(0, 0.02),               # Gamma/Margin ≤ 2%
+            yellow=(0.02, 0.03),           # 2% ~ 3%
+            red_above=0.03,                # Gamma/Margin > 3%
+            hysteresis=0.002,
+            alert_type="GAMMA_RISK_PCT",
+            red_above_message="Gamma Risk% 偏高: {value:.2%}（正股覆盖，风险可控）",
+            yellow_message="Gamma Risk% 偏高: {value:.2%}",
+            red_above_action="正股覆盖，风险可控，可持有",
+            yellow_action="关注 Gamma 风险变化",
+        ),
+    ),
+
+    # Short Strangle: 双向风险，使用标准阈值
+    StrategyType.SHORT_STRANGLE: StrategyPositionThresholds(
+        strategy_type=StrategyType.SHORT_STRANGLE,
+        description="Short Strangle 策略：双向裸卖，需严格风控",
+    ),
+
+    # 默认配置
+    StrategyType.UNKNOWN: StrategyPositionThresholds(
+        strategy_type=StrategyType.UNKNOWN,
+        description="默认配置：使用标准阈值",
+    ),
+}
 
 
 @dataclass
@@ -617,12 +708,63 @@ class DynamicAdjustment:
 
 @dataclass
 class MonitoringConfig:
-    """监控配置"""
+    """监控配置
+
+    支持策略特定的阈值配置：
+    - portfolio: Portfolio 级阈值（所有策略共用）
+    - position: Position 级基础阈值（可被策略覆盖）
+    - capital: Capital 级阈值（所有策略共用）
+    - strategy_configs: 策略特定的 Position 级阈值覆盖
+
+    使用 get_position_thresholds(strategy_type) 获取合并后的阈值。
+    """
 
     portfolio: PortfolioThresholds = field(default_factory=PortfolioThresholds)
     position: PositionThresholds = field(default_factory=PositionThresholds)
     capital: CapitalThresholds = field(default_factory=CapitalThresholds)
     dynamic: DynamicAdjustment = field(default_factory=DynamicAdjustment)
+
+    # 策略特定配置缓存
+    _strategy_position_cache: dict[StrategyType, PositionThresholds] = field(
+        default_factory=dict, repr=False
+    )
+
+    def get_position_thresholds(
+        self, strategy_type: StrategyType | str | None = None
+    ) -> PositionThresholds:
+        """获取策略特定的 Position 级阈值
+
+        根据策略类型返回合并后的阈值配置：
+        - 如果策略有特定配置，与基础配置合并
+        - 如果没有特定配置，返回基础配置
+
+        Args:
+            strategy_type: 策略类型（StrategyType 枚举或字符串）
+
+        Returns:
+            合并后的 PositionThresholds
+        """
+        if not strategy_type:
+            return self.position
+
+        # 将字符串转换为枚举（向后兼容）
+        if isinstance(strategy_type, str):
+            strategy_type = StrategyType.from_string(strategy_type)
+
+        # 检查缓存
+        if strategy_type in self._strategy_position_cache:
+            return self._strategy_position_cache[strategy_type]
+
+        # 获取策略配置并合并
+        strategy_config = STRATEGY_POSITION_CONFIGS.get(
+            strategy_type,
+            STRATEGY_POSITION_CONFIGS[StrategyType.UNKNOWN]
+        )
+        merged = strategy_config.merge_with_base(self.position)
+
+        # 缓存结果
+        self._strategy_position_cache[strategy_type] = merged
+        return merged
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "MonitoringConfig":

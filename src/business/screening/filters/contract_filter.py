@@ -5,9 +5,10 @@ Contract Filter - 合约过滤器
 
 优先级说明：
 - P0 致命条件（必须阻塞）：Expected ROC > 0%, 近价期权成交量 > 5000, ATM Spread < 5%
-- P1 核心条件（阻塞）：DTE, Delta, Bid-Ask Spread, Open Interest, TGR, Sharpe
+- P1 核心条件（阻塞）：DTE, Delta, Bid-Ask Spread, Open Interest, TGR
 - P2 重要条件（警告）：财报跨越, OTM %, 年化 ROC, SAS, PREI
-- P3 参考条件（警告）：Win Probability, Theta/Premium, Kelly, Volume
+- P3 参考条件（警告）：Sharpe Ratio, Premium Rate, Win Probability, Theta/Premium, Kelly, Volume
+- 排序指标：Theta/Margin（资金效率）
 
 架构说明：
 - 数据获取：调用 data_layer (UnifiedDataProvider)
@@ -564,6 +565,7 @@ class ContractFilter:
             expiry=expiry.isoformat(),
             strike=strike,
             option_type=option_type,
+            trading_class=contract.trading_class,  # IBKR 需要 trading_class 来识别 HK 期权
             bid=bid,
             ask=ask,
             mid_price=mid_price,
@@ -588,6 +590,7 @@ class ContractFilter:
             moneyness=moneyness,
             otm_percent=otm_percent,
             theta_premium_ratio=theta_prem_ratio,
+            theta_margin_ratio=metrics.get("theta_margin_ratio"),  # 资金效率排序指标
             expected_roc=expected_roc,
             annual_roc=annual_roc,
             premium_rate=metrics.get("premium_rate"),
@@ -761,6 +764,7 @@ class ContractFilter:
             metrics["roc"] = strategy_metrics.roc
             metrics["expected_roc"] = strategy_metrics.expected_roc
             metrics["premium_rate"] = strategy_metrics.premium_rate
+            metrics["theta_margin_ratio"] = strategy_metrics.theta_margin_ratio
 
             # 调试日志: 打印所有指标
             strategy_name = "ShortPut" if option_type == "put" else "ShortCall"
@@ -800,9 +804,10 @@ class ContractFilter:
 
         优先级：
         - P0: Expected ROC
-        - P1: Sharpe Ratio, TGR, Premium Rate
+        - P1: TGR
         - P2: Annual ROC
-        - P3: Win Probability, Theta/Premium, Kelly
+        - P3: Sharpe Ratio, Premium Rate, Win Probability, Theta/Premium, Kelly
+              （Sharpe/PremRate 降级原因：卖方收益非正态分布，费率已被 AnnROC 包含）
         """
         issues: list[str] = []
 
@@ -812,25 +817,11 @@ class ContractFilter:
                 f"[P0] Expected ROC={expected_roc:.2%} 不足（需>{config.min_expected_roc:.0%}）"
             )
 
-        # === P1: Sharpe Ratio (年化) 检查 ===
-        sharpe_annual = metrics.get("sharpe_ratio_annual")
-        if sharpe_annual is not None and sharpe_annual < config.min_sharpe_ratio:
-            issues.append(
-                f"[P1] Sharpe(年化)={sharpe_annual:.2f} 不足（<{config.min_sharpe_ratio}）"
-            )
-
         # === P1: TGR 检查 ===
         tgr = metrics.get("tgr")
         if tgr is not None and tgr < config.min_tgr:
             issues.append(
                 f"[P1] TGR={tgr:.3f} 不足（<{config.min_tgr}）"
-            )
-
-        # === P1: 费率检查 ===
-        premium_rate = metrics.get("premium_rate")
-        if premium_rate is not None and premium_rate < config.min_premium_rate:
-            issues.append(
-                f"[P1] 费率={premium_rate:.2%} 不足（<{config.min_premium_rate:.0%}）"
             )
 
         # SAS/PREI 检查已移除 - 这些指标在筛选中意义不大，保留计算用于分析
@@ -839,6 +830,20 @@ class ContractFilter:
         if annual_roc is not None and annual_roc < config.min_annual_roc:
             issues.append(
                 f"[P2] Annual ROC={annual_roc:.1%} 不足（<{config.min_annual_roc:.0%}）"
+            )
+
+        # === P3: Sharpe Ratio (年化) 检查（参考条件，卖方收益非正态分布）===
+        sharpe_annual = metrics.get("sharpe_ratio_annual")
+        if sharpe_annual is not None and sharpe_annual < config.min_sharpe_ratio:
+            issues.append(
+                f"[P3] Sharpe(年化)={sharpe_annual:.2f} 偏低（<{config.min_sharpe_ratio}）"
+            )
+
+        # === P3: 费率检查（参考条件，已被 Annual ROC 包含）===
+        premium_rate = metrics.get("premium_rate")
+        if premium_rate is not None and premium_rate < config.min_premium_rate:
+            issues.append(
+                f"[P3] 费率={premium_rate:.2%} 偏低（<{config.min_premium_rate:.0%}）"
             )
 
         # === P3: Win Probability 检查 ===

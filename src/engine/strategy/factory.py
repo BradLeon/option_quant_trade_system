@@ -14,7 +14,7 @@ from src.data.models.option import Greeks, OptionType
 from src.data.models.stock import StockVolatility
 from src.data.providers.ibkr_provider import IBKRProvider
 from src.data.providers.futu_provider import FutuProvider
-from src.engine.models.enums import PositionSide
+from src.engine.models.enums import PositionSide, StrategyType
 from src.engine.models.strategy import OptionLeg, StrategyParams
 from src.engine.strategy.base import OptionStrategy
 from src.engine.strategy.covered_call import CoveredCallStrategy
@@ -169,7 +169,7 @@ def get_volatility_data(
 
 def classify_option_strategy(
     position: AccountPosition, all_positions: list[AccountPosition]
-) -> str:
+) -> StrategyType:
     """Classify option strategy type based on position characteristics.
 
     Args:
@@ -177,15 +177,15 @@ def classify_option_strategy(
         all_positions: All positions in the portfolio (for checking stock holdings).
 
     Returns:
-        Strategy type: "short_put", "covered_call", "partial_covered_call",
-        "naked_call", "short_strangle", or "unknown".
+        StrategyType enum: SHORT_PUT, COVERED_CALL, PARTIAL_COVERED_CALL,
+        NAKED_CALL, SHORT_STRANGLE, UNKNOWN, or NOT_OPTION.
     """
     if position.asset_type != AssetType.OPTION:
-        return "not_option"
+        return StrategyType.NOT_OPTION
 
     # Short Put: PUT + quantity < 0 (sold)
     if position.option_type == "put" and position.quantity < 0:
-        return "short_put"
+        return StrategyType.SHORT_PUT
 
     # Covered Call / Partial / Naked Call: CALL + quantity < 0 (sold)
     if position.option_type == "call" and position.quantity < 0:
@@ -211,13 +211,13 @@ def classify_option_strategy(
             stock_shares = stock_position.quantity
 
             if stock_shares >= call_shares:
-                return "covered_call"  # Fully covered
+                return StrategyType.COVERED_CALL  # Fully covered
             elif stock_shares > 0:
-                return "partial_covered_call"  # Partially covered
+                return StrategyType.PARTIAL_COVERED_CALL  # Partially covered
             else:
-                return "naked_call"  # No coverage
+                return StrategyType.NAKED_CALL  # No coverage
         else:
-            return "naked_call"  # No stock position
+            return StrategyType.NAKED_CALL  # No stock position
 
     # Short Strangle: Check if there's both PUT and CALL short positions
     # (This is simplified - real detection would check strikes/expiries)
@@ -226,7 +226,7 @@ def classify_option_strategy(
         # TODO: Implement strangle detection
         pass
 
-    return "unknown"
+    return StrategyType.UNKNOWN
 
 
 # ============================================================================
@@ -272,7 +272,7 @@ def create_strategies_from_position(
     # Step 1: Classify strategy type
     strategy_type = classify_option_strategy(position, all_positions)
 
-    if strategy_type in ["not_option", "unknown"]:
+    if strategy_type in [StrategyType.NOT_OPTION, StrategyType.UNKNOWN]:
         logger.warning(f"{position.symbol}: Strategy type '{strategy_type}' not supported")
         return []
 
@@ -293,13 +293,13 @@ def create_strategies_from_position(
         return []
 
     # Step 5: Create strategy instance(s)
-    if strategy_type in ["covered_call", "partial_covered_call"]:
+    if strategy_type in [StrategyType.COVERED_CALL, StrategyType.PARTIAL_COVERED_CALL]:
         return _create_covered_call_strategies(
             position, all_positions, strategy_type, leg, params
         )
-    elif strategy_type == "naked_call":
+    elif strategy_type == StrategyType.NAKED_CALL:
         return _create_naked_call_strategy(position, leg, params)
-    elif strategy_type == "short_put":
+    elif strategy_type == StrategyType.SHORT_PUT:
         return _create_short_put_strategy(position, leg, params)
     else:
         logger.warning(f"{position.symbol}: Strategy type '{strategy_type}' not implemented")
@@ -434,7 +434,7 @@ def _fetch_volatility_data(
 def _create_covered_call_strategies(
     position: AccountPosition,
     all_positions: list[AccountPosition],
-    strategy_type: str,
+    strategy_type: StrategyType,
     leg: OptionLeg,
     params: StrategyParams,
 ) -> list[StrategyInstance]:

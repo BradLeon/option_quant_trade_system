@@ -13,6 +13,7 @@ from src.business.screening.models import (
     MarketStatus,
     ScreeningResult,
 )
+from src.engine.models.enums import StrategyType
 
 # 默认最大推送机会数
 DEFAULT_MAX_OPPORTUNITIES = 10
@@ -97,7 +98,7 @@ class ScreeningFormatter:
         Returns:
             飞书卡片数据
         """
-        strategy_name = "Short Put" if result.strategy_type == "short_put" else "Covered Call"
+        strategy_name = "Short Put" if result.strategy_type == StrategyType.SHORT_PUT else "Covered Call"
         title = self.templates.get(
             "screening_opportunity_title",
             f"📈 {strategy_name} 开仓机会",
@@ -137,6 +138,7 @@ class ScreeningFormatter:
                 "prei": opp.prei,
                 "kelly_fraction": opp.kelly_fraction,
                 "theta_premium_ratio": opp.theta_premium_ratio,
+                "theta_margin_ratio": opp.theta_margin_ratio,  # 资金效率排序指标
                 # 行情数据
                 "underlying_price": opp.underlying_price,
                 "mid_price": opp.mid_price,
@@ -191,7 +193,7 @@ class ScreeningFormatter:
             details={
                 "扫描标的": str(result.scanned_underlyings),
                 "通过标的": str(result.passed_underlyings),
-                "策略类型": result.strategy_type,
+                "策略类型": result.strategy_type.value,
             },
         )
 

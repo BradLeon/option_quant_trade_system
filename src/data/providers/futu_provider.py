@@ -573,13 +573,17 @@ class FutuProvider(DataProvider, AccountProvider):
                     else OptionType.PUT
                 )
 
+                # Extract trading_class from option symbol (e.g., HK.ALB260129P80000 -> ALB)
+                trading_class = SymbolFormatter.parse_futu_option_trading_class(row["code"])
+
                 contract = OptionContract(
                     symbol=row["code"],
-                    underlying=underlying,
+                    underlying=SymbolFormatter.to_standard(underlying),  # Convert to standard format
                     option_type=option_type,
                     strike_price=row["strike_price"],
                     expiry_date=expiry,
                     lot_size=row.get("lot_size", 100),
+                    trading_class=trading_class,  # Dynamic extraction from symbol
                 )
 
                 # Note: Greeks require additional quote subscription
@@ -639,7 +643,7 @@ class FutuProvider(DataProvider, AccountProvider):
                                 f"puts {original_puts}->{len(puts)}")
 
             return OptionChain(
-                underlying=underlying,
+                underlying=SymbolFormatter.to_standard(underlying),  # Standard format
                 timestamp=datetime.now(),
                 expiry_dates=sorted(list(expiry_dates)),
                 calls=calls,
@@ -740,12 +744,32 @@ class FutuProvider(DataProvider, AccountProvider):
         if not contracts:
             return []
 
-        # Extract symbols from contracts
-        symbols = [c.symbol for c in contracts]
-        contract_map = {c.symbol: c for c in contracts}
+        # Build Futu option symbols from contracts
+        # Maps Futu symbol -> original contract
+        symbols = []
+        contract_map = {}
+        skipped_contracts = []
 
-        logger.info(f"Fetching quotes for {len(contracts)} option contracts...")
-        logger.debug(f"First 5 symbols: {symbols[:5]}")
+        for c in contracts:
+            futu_symbol = self._build_futu_option_symbol(c)
+            if futu_symbol:
+                symbols.append(futu_symbol)
+                contract_map[futu_symbol] = c
+            else:
+                skipped_contracts.append(c.underlying)
+
+        if skipped_contracts:
+            unique_skipped = list(set(skipped_contracts))
+            logger.warning(
+                f"Skipped {len(skipped_contracts)} contracts: no Futu code mapping for {unique_skipped}"
+            )
+
+        if not symbols:
+            logger.warning("No valid Futu option symbols to fetch")
+            return []
+
+        logger.info(f"Fetching quotes for {len(symbols)} option contracts...")
+        logger.debug(f"First 5 Futu symbols: {symbols[:5]}")
 
         try:
             # Use subscribe + get_stock_quote for reliable batch fetching
@@ -1150,6 +1174,9 @@ class FutuProvider(DataProvider, AccountProvider):
         "HSI": "^HSI",      # 恒生指数 (Yahoo format)
     }
 
+    # Reverse mapping: standard code -> Futu option code
+    STANDARD_TO_FUTU_CODE = {v: k for k, v in FUTU_TO_STANDARD_CODE.items()}
+
     # HK option contract multiplier (shares per contract)
     # Most HK stocks: 100, some like ALB: 500
     HK_OPTION_MULTIPLIER = {
@@ -1199,6 +1226,76 @@ class FutuProvider(DataProvider, AccountProvider):
         )
         # Return with .HK suffix so it's at least recognized as HK market
         return f"{futu_code}.HK"
+
+    def _get_futu_code(self, standard_code: str) -> str | None:
+        """Get Futu option abbreviation from standard HK stock code.
+
+        Args:
+            standard_code: Standard HK code (e.g., "9988.HK", "0700.HK").
+
+        Returns:
+            Futu option code (e.g., "ALB", "TCH"), or None if not found.
+        """
+        # Normalize: remove leading zeros and ensure .HK suffix
+        code = standard_code.upper()
+        if not code.endswith(".HK"):
+            code = f"{code}.HK"
+        # Remove leading zeros: "0700.HK" -> "700.HK" for lookup
+        # But keep original format in mapping
+        if code in self.STANDARD_TO_FUTU_CODE:
+            return self.STANDARD_TO_FUTU_CODE[code]
+        # Try with leading zeros removed
+        base = code.replace(".HK", "").lstrip("0")
+        normalized = f"{base}.HK" if base else code
+        # Try original 4-digit format
+        base_4digit = code.replace(".HK", "").zfill(4)
+        normalized_4digit = f"{base_4digit}.HK"
+        for try_code in [code, normalized, normalized_4digit]:
+            if try_code in self.STANDARD_TO_FUTU_CODE:
+                return self.STANDARD_TO_FUTU_CODE[try_code]
+        return None
+
+    def _build_futu_option_symbol(self, contract: "OptionContract") -> str | None:
+        """Build Futu option symbol from OptionContract.
+
+        Futu option format: HK.<code><YYMMDD><C/P><strike*1000>
+        Example: HK.ALB260129C160000
+
+        Prioritizes contract.trading_class (dynamically extracted from option chain)
+        over static mapping for better extensibility.
+
+        Args:
+            contract: OptionContract with underlying, expiry_date, strike_price, option_type.
+
+        Returns:
+            Futu option symbol string (with HK. prefix), or None if trading_class unavailable.
+        """
+        from src.data.models.option import OptionType
+
+        # Priority 1: Use trading_class from contract (dynamically extracted)
+        futu_code = contract.trading_class
+
+        # Priority 2: Fallback to static mapping (for backward compatibility)
+        if not futu_code:
+            futu_code = self._get_futu_code(contract.underlying)
+            if not futu_code:
+                logger.debug(
+                    f"No trading_class for contract '{contract.underlying}'. "
+                    f"Ensure option chain populates trading_class."
+                )
+                return None
+
+        # Format expiry: YYMMDD
+        expiry_str = contract.expiry_date.strftime("%y%m%d")
+
+        # Option type: C or P
+        opt_char = "C" if contract.option_type == OptionType.CALL else "P"
+
+        # Strike * 1000 (no decimal)
+        strike_int = int(contract.strike_price * 1000)
+
+        # Futu API requires HK. prefix for subscription
+        return f"HK.{futu_code}{expiry_str}{opt_char}{strike_int}"
 
     def _parse_futu_option_symbol(self, code: str, stock_name: str) -> dict | None:
         """Parse Futu option symbol to extract option details.

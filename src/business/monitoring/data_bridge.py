@@ -22,6 +22,7 @@ from src.data.providers.unified_provider import UnifiedDataProvider
 from src.engine.position.fundamental.metrics import evaluate_fundamentals
 from src.engine.position.technical.metrics import calc_technical_score, calc_technical_signal
 from src.engine.position.volatility.metrics import evaluate_volatility
+from src.engine.models.enums import StrategyType
 from src.engine.strategy.factory import (
     calc_dte_from_expiry,
     create_strategies_from_position,
@@ -263,8 +264,9 @@ class MonitoringDataBridge:
             ratio = strategy_instance.quantity_ratio
             desc = strategy_instance.description
 
-            # 提取策略类型
-            strategy_type = desc.split("(")[0].strip()
+            # 提取策略类型（从描述转换为枚举）
+            strategy_type_str = desc.split("(")[0].strip()
+            strategy_type = StrategyType.from_string(strategy_type_str)
 
             # 创建 PositionData，数量按 ratio 计算
             position_data = PositionData(

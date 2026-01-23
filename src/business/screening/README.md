@@ -98,9 +98,9 @@ python src/business/cli/main.py screen --push
 | 优先级 | 含义 | 处理方式 | 示例 |
 |--------|------|----------|------|
 | **P0** | 致命条件 | 不满足 = 立即排除，无例外 | 期望收益为负 |
-| **P1** | 核心条件 | 不满足 = 强烈建议不开仓 | VIX 极端、流动性不足 |
-| **P2** | 重要条件 | 不满足 = 警告，需其他条件补偿 | IV Rank 偏低 |
-| **P3** | 参考条件 | 不满足 = 可接受，记录风险 | Volume 较低 |
+| **P1** | 核心条件 | 不满足 = 强烈建议不开仓 | VIX 极端、流动性不足、IV Rank 偏低 |
+| **P2** | 重要条件 | 不满足 = 警告，需其他条件补偿 | RSI 超买超卖、Annual ROC 不足 |
+| **P3** | 参考条件 | 不满足 = 可接受，记录风险 | Sharpe Ratio、Premium Rate、Volume 较低 |
 
 ### 指标汇总表
 
@@ -120,7 +120,7 @@ python src/business/cli/main.py screen --push
 | 指标 | 优先级 | 条件 | 说明 |
 |------|--------|------|------|
 | 财报日期 | P1 | > 7天或合约在财报前到期 | 避免财报博弈 |
-| IV Rank | P2 | > 30% | 警告但不阻塞 |
+| **IV Rank** | **P1** | > 30% | **阻塞条件**，卖方必须卖"贵"的东西 |
 | IV/HV Ratio | P1 | 0.8~2.0 | 隐含波动率相对历史波动率 |
 | RSI | P2 | 30~70 | 避免超买超卖区域 |
 | ADX | P2 | < 45 | 避免强趋势行情 |
@@ -130,17 +130,19 @@ python src/business/cli/main.py screen --push
 
 | 指标 | 优先级 | 条件 | 说明 |
 |------|--------|------|------|
-| Annual Expected ROC | P0 | > 10% | 年化期望收益率必须为正 |
-| Premium Rate | P1 | > 1% | 费率 = Premium / Strike |
-| Sharpe Ratio | P1 | > 0.5 | 年化夏普率-收益风险比 |
+| Annual Expected ROC | P0 | > 10% | 年化期望收益率必须为正，致命条件 |
 | TGR | P1 | > 0.5 | Theta/Gamma 比率（标准化） |
-| DTE | P1 | 14~60 天 | 港股到期日稀疏，范围宽松 |
-| |Delta| | P1 | 0.10~0.40 | 最优 0.20~0.30 |
+| DTE | P1 | 7~45 天 | 港股到期日稀疏，范围宽松 |
+| \|Delta\| | P1 | 0.05~0.35 | 最优 0.20~0.30 |
+| OTM% | P2 | 7%~30% | 虚值百分比 |
 | Bid-Ask Spread | P1 | < 10% | 流动性指标 |
 | Open Interest | P1 | > 100 | 持仓量 |
 | Annual ROC | P2 | > 15% | 年化收益率 |
+| **Sharpe Ratio** | **P3** | > 0.5 | 参考条件，卖方收益非正态分布 |
+| **Premium Rate** | **P3** | > 1% | 参考条件，已被 Annual ROC 包含 |
 | Win Probability | P3 | > 65% | 理论胜率 |
 | Volume | P3 | > 10 | 当日成交量 |
+| **Theta/Margin** | **排序** | - | **资金效率排序指标**，用于对通过筛选的合约排序 |
 
 ---
 
@@ -270,12 +272,15 @@ underlying_filter:
 @dataclass
 class ContractFilterConfig:
     # DTE 范围（港股期权到期日稀疏，使用宽范围）
-    dte_range: tuple[int, int] = (14, 60)
+    dte_range: tuple[int, int] = (7, 45)
     optimal_dte_range: tuple[int, int] = (25, 45)
 
     # |Delta| 范围（绝对值，覆盖两种策略）
-    delta_range: tuple[float, float] = (0.10, 0.40)
+    delta_range: tuple[float, float] = (0.05, 0.35)
     optimal_delta_range: tuple[float, float] = (0.20, 0.30)
+
+    # OTM% 范围
+    otm_range: tuple[float, float] = (0.07, 0.30)
 
 @dataclass
 class LiquidityConfig:
@@ -285,11 +290,12 @@ class LiquidityConfig:
 
 @dataclass
 class MetricsConfig:
-    min_sharpe_ratio: float = 0.5
-    min_tgr: float = 0.5
-    min_expected_roc: float = 0.10    # 10%
-    min_annual_roc: float = 0.15      # 15%
-    min_premium_rate: float = 0.01    # 1%
+    min_sharpe_ratio: float = 0.5     # P3: 参考条件
+    min_tgr: float = 0.5              # P1: 核心条件
+    min_expected_roc: float = 0.10    # P0: 致命条件 (10%)
+    min_annual_roc: float = 0.15      # P2: 重要条件 (15%)
+    min_win_probability: float = 0.65 # P3: 参考条件 (65%)
+    min_premium_rate: float = 0.01    # P3: 参考条件 (1%)
 ```
 
 ---
@@ -483,6 +489,7 @@ A:
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.1 | 2026-01 | 更新文档：同步指标阈值，完善配置说明 |
 | 2.0 | 2025-01 | 统一合约配置，简化 CLI 默认行为 |
 | 1.2 | 2025-01 | 添加事件日历集成，港股 DTE 范围优化 |
 | 1.1 | 2025-01 | 添加股票池管理 (StockPoolManager) |

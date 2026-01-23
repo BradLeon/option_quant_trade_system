@@ -279,9 +279,9 @@ uv run optrade monitor -a paper -v
 
 | 层级 | 监控内容 | 关键指标 |
 |------|---------|---------|
-| Portfolio级 | 组合整体风险 | Beta加权Delta, 组合TGR, 集中度HHI |
-| Position级 | 单个持仓风险 | DTE, PREI, SAS, TGR |
-| Capital级 | 资金层面风险 | Margin使用率, Kelly使用率, Drawdown |
+| Portfolio级 | 组合整体风险 | BWD%, Gamma%, Vega%, Theta%, TGR, HHI |
+| Position级 | 单个持仓风险 | OTM%, \|Delta\|, DTE, P&L%, TGR, IV/HV, Expected ROC, Dividend Risk |
+| Capital级 | 资金层面风险 | Margin使用率, Cash Ratio, Gross Leverage, Stress Test Loss |
 
 ---
 
@@ -1297,7 +1297,19 @@ HTTPS_PROXY=http://127.0.0.1:33210
 30 0,1,2,3,4,5,6 * * 2-6 cd $PROJECT_DIR && uv run optrade screen -m us --push >> logs/screen_us_$(date +\%Y\%m\%d).log 2>&1
 
 # ------------------------------------------------------------
-# Dashboard 持仓监控: 每天 9:30, 16:30, 22:30
+# 持仓监控: 每小时执行，推送风险预警
+# US 交易时段: 北京时间 21:30-06:00
+# HK 交易时段: 北京时间 09:30-16:00
+# ------------------------------------------------------------
+# US 市场监控（每小时整点）
+0 22,23 * * 1-5 cd $PROJECT_DIR && uv run optrade monitor -a real --push >> logs/monitor_$(date +\%Y\%m\%d).log 2>&1
+0 0,1,2,3,4,5,6 * * 2-6 cd $PROJECT_DIR && uv run optrade monitor -a real --push >> logs/monitor_$(date +\%Y\%m\%d).log 2>&1
+
+# HK 市场监控（每小时整点）
+0 10,11,12,13,14,15,16 * * 1-5 cd $PROJECT_DIR && uv run optrade monitor -a real --push >> logs/monitor_$(date +\%Y\%m\%d).log 2>&1
+
+# ------------------------------------------------------------
+# Dashboard 仪表盘: 每天 9:30, 16:30, 22:30 (轻量级展示)
 # ------------------------------------------------------------
 30 9,16,22 * * * cd $PROJECT_DIR && uv run optrade dashboard -a real --push >> logs/dashboard_$(date +\%Y\%m\%d).log 2>&1
 ```

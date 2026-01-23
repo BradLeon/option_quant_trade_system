@@ -1,33 +1,36 @@
 """
 Position Monitor - 持仓级监控器
 
-监控单个持仓的 12 个风险指标（基于实战经验优化）：
+监控单个持仓的 9 个风险指标（基于实战经验优化）。
 
-| 指标            | 绿色（正常）  | 黄色（关注）  | 红色（风险）  | 说明                    |
-|-----------------|---------------|---------------|---------------|-------------------------|
-| OTM%            | ≥10%          | 5%~10%        | <5%           | 虚值百分比（统一公式）  |
-| |Delta|         | ≤0.20         | 0.20~0.40     | >0.50         | 方向性风险（绝对值）    |
-| DTE             | ≥14 天        | 7~14 天       | <7 天         | 到期天数                |
-| P&L%            | ≥50%          | 0%~50%        | <0%           | 持仓盈亏                |
-| Gamma Risk%     | ≤0.5%         | 0.5%~1%       | >1%           | Gamma/Margin 百分比     |
-| TGR             | ≥0.15         | 0.08~0.15     | <0.08         | Theta/Gamma 效率        |
-| IV/HV           | ≥1.2          | 0.8~1.2       | <0.8          | 期权定价质量            |
-| ROC             | ≥20%          | 10%~20%       | <10%          | 资金使用效率            |
-| Expected ROC    | ≥10%          | 0%~10%        | <0%           | 预期资本回报率          |
-| Win Prob        | ≥70%          | 55%~70%       | <55%          | 胜率                    |
-| PREI            | <40           | 40~60         | >60           | 风险暴露指数            |
-| SAS             | ≥70           | 50~70         | <50           | 策略吸引力分数          |
+**策略差异化阈值**：
+- Short Put: 标准阈值，裸卖需严格风控
+- Covered Call: 有正股覆盖，DTE/Delta/Gamma 可放宽
+- Short Strangle: 双向裸卖，使用标准阈值
+
+| 指标            | Short Put      | Covered Call   | 说明                    |
+|-----------------|----------------|----------------|-------------------------|
+| OTM%            | ≥10% 绿        | ≥5% 绿         | CC 被行权是收益         |
+| |Delta|         | ≤0.20 绿       | ≤0.40 绿       | CC 被行权 = 卖出正股    |
+| DTE             | ≥14天 绿       | ≥7天 绿        | CC 有正股覆盖 Gamma     |
+| Gamma Risk%     | ≤0.5% 绿       | ≤2% 绿         | CC 正股覆盖风险         |
+| P&L%            | ≥50% 绿        | ≥50% 绿        | 相同                    |
+| TGR/IV-HV/ROC   | 标准阈值       | 标准阈值       | 相同                    |
 
 设计原则：
 - 只做阈值检查，不做计算（遵循 Decision #0）
 - 使用通用 _check_threshold() 函数，消息和建议从配置中读取
-- OTM% 使用统一公式: Put=(S-K)/S, Call=(K-S)/S，无需 Put/Call 区分
+- 根据 pos.strategy_type 自动选择对应的阈值配置
 - P&L 特殊处理：止盈为 GREEN alert（机会），止损为 RED alert
 """
 
 import logging
 
-from src.business.config.monitoring_config import MonitoringConfig, ThresholdRange
+from src.business.config.monitoring_config import (
+    MonitoringConfig,
+    PositionThresholds,
+    ThresholdRange,
+)
 from src.business.monitoring.models import (
     Alert,
     AlertLevel,
@@ -42,21 +45,25 @@ logger = logging.getLogger(__name__)
 class PositionMonitor:
     """持仓级监控器
 
-    监控单个持仓的 12 个风险指标：
-    1. OTM% - 虚值百分比（统一公式，替代旧 Moneyness）
-    2. |Delta| - 方向性风险（绝对值）
-    3. DTE - 到期日预警（绿色提高到14天）
-    4. P&L% - 止盈止损检查
+    监控单个持仓的 9 个风险指标，支持策略差异化阈值：
+
+    **共同指标**：
+    1. OTM% - 虚值百分比
+    2. |Delta| - 方向性风险
+    3. DTE - 到期日预警
+    4. P&L% - 止盈止损
     5. Gamma Risk% - Gamma/Margin 百分比
     6. TGR - 时间衰减效率
-    7. IV/HV - 波动率环境变化
-    8. ROC - 资金使用效率
-    9. Expected ROC - 预期资本回报率
-    10. Win Probability - 胜率
-    11. PREI - 综合风险暴露指数
-    12. SAS - 策略吸引力
+    7. IV/HV - 波动率环境
+    8. Expected ROC - 预期资本回报率
+    9. Win Probability - 胜率
 
-    使用通用 _check_threshold() 方法，消息和建议从配置读取。
+    **策略差异**：
+    - Short Put: 标准阈值（裸卖需严格风控）
+    - Covered Call: 放宽 DTE/Delta/Gamma/OTM（有正股覆盖）
+    - Short Strangle: 标准阈值（双向裸卖）
+
+    使用 config.get_position_thresholds(strategy_type) 获取策略特定阈值。
     """
 
     def __init__(self, config: MonitoringConfig) -> None:
@@ -66,7 +73,8 @@ class PositionMonitor:
             config: 监控配置
         """
         self.config = config
-        self.thresholds = config.position
+        # 基础阈值（用于无策略类型的持仓）
+        self._base_thresholds = config.position
 
     def evaluate(
         self,
@@ -91,11 +99,11 @@ class PositionMonitor:
         """评估单个持仓（仅期权）
 
         使用通用 _check_threshold() 方法进行阈值检查，
-        消息和建议从 ThresholdRange 配置读取。
+        根据 pos.strategy_type 选择策略特定的阈值配置。
 
         注意：Stock 类型持仓不在此监控器范围内，直接跳过。
 
-        检查 12 个指标，按重要性排序：
+        检查 9 个指标，按重要性排序：
         1. OTM% - 虚值百分比（核心风险指标）
         2. |Delta| - 方向性风险
         3. DTE - 到期日预警
@@ -103,11 +111,8 @@ class PositionMonitor:
         5. Gamma Risk% - Gamma/Margin 百分比
         6. TGR - 时间衰减效率
         7. IV/HV - 波动率环境
-        8. ROC - 资金使用效率
-        9. Expected ROC - 预期资本回报率
-        10. Win Probability - 胜率
-        11. PREI - 综合风险暴露指数
-        12. SAS - 策略吸引力
+        8. Expected ROC - 预期资本回报率
+        9. Win Probability - 胜率
         """
         # 跳过 Stock 类型持仓，PositionMonitor 只监控期权
         if pos.is_stock:
@@ -115,10 +120,13 @@ class PositionMonitor:
 
         alerts: list[Alert] = []
 
+        # 获取策略特定阈值（根据 strategy_type 自动选择）
+        thresholds = self.config.get_position_thresholds(pos.strategy_type)
+
         # 1. 检查 OTM%（统一公式，无需 Put/Call 区分）
         alerts.extend(self._check_threshold(
             value=pos.otm_pct,
-            threshold=self.thresholds.otm_pct,
+            threshold=thresholds.otm_pct,
             metric_name="otm_pct",
             position=pos,
         ))
@@ -126,7 +134,7 @@ class PositionMonitor:
         # 2. 检查 |Delta|（使用绝对值）
         alerts.extend(self._check_threshold(
             value=abs(pos.delta) if pos.delta is not None else None,
-            threshold=self.thresholds.delta,
+            threshold=thresholds.delta,
             metric_name="delta",
             position=pos,
         ))
@@ -134,18 +142,18 @@ class PositionMonitor:
         # 3. 检查 DTE
         alerts.extend(self._check_threshold(
             value=pos.dte,
-            threshold=self.thresholds.dte,
+            threshold=thresholds.dte,
             metric_name="dte",
             position=pos,
         ))
 
         # 4. 检查 P&L%（特殊逻辑：止盈为 GREEN，止损为 RED）
-        alerts.extend(self._check_pnl(pos))
+        alerts.extend(self._check_pnl(pos, thresholds))
 
         # 5. 检查 Gamma Risk%（Gamma/Margin 百分比）
         alerts.extend(self._check_threshold(
             value=pos.gamma_risk_pct,
-            threshold=self.thresholds.gamma_risk_pct,
+            threshold=thresholds.gamma_risk_pct,
             metric_name="gamma_risk_pct",
             position=pos,
         ))
@@ -153,7 +161,7 @@ class PositionMonitor:
         # 6. 检查 TGR
         alerts.extend(self._check_threshold(
             value=pos.tgr,
-            threshold=self.thresholds.tgr,
+            threshold=thresholds.tgr,
             metric_name="tgr",
             position=pos,
         ))
@@ -161,48 +169,24 @@ class PositionMonitor:
         # 7. 检查 IV/HV
         alerts.extend(self._check_threshold(
             value=pos.iv_hv_ratio,
-            threshold=self.thresholds.iv_hv,
+            threshold=thresholds.iv_hv,
             metric_name="iv_hv",
             position=pos,
         ))
 
-        # 8. 检查 ROC
-        alerts.extend(self._check_threshold(
-            value=pos.roc,
-            threshold=self.thresholds.roc,
-            metric_name="roc",
-            position=pos,
-        ))
-
-        # 9. 检查 Expected ROC
+        # 8. 检查 Expected ROC
         alerts.extend(self._check_threshold(
             value=pos.expected_roc,
-            threshold=self.thresholds.expected_roc,
+            threshold=thresholds.expected_roc,
             metric_name="expected_roc",
             position=pos,
         ))
 
-        # 10. 检查 Win Probability
+        # 9. 检查 Win Probability
         alerts.extend(self._check_threshold(
             value=pos.win_probability,
-            threshold=self.thresholds.win_probability,
+            threshold=thresholds.win_probability,
             metric_name="win_probability",
-            position=pos,
-        ))
-
-        # 11. 检查 PREI
-        alerts.extend(self._check_threshold(
-            value=pos.prei,
-            threshold=self.thresholds.prei,
-            metric_name="prei",
-            position=pos,
-        ))
-
-        # 12. 检查 SAS
-        alerts.extend(self._check_threshold(
-            value=pos.sas,
-            threshold=self.thresholds.sas,
-            metric_name="sas",
             position=pos,
         ))
 
@@ -259,10 +243,10 @@ class PositionMonitor:
 
         # 获取 AlertType
         try:
-            alert_type = AlertType[threshold.alert_type] if threshold.alert_type else AlertType.PREI_HIGH
+            alert_type = AlertType[threshold.alert_type] if threshold.alert_type else AlertType.OTM_PCT
         except KeyError:
-            logger.warning(f"Unknown alert_type: {threshold.alert_type}, using PREI_HIGH")
-            alert_type = AlertType.PREI_HIGH
+            logger.warning(f"Unknown alert_type: {threshold.alert_type}, using OTM_PCT")
+            alert_type = AlertType.OTM_PCT
 
         # 判断是否为百分比格式（用于阈值范围显示）
         is_pct = metric_name in ("otm_pct", "pnl", "roc", "expected_roc", "win_probability", "gamma_risk_pct")
@@ -381,13 +365,17 @@ class PositionMonitor:
         except (KeyError, ValueError):
             return f"持仓 {position.symbol} {metric_name}: {value}"
 
-    def _check_pnl(self, pos: PositionData) -> list[Alert]:
+    def _check_pnl(self, pos: PositionData, thresholds: PositionThresholds) -> list[Alert]:
         """检查盈亏
 
         基于 ThresholdRange 的三档检查：
-        - RED: 触发止损 (P&L < red_below, 默认 0%)
-        - YELLOW: 未达止盈 (0% ~ 50%)
+        - RED: 触发止损 (P&L < -100%，亏损超过原始权利金)
+        - YELLOW: 未达止盈 (-100% ~ 50%)
         - GREEN: 达到止盈目标 (P&L >= 50%)
+
+        Args:
+            pos: 持仓数据
+            thresholds: 策略特定的阈值配置
         """
         alerts: list[Alert] = []
         pnl_pct = pos.unrealized_pnl_pct
@@ -395,7 +383,7 @@ class PositionMonitor:
         if pnl_pct is None:
             return alerts
 
-        threshold = self.thresholds.pnl
+        threshold = thresholds.pnl
         threshold_range = self._format_threshold_range(threshold, is_pct=True)
 
         # 检查止损（red_below）

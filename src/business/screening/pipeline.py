@@ -16,7 +16,7 @@ Screening Pipeline - 筛选管道
     result = pipeline.run(
         symbols=["AAPL", "MSFT", "GOOGL"],
         market_type=MarketType.US,
-        strategy_type="short_put",
+        strategy_type=StrategyType.SHORT_PUT,
     )
 """
 
@@ -36,6 +36,7 @@ from src.business.screening.models import (
 )
 from src.data.models.option import OptionContract, OptionType
 from src.data.providers.unified_provider import UnifiedDataProvider
+from src.engine.models.enums import StrategyType
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,7 @@ class ScreeningPipeline:
         self,
         symbols: list[str],
         market_type: MarketType,
-        strategy_type: str = "short_put",
+        strategy_type: StrategyType = StrategyType.SHORT_PUT,
         skip_market_check: bool = False,
     ) -> ScreeningResult:
         """执行完整筛选流程
@@ -87,14 +88,14 @@ class ScreeningPipeline:
         Args:
             symbols: 待筛选标的列表
             market_type: 市场类型 (US/HK)
-            strategy_type: 策略类型 ("short_put" 或 "covered_call")
+            strategy_type: 策略类型 (StrategyType.SHORT_PUT 或 StrategyType.COVERED_CALL)
             skip_market_check: 是否跳过市场环境检查（调试用）
 
         Returns:
             ScreeningResult: 筛选结果
         """
         logger.info(
-            f"开始筛选: 市场={market_type.value}, 策略={strategy_type}, "
+            f"开始筛选: 市场={market_type.value}, 策略={strategy_type.value}, "
             f"标的数量={len(symbols)}"
         )
         start_time = datetime.now()
@@ -152,9 +153,9 @@ class ScreeningPipeline:
         logger.info(f"Step 3: 评估合约 ({len(passed_underlyings)} 个标的)...")
 
         # 根据策略类型确定要评估的期权类型
-        if strategy_type == "short_put":
+        if strategy_type == StrategyType.SHORT_PUT:
             option_types = ["put"]
-        elif strategy_type == "covered_call":
+        elif strategy_type == StrategyType.COVERED_CALL:
             option_types = ["call"]
         else:
             option_types = None  # 评估所有类型
@@ -346,6 +347,7 @@ class ScreeningPipeline:
                 option_type=opt_type,
                 strike_price=c.strike,
                 expiry_date=expiry_date,
+                trading_class=c.trading_class,  # IBKR 需要 trading_class 来识别 HK 期权
             )
             contracts_to_fetch.append(contract)
             # 记录映射关系
@@ -409,19 +411,21 @@ class ScreeningPipeline:
 
 # 便捷函数
 def create_pipeline(
-    strategy: str = "short_put",
+    strategy: StrategyType | str = StrategyType.SHORT_PUT,
     provider: UnifiedDataProvider | None = None,
 ) -> ScreeningPipeline:
     """创建筛选管道
 
     Args:
-        strategy: 策略类型 ("short_put" 或 "covered_call")
+        strategy: 策略类型 (StrategyType 枚举或字符串，如 "short_put")
         provider: 统一数据提供者，如果为 None 则创建默认实例
 
     Returns:
         ScreeningPipeline 实例
     """
-    config = ScreeningConfig.load(strategy)
+    # StrategyType 继承 str，可以直接用于文件名
+    strategy_str = strategy.value if isinstance(strategy, StrategyType) else strategy
+    config = ScreeningConfig.load(strategy_str)
 
     if provider is None:
         provider = UnifiedDataProvider()

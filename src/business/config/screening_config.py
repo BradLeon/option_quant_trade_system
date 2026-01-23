@@ -1,7 +1,73 @@
 """
 Screening Configuration - 筛选配置管理
 
-加载和管理开仓筛选系统的配置参数
+加载和管理开仓筛选系统的配置参数。
+
+## 系统概述
+
+筛选系统采用 **三层漏斗架构**：
+
+| 层级 | 名称 | 核心问题 | 过滤对象 |
+|------|------|----------|----------|
+| **Layer 1** | 市场过滤 | 现在是卖期权的好时机吗？ | 市场环境 |
+| **Layer 2** | 标的过滤 | 这个标的适合卖期权吗？ | 股票池中的每个标的 |
+| **Layer 3** | 合约过滤 | 选择哪个 Strike 和到期日？ | 每个标的的期权合约 |
+
+## 指标优先级体系
+
+| 优先级 | 含义 | 处理方式 | 示例 |
+|--------|------|----------|------|
+| **P0** | 致命条件 | 不满足 = 立即排除 | Expected ROC < 10% |
+| **P1** | 核心条件 | 不满足 = 强烈建议不开仓 | IV Rank < 30%, VIX 极端 |
+| **P2** | 重要条件 | 不满足 = 警告，需其他条件补偿 | RSI 超买超卖, Annual ROC |
+| **P3** | 参考条件 | 不满足 = 可接受，记录风险 | Sharpe Ratio, Volume |
+
+## Layer 1: 市场过滤器 (MarketFilterConfig)
+
+| 指标 | 优先级 | 条件 | 说明 |
+|------|--------|------|------|
+| 宏观事件 | P1 | FOMC/CPI/NFP 前2天 | 事件前暂停新开仓 |
+| VIX 水平 | P1 | 15~999 (无上限) | VIX > 30 是卖方黄金时刻 |
+| VIX 期限结构 | P1 | VIX/VIX3M < 0.9 | >1.0 反向结构=近期风险 |
+| VIX Percentile | P2 | 20%~80% | 50%-80% 最佳 |
+| SPY/盈富 趋势 | P2 | 符合策略方向 | Short Put 要求看涨/震荡 |
+
+## Layer 2: 标的过滤器 (UnderlyingFilterConfig)
+
+| 指标 | 优先级 | 条件 | 说明 |
+|------|--------|------|------|
+| **IV Rank** | **P1** | > 30% | 阻塞条件，卖方必须卖"贵"的东西 |
+| IV/HV Ratio | P1 | 0.8~2.0 | 隐含波动率相对历史波动率 |
+| 财报日期 | P1 | > 7天 | 避免财报博弈 |
+| RSI | P2 | 25~85 (策略差异) | Short Put 允许更低 RSI |
+| ADX | P2 | < 45 | 避免强趋势行情 |
+
+## Layer 3: 合约过滤器 (ContractFilterConfig)
+
+| 指标 | 优先级 | 条件 | 说明 |
+|------|--------|------|------|
+| Annual Expected ROC | P0 | > 10% | 年化期望收益率必须为正 |
+| TGR | P1 | > 0.5 | Theta/Gamma 比率（标准化） |
+| DTE | P1 | 7~45 天 | 港股到期日稀疏，范围宽松 |
+| |Delta| | P1 | 0.05~0.35 | 最优 0.20~0.30 |
+| Bid-Ask Spread | P1 | < 10% | 流动性指标 |
+| Open Interest | P1 | > 100 | 持仓量 |
+| Annual ROC | P2 | > 15% | 年化收益率 |
+| Win Probability | P3 | > 65% | 理论胜率 |
+
+## 配置文件层次
+
+```
+config/screening/
+├── stock_pools.yaml       # 股票池定义
+├── short_put.yaml         # Short Put 策略配置（覆盖默认值）
+└── covered_call.yaml      # Covered Call 策略配置（覆盖默认值）
+
+src/business/config/
+└── screening_config.py    # 默认值和数据类定义（本文件）
+```
+
+**配置优先级**: YAML 文件 > screening_config.py 默认值
 """
 
 from dataclasses import dataclass, field
@@ -24,14 +90,13 @@ class USMarketConfig:
     """美股市场配置"""
 
     vix_symbol: str = "^VIX"
-    vix_range: tuple[float, float] = (15.0, 28.0)
+    vix_range: tuple[float, float] = (15.0, 999.0)  # 移除上限，VIX > 30 是卖方黄金时刻
     vix_percentile_range: tuple[float, float] = (0.2, 0.8)
     vix3m_symbol: str = "^VIX3M"
     term_structure_threshold: float = 0.9
     trend_indices: list[TrendIndexConfig] = field(default_factory=list)
     trend_required: str = "bullish_or_neutral"
-    pcr_symbol: str = "SPY"
-    pcr_range: tuple[float, float] = (0.8, 1.2)
+    # PCR 已删除: 0.8-1.2 是常态震荡无过滤价值，数据质量不稳定
 
     def __post_init__(self) -> None:
         if not self.trend_indices:
@@ -47,7 +112,7 @@ class HKMarketConfig:
 
     # VHSI (恒生波动率指数) 配置 - 通过 Yahoo Finance 获取
     vhsi_symbol: str = "^HSIL"  # Yahoo Finance 代码
-    vhsi_range: tuple[float, float] = (18.0, 32.0)
+    vhsi_range: tuple[float, float] = (18.0, 999.0)  # 移除上限，高波是卖方黄金时刻
     vhsi_percentile_range: tuple[float, float] = (0.2, 0.8)  # VHSI 分布较窄，放宽低位阈值
 
     # 备选: 2800.HK IV (需要 IBKR 连接)
@@ -95,8 +160,17 @@ class MarketFilterConfig:
 class TechnicalConfig:
     """技术面配置"""
 
-    min_rsi: float = 30.0
-    max_rsi: float = 70.0
+    # RSI 策略区分阈值
+    # Short Put: 允许更深超卖（RSI 25 是底部反弹信号）
+    short_put_rsi_min: float = 25.0
+    short_put_rsi_max: float = 70.0
+    # Covered Call: 允许更高超买（RSI 85 以下动能仍可持续）
+    covered_call_rsi_min: float = 30.0
+    covered_call_rsi_max: float = 85.0
+
+    # 兼容旧配置
+    min_rsi: float = 25.0  # 使用最宽范围
+    max_rsi: float = 85.0  # 使用最宽范围
     rsi_stabilizing_range: tuple[float, float] = (30.0, 45.0)
     bb_percent_b_range: tuple[float, float] = (0.1, 0.3)
     max_adx: float = 45.0
@@ -126,7 +200,7 @@ class EventCalendarConfig:
 class UnderlyingFilterConfig:
     """标的过滤器配置"""
 
-    min_iv_rank: float = 30.0  # P2: 从 50% 降低到 30%，只警告不阻塞
+    min_iv_rank: float = 30.0  # P1: IV Rank 阻塞条件，卖方必须卖"贵"的东西
     max_iv_hv_ratio: float = 2.0
     min_iv_hv_ratio: float = 0.8
     technical: TechnicalConfig = field(default_factory=TechnicalConfig)
@@ -148,9 +222,17 @@ class LiquidityConfig:
 
 @dataclass
 class MetricsConfig:
-    """指标配置"""
+    """指标配置
 
-    # P1: 年化夏普比率 (SR_annual = SR × √(365/DTE))
+    优先级说明：
+    - P0: Expected ROC（致命条件）
+    - P1: TGR（核心条件）
+    - P2: Annual ROC（重要条件）
+    - P3: Sharpe Ratio, Premium Rate, Win Probability, Theta/Premium, Kelly（参考条件）
+          Sharpe/PremRate 降级原因：卖方收益非正态分布，费率已被 AnnROC 包含
+    """
+
+    # P3: 年化夏普比率（参考条件，卖方收益非正态分布）
     min_sharpe_ratio: float = 0.5
     # P2: 策略吸引力评分
     min_sas: float = 50.0
@@ -168,7 +250,7 @@ class MetricsConfig:
     min_win_probability: float = 0.65
     # P3: Theta/Premium 比率 (每天)
     min_theta_premium_ratio: float = 0.01
-    # P1: 费率 (Premium / K × 100%)
+    # P3: 费率（参考条件，已被 Annual ROC 包含）
     min_premium_rate: float = 0.01
 
 
@@ -239,8 +321,6 @@ class ScreeningConfig:
                         TrendIndexConfig(**idx) for idx in us.get("trend_indices", [])
                     ],
                     trend_required=us.get("trend_required", "bullish_or_neutral"),
-                    pcr_symbol=us.get("pcr_symbol", "SPY"),
-                    pcr_range=tuple(us.get("pcr_range", [0.8, 1.2])),
                 )
             if "hk_market" in mf:
                 hk = mf["hk_market"]

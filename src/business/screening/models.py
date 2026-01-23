@@ -14,6 +14,7 @@ from enum import Enum
 from typing import Optional
 
 from src.data.models.event import EconomicEvent
+from src.engine.models.enums import StrategyType
 
 
 class MarketType(str, Enum):
@@ -154,6 +155,8 @@ class TechnicalScore:
     rsi_zone: str = "neutral"  # oversold / stabilizing / neutral / exhausting / overbought
     bb_percent_b: Optional[float] = None
     adx: Optional[float] = None
+    plus_di: Optional[float] = None  # +DI 多头方向指数
+    minus_di: Optional[float] = None  # -DI 空头方向指数
     sma_alignment: str = "neutral"  # strong_bullish / bullish / neutral / bearish / strong_bearish
     support_distance: Optional[float] = None  # 距离支撑位的百分比
 
@@ -166,6 +169,24 @@ class TechnicalScore:
     def is_exhausting(self) -> bool:
         """是否动能衰竭（适合卖 Call）"""
         return self.rsi_zone in ["exhausting", "overbought"]
+
+    @property
+    def is_downtrend(self) -> bool:
+        """是否强下跌趋势（ADX >= 25 且 -DI > +DI）"""
+        if self.adx is None or self.adx < 25:
+            return False
+        if self.plus_di is None or self.minus_di is None:
+            return False
+        return self.minus_di > self.plus_di
+
+    @property
+    def is_uptrend(self) -> bool:
+        """是否强上涨趋势（ADX >= 25 且 +DI > -DI）"""
+        if self.adx is None or self.adx < 25:
+            return False
+        if self.plus_di is None or self.minus_di is None:
+            return False
+        return self.plus_di > self.minus_di
 
 
 @dataclass
@@ -268,6 +289,7 @@ class ContractOpportunity:
     expiry: str  # YYYY-MM-DD
     strike: float
     option_type: str  # "put" or "call"
+    trading_class: Optional[str] = None  # IBKR trading class (e.g., "ALB" for 9988.HK)
     timestamp: datetime = field(default_factory=datetime.now)
 
     # 合约数据
@@ -303,6 +325,7 @@ class ContractOpportunity:
     moneyness: Optional[float] = None  # (S-K)/K
     otm_percent: Optional[float] = None  # OTM百分比
     theta_premium_ratio: Optional[float] = None  # Theta/Premium比率
+    theta_margin_ratio: Optional[float] = None  # Theta/Margin比率（资金效率排序指标）
 
     # 期望收益指标
     expected_roc: Optional[float] = None  # 期望收益率
@@ -339,7 +362,7 @@ class ScreeningResult:
     """筛选结果"""
 
     passed: bool
-    strategy_type: str  # "short_put" or "covered_call"
+    strategy_type: StrategyType  # StrategyType.SHORT_PUT or StrategyType.COVERED_CALL
     timestamp: datetime = field(default_factory=datetime.now)
 
     # 市场状态

@@ -453,34 +453,35 @@ class FeishuCardBuilder:
             header_text = f"**#{i} {symbol} {option_type} {strike_str} @ {expiry} (DTE={dte})**"
             elements.append(cls.create_text_element(header_text))
 
-            # 策略行：Pos, ExpROC, Sharpe, Premium Rate, WinP, Annual ROC
+            # 核心策略指标行 (P0/P1/P2): Pos, ExpROC, AnnROC, WinP, TGR, Θ/Margin
             # 注意：百分比值存储为小数（如 0.484 表示 48.4%），需要乘 100
             pos = opp.get("recommended_position", 0) or 0
             exp_roc = (opp.get("expected_roc", 0) or 0) * 100
+            annual_roc = (opp.get("annual_roc", 0) or 0) * 100
+            win_prob = (opp.get("win_probability", 0) or 0) * 100
+            tgr = opp.get("tgr", 0) or 0
+            theta_margin = opp.get("theta_margin_ratio", 0) or 0  # 资金效率
+
+            core_text = (
+                f"📈 Pos={pos:.2f} | ExpROC={exp_roc:.1f}% | "
+                f"AnnROC={annual_roc:.1f}% | WinP={win_prob:.1f}% | "
+                f"TGR={tgr:.2f} | Θ/Margin={theta_margin:.4f}"
+            )
+            elements.append(cls.create_text_element(core_text))
+
+            # 参考指标行 (P3): Sharpe, PremRate, SAS, PREI, Kelly, Θ/P
             sharpe = opp.get("sharpe_ratio", 0) or 0
             premium_rate = (opp.get("premium_rate", 0) or 0) * 100
-            win_prob = (opp.get("win_probability", 0) or 0) * 100
-            annual_roc = (opp.get("annual_roc", 0) or 0) * 100
-
-            strategy_text = (
-                f"📈 Pos={pos:.2f} | ExpROC={exp_roc:.1f}% | "
-                f"Sharpe={sharpe:.2f} | PremRate={premium_rate:.2f}% | "
-                f"WinP={win_prob:.1f}% | AnnROC={annual_roc:.1f}%"
-            )
-            elements.append(cls.create_text_element(strategy_text))
-
-            # 指标行：TGR, SAS, PREI, Kelly, Θ/P
-            tgr = opp.get("tgr", 0) or 0
             sas = opp.get("sas", 0) or 0
             prei = opp.get("prei", 0) or 0
             kelly = opp.get("kelly_fraction", 0) or 0
             theta_premium = opp.get("theta_premium_ratio", 0) or 0
 
-            indicators_text = (
-                f"📊 TGR={tgr:.2f} | SAS={sas:.1f} | "
-                f"PREI={prei:.1f} | Kelly={kelly:.2f} | Θ/P={theta_premium:.3f}"
+            ref_text = (
+                f"📊 Sharpe={sharpe:.2f} | PremRate={premium_rate:.2f}% | "
+                f"SAS={sas:.1f} | PREI={prei:.1f} | Kelly={kelly:.2f} | Θ/P={theta_premium:.3f}"
             )
-            elements.append(cls.create_text_element(indicators_text))
+            elements.append(cls.create_text_element(ref_text))
 
             # 行情行：S, Premium, Moneyness, Bid/Ask, Vol, IV
             underlying_price = opp.get("underlying_price", 0) or 0

@@ -16,6 +16,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional
 
 from src.data.models.option import Greeks
+from src.engine.models.enums import StrategyType
 
 if TYPE_CHECKING:
     from src.business.monitoring.suggestions import PositionSuggestion
@@ -51,12 +52,10 @@ class AlertType(str, Enum):
     POSITION_IV_HV = "position_iv_hv"  # 持仓级 IV/HV 比率
     POSITION_TGR = "position_tgr"  # 持仓级 TGR
     IV_HV_CHANGE = "iv_hv_change"  # IV/HV 变化
-    PREI_HIGH = "prei_high"  # PREI 过高
     DTE_WARNING = "dte_warning"  # 临近到期
     PROFIT_TARGET = "profit_target"  # 达到止盈
     STOP_LOSS = "stop_loss"  # 达到止损
     PNL_TARGET = "pnl_target"  # 盈亏目标（通用）
-    SAS_SCORE = "sas_score"  # SAS 策略吸引力分数
     ROC_LOW = "roc_low"  # ROC 过低
     EXPECTED_ROC_LOW = "expected_roc_low"  # Expected ROC 过低
     WIN_PROB_LOW = "win_prob_low"  # Win Probability 过低
@@ -180,7 +179,7 @@ class PositionData:
     is_dangerous_period: Optional[bool] = None
 
     # === 策略指标（由 DataBridge 调用 strategy.calc_metrics() 填充）===
-    strategy_type: Optional[str] = None  # "short_put" / "covered_call" 等
+    strategy_type: Optional[StrategyType] = None  # StrategyType 枚举
     prei: Optional[float] = None  # 来自 StrategyMetrics.prei
     tgr: Optional[float] = None  # 来自 StrategyMetrics.tgr
     sas: Optional[float] = None  # 来自 StrategyMetrics.sas
