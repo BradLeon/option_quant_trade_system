@@ -17,7 +17,6 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from src.business.monitoring.models import MonitorResult
 from src.business.monitoring.suggestions import (
     ActionType,
     PositionSuggestion,
@@ -70,7 +69,7 @@ class DecisionEngine:
 
     Usage:
         engine = DecisionEngine()
-        decisions = engine.process_batch(screen_result, monitor_result, account_state)
+        decisions = engine.process_batch(screen_result, account_state, suggestions)
     """
 
     def __init__(
@@ -117,10 +116,11 @@ class DecisionEngine:
             return None
 
         # 检查标的暴露
-         # TODO，不要使用固定的100，要用OptionContract.lot_size or Position.contract_multip
-        notional = (opportunity.strike or 0) * 100  # 估算名义价值
+        # 从期权符号中提取标的 (e.g., "NVDA 250228P00100000" -> "NVDA")
+        underlying = opportunity.symbol.split()[0] if " " in opportunity.symbol else opportunity.symbol
+        notional = (opportunity.strike or 0) * opportunity.lot_size  # 估算名义价值
         within_limit, reason = self._analyzer.check_underlying_exposure(
-            account_state, opportunity.symbol, notional
+            account_state, underlying, notional
         )
 
         if not within_limit:
@@ -156,6 +156,7 @@ class DecisionEngine:
             account_state=account_state,
             reason=self._build_open_reason(opportunity),
             broker=self._config.default_broker,
+            contract_multiplier=opportunity.lot_size,
             timestamp=datetime.now(),
         )
 
@@ -171,7 +172,7 @@ class DecisionEngine:
         suggestion: PositionSuggestion,
         account_state: AccountState,
         position_context: PositionContext | None = None,
-    ) -> TradingDecision | None:
+    ) -> TradingDecision:
         """处理监控调整信号
 
         Args:
@@ -180,33 +181,33 @@ class DecisionEngine:
             position_context: 持仓上下文
 
         Returns:
-            TradingDecision 或 None
+            TradingDecision (包括 HOLD 类型，确保健壮性)
         """
         # 映射动作类型
         decision_type = ACTION_TO_DECISION.get(
             suggestion.action, DecisionType.HOLD
         )
 
-        if decision_type == DecisionType.HOLD:
-            logger.debug(
-                f"Suggestion {suggestion.action.value} for {suggestion.symbol} "
-                "maps to HOLD, skipping"
-            )
-            return None
-
         # 映射优先级
         priority = URGENCY_TO_PRIORITY.get(
             suggestion.urgency, DecisionPriority.NORMAL
         )
 
-        # 确定数量
-        # TODO, Monitor给出的一定是平仓数量吗？ 有无可能减仓？
-        quantity = self._determine_close_quantity(suggestion, position_context)
-
         # 从 metadata 获取期权信息
         metadata = suggestion.metadata or {}
 
-        # TODO, 不限价吗？(平仓用市价单？) 是默认Monitor_signal只有平仓一种订单吗？ 
+        # 确定数量 (Monitor 信号支持 CLOSE/REDUCE/ROLL 等多种动作)
+        quantity = self._determine_close_quantity(suggestion, position_context)
+
+        # 确定价格类型:
+        # - CLOSE/ROLL 等紧急操作 (IMMEDIATE urgency) 使用市价单
+        # - HOLD 和非紧急操作使用中间价
+        if decision_type in (DecisionType.CLOSE, DecisionType.ROLL, DecisionType.ADJUST) \
+                and suggestion.urgency == UrgencyLevel.IMMEDIATE:
+            price_type = "market"
+        else:
+            price_type = self._config.default_price_type
+
         decision = TradingDecision(
             decision_id=self._generate_decision_id(),
             decision_type=decision_type,
@@ -218,6 +219,7 @@ class DecisionEngine:
             strike=metadata.get("strike"),
             expiry=metadata.get("expiry"),
             quantity=quantity,
+            price_type=price_type,
             account_state=account_state,
             position_context=position_context,
             reason=suggestion.reason,
@@ -229,7 +231,7 @@ class DecisionEngine:
         logger.info(
             f"Generated {decision_type.value.upper()} decision: "
             f"{decision.decision_id} for {suggestion.symbol}, "
-            f"priority={priority.value}"
+            f"priority={priority.value}, price_type={price_type}"
         )
 
         return decision
@@ -237,7 +239,6 @@ class DecisionEngine:
     def process_batch(
         self,
         screen_result: ScreeningResult | None,
-        monitor_result: MonitorResult | None,
         account_state: AccountState,
         suggestions: list[PositionSuggestion] | None = None,
     ) -> list[TradingDecision]:
@@ -245,24 +246,23 @@ class DecisionEngine:
 
         Args:
             screen_result: 筛选结果
-            monitor_result: 监控结果 (用于获取位置上下文)
             account_state: 账户状态
-            suggestions: 调整建议列表 (可选，如果不提供则从 monitor_result 生成)
+            suggestions: Monitor 调整建议列表
 
         Returns:
             解决冲突后的决策列表
         """
         all_decisions: list[TradingDecision] = []
-        # TODO, 看来monitor_result并没用上
 
         # 处理 Monitor 信号 (优先，因为可能需要平仓)
+        # process_monitor_signal 总是返回 TradingDecision (包括 HOLD)
+        # HOLD 类型会在 conflict resolution 阶段被过滤
         if suggestions:
             for suggestion in suggestions:
                 decision = self.process_monitor_signal(
                     suggestion, account_state
                 )
-                if decision:
-                    all_decisions.append(decision)
+                all_decisions.append(decision)
 
         # 处理 Screen 信号
         if screen_result and screen_result.confirmed:
@@ -290,36 +290,57 @@ class DecisionEngine:
         return f"DEC-{timestamp}-{unique}"
 
     def _build_open_reason(self, opportunity: ContractOpportunity) -> str:
-        """构建开仓原因"""
-        parts = []
-        # TODO, 开仓原因是因为没有被三道过滤系统筛掉，而不是哪个指标高，所以开仓原因是没有短板，不太好写。
+        """构建开仓原因
+
+        通过三层筛选意味着各项指标均无短板，此处列出关键指标供参考。
+        """
+        parts = ["通过三层筛选"]
+
         if opportunity.expected_roc:
-            parts.append(f"Expected ROC={opportunity.expected_roc:.1%}")
+            parts.append(f"ROC={opportunity.expected_roc:.1%}")
 
         if opportunity.win_probability:
-            parts.append(f"WinProb={opportunity.win_probability:.0%}")
+            parts.append(f"胜率={opportunity.win_probability:.0%}")
 
         if opportunity.kelly_fraction:
             parts.append(f"Kelly={opportunity.kelly_fraction:.2f}")
 
         if opportunity.delta:
-            parts.append(f"Delta={opportunity.delta:.2f}")
+            parts.append(f"Δ={opportunity.delta:.2f}")
 
         if opportunity.theta:
-            parts.append(f"Theta={opportunity.theta:.2f}")
+            parts.append(f"Θ={opportunity.theta:.2f}")
 
-        return "Screen confirmed: " + ", ".join(parts)
+        return " | ".join(parts)
 
     def _determine_close_quantity(
         self,
         suggestion: PositionSuggestion,
         position_context: PositionContext | None,
     ) -> int:
-        """确定平仓数量"""
+        """确定平仓数量
+
+        优先级:
+        1. 从 position_context 获取 (最准确)
+        2. 从 suggestion.metadata["quantity"] 获取 (备用)
+        3. 返回 0 (需要后续查询补充)
+        """
+        # 优先从 position_context 获取
         if position_context:
             qty = position_context.quantity
             # 平仓方向与持仓方向相反
             return -int(qty) if qty != 0 else 0
 
-        # 如果没有持仓上下文，返回 0 (需要后续查询)
+        # 备用: 从 metadata 获取
+        metadata = suggestion.metadata or {}
+        if "quantity" in metadata:
+            qty = metadata["quantity"]
+            # 平仓方向与持仓方向相反
+            return -int(qty) if qty != 0 else 0
+
+        # 如果都没有，记录警告并返回 0
+        logger.warning(
+            f"No quantity available for {suggestion.symbol}, "
+            "position_context and metadata['quantity'] both missing"
+        )
         return 0

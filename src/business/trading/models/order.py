@@ -84,6 +84,10 @@ class OrderRequest:
     stop_price: float | None = None
     time_in_force: str = "DAY"  # DAY, GTC, IOC
 
+    # 合约参数
+    contract_multiplier: int = 100  # 合约乘数 (US=100, HK 视标的而定)
+    currency: str = "USD"  # 交易币种
+
     # 券商信息
     broker: str = ""  # "ibkr" or "futu"
     account_type: str = "paper"  # MUST be "paper"
@@ -144,6 +148,8 @@ class OrderRequest:
             "limit_price": self.limit_price,
             "stop_price": self.stop_price,
             "time_in_force": self.time_in_force,
+            "contract_multiplier": self.contract_multiplier,
+            "currency": self.currency,
             "broker": self.broker,
             "account_type": self.account_type,
             "status": self.status.value,
@@ -172,6 +178,8 @@ class OrderRequest:
             limit_price=data.get("limit_price"),
             stop_price=data.get("stop_price"),
             time_in_force=data.get("time_in_force", "DAY"),
+            contract_multiplier=data.get("contract_multiplier", 100),
+            currency=data.get("currency", "USD"),
             broker=data.get("broker", ""),
             account_type=data.get("account_type", "paper"),
             status=OrderStatus(data["status"]),

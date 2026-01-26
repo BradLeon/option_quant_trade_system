@@ -23,6 +23,7 @@ from src.business.trading.models.order import (
     OrderSide,
     OrderType,
 )
+from src.data.utils.symbol_formatter import SymbolFormatter
 from src.business.trading.models.trading import (
     AccountTypeError,
     CancelResult,
@@ -272,7 +273,16 @@ class IBKRTradingProvider(TradingProvider):
             )
 
     def _build_contract(self, order: OrderRequest) -> Any:
-        """构建 IBKR 合约对象"""
+        """构建 IBKR 合约对象
+
+        使用 SymbolFormatter 正确处理 HK/US 市场的合约参数:
+        - HK 期权: symbol="9988", exchange="SEHK", currency="HKD"
+        - US 期权: symbol="NVDA", exchange="SMART", currency="USD"
+        """
+        # 获取 IBKR 合约参数 (symbol, exchange, currency)
+        symbol_for_ibkr = order.underlying or order.symbol
+        ibkr_params = SymbolFormatter.to_ibkr_contract(symbol_for_ibkr)
+
         if order.asset_class == AssetClass.OPTION:
             # 期权合约
             # 转换 expiry 格式: YYYY-MM-DD -> YYYYMMDD
@@ -283,26 +293,26 @@ class IBKRTradingProvider(TradingProvider):
             # 转换 right: put/call -> P/C
             right = "P" if order.option_type == "put" else "C"
 
-            #TODO, 如果交易的是港股期权，  multiplier不一定是100吧？ 要根据实际的合约来。
             contract = Option(
-                symbol=order.underlying or order.symbol,
+                symbol=ibkr_params.symbol,
                 lastTradeDateOrContractMonth=expiry,
                 strike=order.strike,
                 right=right,
-                exchange="SMART",
-                multiplier="100",
+                exchange=ibkr_params.exchange,
+                currency=ibkr_params.currency,
+                multiplier=str(order.contract_multiplier),
             )
 
-            # 设置 trading class (如果有)
+            # 设置 trading class (如果有, 主要用于 HK 期权)
             if order.trading_class:
                 contract.tradingClass = order.trading_class
 
         else:
             # 股票合约
             contract = Stock(
-                symbol=order.symbol,
-                exchange="SMART",
-                currency="USD",
+                symbol=ibkr_params.symbol,
+                exchange=ibkr_params.exchange,
+                currency=ibkr_params.currency,
             )
 
         return contract

@@ -78,6 +78,8 @@ class OrderGenerator:
             quantity=abs(decision.quantity),
             limit_price=decision.limit_price,
             time_in_force=self._config.default_time_in_force,
+            contract_multiplier=decision.contract_multiplier,
+            currency=decision.currency,
             broker=decision.broker,
             account_type="paper",  # 强制 paper
             status=OrderStatus.PENDING_VALIDATION,
@@ -102,31 +104,40 @@ class OrderGenerator:
     def _determine_side(self, decision: TradingDecision) -> OrderSide:
         """确定买卖方向
 
-        规则:
-        - OPEN + quantity < 0 (卖出期权) -> SELL
-        - OPEN + quantity > 0 (买入期权) -> BUY
-        - CLOSE + 原持仓为空头 -> BUY (平仓)
-        - CLOSE + 原持仓为多头 -> SELL (平仓)
-        """
-        # TODO 这里需要好好确定下，开仓信号对于卖期权，quantity是否负数。
+        Decision.quantity 约定:
+        - 正数: 买入 (BUY to open / BUY to close)
+        - 负数: 卖出 (SELL to open / SELL to close)
 
-        if decision.decision_type == DecisionType.OPEN:
-            return OrderSide.SELL if decision.quantity < 0 else OrderSide.BUY
-        elif decision.decision_type == DecisionType.CLOSE:
-            # 平仓时方向相反
-            # 如果原决策 quantity < 0 (空头持仓)，平仓需要买入
-            return OrderSide.BUY if decision.quantity < 0 else OrderSide.SELL
-        else:
-            # ADJUST, ROLL 等根据数量判断
-            return OrderSide.SELL if decision.quantity < 0 else OrderSide.BUY
+        OrderRequest.quantity 始终为正数，方向由 side 决定。
+
+        规则 (对所有 decision_type 统一适用):
+        - quantity < 0 -> SELL
+        - quantity > 0 -> BUY
+
+        示例:
+        - OPEN 卖 Put: decision.quantity = -1 -> SELL
+        - CLOSE 买回 Put (原空头 -2): decision.quantity = 2 -> BUY
+        - CLOSE 卖出股票 (原多头 +100): decision.quantity = -100 -> SELL
+        """
+        # 统一规则: quantity 的符号决定方向
+        return OrderSide.SELL if decision.quantity < 0 else OrderSide.BUY
 
     def _determine_order_type(self, decision: TradingDecision) -> OrderType:
-        """确定订单类型"""
-        # TODO 我看OrderType定义有四种，这里为什么只返回两种？
-        # TODO 如果OrderType.LIMIT代表现价单，应该检查decision中的报价吧？ 默认返回市价单更合适吧？（因为decision中不用设置报价）
+        """确定订单类型
+
+        当前支持: MARKET, LIMIT
+        预留类型: STOP, STOP_LIMIT (未实现)
+
+        规则:
+        - price_type == "market" -> MARKET
+        - limit_price 存在 -> LIMIT
+        - 默认 -> MARKET (更安全，避免限价单挂单不成交)
+        """
         if decision.price_type == "market":
             return OrderType.MARKET
-        return OrderType.LIMIT
+        if decision.limit_price is not None:
+            return OrderType.LIMIT
+        return OrderType.MARKET  # 无限价时默认市价单
 
     def _build_context(self, decision: TradingDecision) -> dict:
         """构建订单上下文"""

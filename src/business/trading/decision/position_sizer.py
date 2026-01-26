@@ -65,8 +65,7 @@ class PositionSizer:
 
         # 计算每张合约的名义价值
         strike = opportunity.strike or 0
-        # TODO，不要使用固定的100，要用OptionContract.lot_size or Position.contract_multiplier
-        multiplier = 100  # 标准期权乘数
+        multiplier = opportunity.lot_size  # 从合约获取乘数
         notional_per_contract = strike * multiplier
 
         if notional_per_contract <= 0:
@@ -87,10 +86,13 @@ class PositionSizer:
         # 1. 最大分配比例限制
         max_capital = nlv * max_pct
 
-        # 2. 可用保证金限制 (假设保证金率 20%)
-        margin_rate = 0.20
+        # 2. 可用保证金限制
+        # 保证金率基于 IBKR Reg T 规则 (股票期权 20%, 指数期权 15%)
+        # 参考: https://www.interactivebrokers.com/en/trading/margin-options.php
+        margin_rate = self._config.margin_rate_stock_option  # 默认使用股票期权保证金率
         margin_per_contract = notional_per_contract * margin_rate
-        max_by_margin = (available_margin * 0.8) / margin_per_contract if margin_per_contract > 0 else 0
+        safety_buffer = self._config.margin_safety_buffer  # 保证金使用安全系数
+        max_by_margin = (available_margin * safety_buffer) / margin_per_contract if margin_per_contract > 0 else 0
 
         # 3. 合约数量限制
         max_by_count = max_contracts
@@ -138,7 +140,7 @@ class PositionSizer:
         """
         nlv = account_state.total_equity
         strike = opportunity.strike or 0
-        multiplier = 100
+        multiplier = opportunity.lot_size  # 从合约获取乘数
         notional_per_contract = strike * multiplier
 
         kelly_fraction = opportunity.kelly_fraction or 0.5
@@ -147,7 +149,8 @@ class PositionSizer:
         kelly_capital = nlv * adjusted_kelly
         max_capital = nlv * self._config.max_notional_pct_per_underlying
 
-        margin_rate = 0.20
+        # 使用配置的保证金率
+        margin_rate = self._config.margin_rate_stock_option
         margin_per_contract = notional_per_contract * margin_rate
 
         result = self.calculate_size(opportunity, account_state)
@@ -157,6 +160,7 @@ class PositionSizer:
             "input": {
                 "symbol": opportunity.symbol,
                 "strike": strike,
+                "multiplier": multiplier,
                 "kelly_fraction": kelly_fraction,
                 "nlv": nlv,
                 "available_margin": account_state.available_margin,
@@ -164,6 +168,7 @@ class PositionSizer:
             "calculation": {
                 "notional_per_contract": notional_per_contract,
                 "margin_per_contract": margin_per_contract,
+                "margin_rate": margin_rate,
                 "adjusted_kelly": adjusted_kelly,
                 "kelly_capital": kelly_capital,
                 "max_capital": max_capital,
@@ -172,5 +177,6 @@ class PositionSizer:
                 "max_contracts": self._config.max_contracts_per_underlying,
                 "max_allocation_pct": self._config.max_notional_pct_per_underlying,
                 "kelly_scale": self._config.kelly_fraction,
+                "margin_safety_buffer": self._config.margin_safety_buffer,
             },
         }

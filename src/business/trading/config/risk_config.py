@@ -41,6 +41,14 @@ class RiskConfig:
     max_price_deviation_pct: float = 0.05  # 5% from mid
     max_order_value_pct: float = 0.10  # 10% of NLV per order
 
+    # === 保证金估算参数 ===
+    # 基于 IBKR Reg T 规则
+    # 参考: https://www.interactivebrokers.com/en/trading/margin-options.php
+    # Naked short option: Premium + Max((X% * Underlying - OTM), (10% * Strike))
+    margin_rate_stock_option: float = 0.20  # 股票期权: 20% of underlying
+    margin_rate_index_option: float = 0.15  # 指数期权: 15% of underlying
+    margin_rate_minimum: float = 0.10  # 最低保证金率: 10% of strike
+
     # === Emergency Thresholds ===
     # 紧急平仓触发阈值
 
@@ -92,6 +100,9 @@ class RiskConfig:
             ),
             max_price_deviation_pct=risk_limits.get("max_price_deviation_pct", 0.05),
             max_order_value_pct=risk_limits.get("max_order_value_pct", 0.10),
+            margin_rate_stock_option=risk_limits.get("margin_rate_stock_option", 0.20),
+            margin_rate_index_option=risk_limits.get("margin_rate_index_option", 0.15),
+            margin_rate_minimum=risk_limits.get("margin_rate_minimum", 0.10),
             emergency_margin_utilization=risk_limits.get(
                 "emergency_margin_utilization", 0.85
             ),
@@ -114,6 +125,9 @@ class RiskConfig:
                 "max_projected_margin_utilization": self.max_projected_margin_utilization,
                 "max_price_deviation_pct": self.max_price_deviation_pct,
                 "max_order_value_pct": self.max_order_value_pct,
+                "margin_rate_stock_option": self.margin_rate_stock_option,
+                "margin_rate_index_option": self.margin_rate_index_option,
+                "margin_rate_minimum": self.margin_rate_minimum,
                 "emergency_margin_utilization": self.emergency_margin_utilization,
                 "emergency_cash_ratio": self.emergency_cash_ratio,
                 "kelly_fraction": self.kelly_fraction,

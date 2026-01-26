@@ -69,12 +69,14 @@ class ConflictResolver:
 
         Args:
             decisions: 原始决策列表
-            account_state: 账户状态
+            account_state: 账户状态 (预留: 可用于未来账户级冲突检查)
 
         Returns:
             解决冲突后的决策列表
         """
-        # TODO, 参数account_state没用上。
+        # account_state 预留用于未来扩展，如保证金不足时仅允许平仓
+        _ = account_state
+
         if not decisions:
             return []
 
@@ -90,11 +92,11 @@ class ConflictResolver:
         if self._config.single_action_per_underlying:
             active_decisions = self._resolve_by_underlying(active_decisions)
 
-        # Step 3: 排序
+        # Step 3: 按优先级排序 (CRITICAL > HIGH > NORMAL > LOW)
         sorted_decisions = self._sort_decisions(active_decisions)
 
-        # Step 4: 如果配置了平仓优先，确保平仓在前
-        # TODO, 前面的配置已经保证平仓的优先级了，这里step4没有必要。
+        # Step 4: 确保相同标的的平仓在开仓之前 (与优先级排序不同)
+        # 场景: 先平旧仓再开新仓，避免保证金冲突
         if self._config.close_before_open:
             sorted_decisions = self._prioritize_close(sorted_decisions)
 

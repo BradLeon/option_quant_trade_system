@@ -75,24 +75,37 @@ class AccountState:
 
     timestamp: datetime = field(default_factory=datetime.now)
 
-    def can_open_position(self) -> tuple[bool, list[str]]:
+    def can_open_position(
+        self,
+        max_margin_utilization: float = 0.70,
+        min_cash_ratio: float = 0.10,
+        max_gross_leverage: float = 4.0,
+    ) -> tuple[bool, list[str]]:
         """检查是否可以开新仓
+
+        Note: 推荐使用 AccountStateAnalyzer.can_open_position() 进行完整的风控检查，
+              该方法会使用配置文件中的阈值，并支持更多检查项（如持仓数量限制）。
+
+        Args:
+            max_margin_utilization: 最大保证金使用率 (默认 70%)
+            min_cash_ratio: 最小现金比例 (默认 10%)
+            max_gross_leverage: 最大杠杆 (默认 4.0x)
 
         Returns:
             (can_open, rejection_reasons)
         """
         reasons = []
 
-        if self.margin_utilization >= 0.70:
+        if self.margin_utilization >= max_margin_utilization:
             reasons.append(
-                f"Margin utilization too high: {self.margin_utilization:.1%} >= 70%"
+                f"Margin utilization too high: {self.margin_utilization:.1%} >= {max_margin_utilization:.0%}"
             )
 
-        if self.cash_ratio < 0.10:
-            reasons.append(f"Insufficient cash buffer: {self.cash_ratio:.1%} < 10%")
+        if self.cash_ratio < min_cash_ratio:
+            reasons.append(f"Insufficient cash buffer: {self.cash_ratio:.1%} < {min_cash_ratio:.0%}")
 
-        if self.gross_leverage >= 4.0:
-            reasons.append(f"Leverage limit exceeded: {self.gross_leverage:.1f}x >= 4.0x")
+        if self.gross_leverage >= max_gross_leverage:
+            reasons.append(f"Leverage limit exceeded: {self.gross_leverage:.1f}x >= {max_gross_leverage:.1f}x")
 
         return (len(reasons) == 0, reasons)
 
@@ -181,7 +194,9 @@ class TradingDecision:
     # 目标券商
     broker: str = ""  # "ibkr" or "futu"
 
-    # TODO 是否最好加一个currency字段，方便后续的检查
+    # 合约参数
+    contract_multiplier: int = 100  # 合约乘数 (US=100, HK 视标的而定)
+    currency: str = "USD"  # 交易币种
 
     def approve(self, notes: str = "") -> None:
         """批准决策"""

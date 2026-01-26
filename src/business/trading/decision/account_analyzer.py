@@ -94,10 +94,11 @@ class AccountStateAnalyzer:
             projected_margin = account_state.used_margin + required_margin
             projected_utilization = projected_margin / nlv if nlv > 0 else 1.0
 
-            if projected_utilization >= 0.80:  # Order-level limit
+            max_projected = self._config.max_projected_margin_utilization
+            if projected_utilization >= max_projected:
                 reasons.append(
                     f"Projected margin too high: "
-                    f"{projected_utilization:.1%} >= 80%"
+                    f"{projected_utilization:.1%} >= {max_projected:.0%}"
                 )
 
         can_open = len(reasons) == 0

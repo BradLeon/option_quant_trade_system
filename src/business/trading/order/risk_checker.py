@@ -64,13 +64,18 @@ class RiskChecker:
         if current_mid_price and order.limit_price:
             self._check_price_deviation(order, current_mid_price, result)
 
-        # === 保证金检查 (需要账户状态) ===
-        
-        # TODO 如果 account_state不存在，就直接返回Passed吗？这不合理吧？ 如果account_state不对，风控检查应该返回False。
+        # === 账户状态必须存在 ===
+        if account_state is None:
+            result.add_check(
+                name="account_state_required",
+                passed=False,
+                message="AccountState is required for margin and order value checks",
+            )
+            return result  # 账户状态缺失，无法继续风控检查
 
-        if account_state:
-            self._check_margin_projection(order, account_state, result)
-            self._check_order_value(order, account_state, result)
+        # === 保证金检查 ===
+        self._check_margin_projection(order, account_state, result)
+        self._check_order_value(order, account_state, result)
 
         return result
 
@@ -141,17 +146,19 @@ class RiskChecker:
         account_state: AccountState,
         result: RiskCheckResult,
     ) -> None:
-        """检查预计保证金使用率"""
-        # 简化计算: 假设期权每张保证金约为 strike * 100 * 0.2
+        """检查预计保证金使用率
+
+        保证金估算基于 IBKR Reg T 规则:
+        - 股票期权: 20% of underlying
+        - 指数期权: 15% of underlying
+        参考: https://www.interactivebrokers.com/en/trading/margin-options.php
+        """
         estimated_margin = 0.0
 
-        # TODO 这里用魔法数字的方式，太糙了。 multiplier要来自OptionContract.lot_size or Position.contract_multiplier 
-        # TODO 如果数据是打通的， 可以优先直接使用OptionStrategy.margin_per_share, 其次可以参考get_effective_margin是如何计算的。
-
-
         if order.strike:
-            multiplier = 100  # 标准期权乘数
-            margin_rate = 0.20  # 估算保证金率
+            multiplier = order.contract_multiplier  # 从订单获取合约乘数
+            # 使用配置的保证金率 (默认使用股票期权保证金率)
+            margin_rate = self._config.margin_rate_stock_option
             estimated_margin = order.strike * multiplier * abs(order.quantity) * margin_rate
 
         current_margin = account_state.used_margin
@@ -199,12 +206,11 @@ class RiskChecker:
         if nlv <= 0:
             return
 
-        # TODO limit_price检查的前提是币种的正确性。 交易标的所处市场和currency要一致，NLV和limit_price的币种要一致。
-        
+        # 注: 币种一致性检查需 order.currency 与 account_state 币种匹配 (未实现)
+
         # 计算订单价值
         if order.limit_price:
-            # TODO 这里用魔法数字的方式，太糙了。 multiplier要来自OptionContract.lot_size or Position.contract_multiplier 
-            multiplier = 100 if order.is_option else 1
+            multiplier = order.contract_multiplier if order.is_option else 1
             order_value = order.limit_price * abs(order.quantity) * multiplier
         else:
             return  # 无法计算

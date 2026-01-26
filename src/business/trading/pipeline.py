@@ -154,7 +154,6 @@ class TradingPipeline:
 
         decisions = self._decision_engine.process_batch(
             screen_result,
-            monitor_result,
             account_state,
             suggestions,
         )
