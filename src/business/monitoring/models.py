@@ -131,6 +131,8 @@ class PositionData:
     option_type: Optional[str] = None  # "put" / "call"
     strike: Optional[float] = None
     expiry: Optional[str] = None  # YYYYMMDD
+    trading_class: Optional[str] = None  # For HK options (e.g., "ALB" for 9988)
+    con_id: Optional[int] = None  # IBKR contract ID (unique identifier)
     dte: Optional[int] = None
     contract_multiplier: int = 1
     moneyness: Optional[float] = None  # 由 DataBridge 计算: (S-K)/K

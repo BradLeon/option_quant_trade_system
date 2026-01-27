@@ -287,6 +287,8 @@ class MonitoringDataBridge:
                 option_type=pos.option_type,
                 strike=pos.strike,
                 expiry=pos.expiry,
+                trading_class=pos.trading_class,  # For HK options (e.g., "ALB" for 9988)
+                con_id=pos.con_id,  # IBKR contract ID
                 dte=dte,
                 contract_multiplier=pos.contract_multiplier,
                 moneyness=moneyness,
@@ -380,6 +382,8 @@ class MonitoringDataBridge:
             option_type=pos.option_type,
             strike=pos.strike,
             expiry=pos.expiry,
+            trading_class=pos.trading_class,  # For HK options (e.g., "ALB" for 9988)
+            con_id=pos.con_id,  # IBKR contract ID
             dte=dte,
             contract_multiplier=pos.contract_multiplier,
             moneyness=moneyness,

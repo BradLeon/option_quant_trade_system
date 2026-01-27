@@ -15,7 +15,7 @@ from typing import Any
 
 from src.business.trading.config.order_config import OrderConfig
 from src.business.trading.config.risk_config import RiskConfig
-from src.business.trading.models.decision import AccountState, TradingDecision
+from src.business.trading.models.decision import AccountState, DecisionType, TradingDecision
 from src.business.trading.models.order import (
     OrderRecord,
     OrderRequest,
@@ -81,13 +81,39 @@ class OrderManager:
     def create_order(self, decision: TradingDecision) -> OrderRequest:
         """从决策创建订单
 
+        对于 ROLL 类型决策，请使用 create_roll_orders()。
+
         Args:
-            decision: 交易决策
+            decision: 交易决策 (非 ROLL 类型)
 
         Returns:
             OrderRequest: 订单请求
+
+        Raises:
+            ValueError: 如果传入 ROLL 决策
         """
+        if decision.decision_type == DecisionType.ROLL:
+            raise ValueError(
+                "ROLL decision requires create_roll_orders() to generate two orders. "
+                "Use create_roll_orders() instead."
+            )
         return self._generator.generate(decision)
+
+    def create_roll_orders(self, decision: TradingDecision) -> list[OrderRequest]:
+        """从 ROLL 决策创建两个订单 (平仓 + 开仓)
+
+        展期操作 = 平仓当前合约 + 开仓新合约
+
+        Args:
+            decision: ROLL 类型的交易决策
+
+        Returns:
+            [close_order, open_order]: 平仓订单在前，开仓订单在后
+
+        Raises:
+            ValueError: 决策类型不是 ROLL 或缺少展期参数
+        """
+        return self._generator.generate_roll(decision)
 
     def validate_order(
         self,
@@ -151,12 +177,13 @@ class OrderManager:
             if result.success:
                 order.update_status(OrderStatus.SUBMITTED)
                 record.broker_order_id = result.broker_order_id
+                record.broker_status = result.broker_status  # 保存 IBKR 状态
                 record.add_status_history(
                     OrderStatus.SUBMITTED,
-                    f"Submitted to {order.broker}, broker_id={result.broker_order_id}",
+                    f"Submitted to {order.broker}, broker_id={result.broker_order_id}, status={result.broker_status}",
                 )
                 logger.info(
-                    f"Order {order.order_id} submitted: broker_id={result.broker_order_id}"
+                    f"Order {order.order_id} submitted: broker_id={result.broker_order_id}, status={result.broker_status}"
                 )
 
                 # 发送通知
@@ -165,12 +192,14 @@ class OrderManager:
             else:
                 order.update_status(OrderStatus.REJECTED)
                 record.error_message = result.error_message
+                record.broker_order_id = result.broker_order_id  # 可能有 broker_id 但被拒绝
+                record.broker_status = result.broker_status  # 保存 IBKR 状态
                 record.add_status_history(
                     OrderStatus.REJECTED,
-                    f"Rejected: {result.error_message}",
+                    f"Rejected: {result.error_message}, status={result.broker_status}",
                 )
                 logger.error(
-                    f"Order {order.order_id} rejected: {result.error_message}"
+                    f"Order {order.order_id} rejected: {result.error_message}, status={result.broker_status}"
                 )
 
                 # 发送通知
@@ -189,6 +218,64 @@ class OrderManager:
         self._store.save(record)
 
         return record
+
+    def submit_roll_orders(
+        self,
+        orders: list[OrderRequest],
+    ) -> list[OrderRecord]:
+        """提交展期订单 (平仓 + 开仓)
+
+        按顺序提交：先平仓，后开仓。
+        如果平仓失败，不会提交开仓订单。
+
+        Args:
+            orders: [close_order, open_order] - 由 create_roll_orders() 生成
+
+        Returns:
+            list[OrderRecord]: 订单记录列表
+
+        Raises:
+            ValueError: 订单数量不是 2 或订单未通过验证
+        """
+        if len(orders) != 2:
+            raise ValueError(f"Expected 2 orders for roll, got {len(orders)}")
+
+        close_order, open_order = orders
+        records = []
+
+        # 1. 提交平仓订单
+        logger.info(f"Submitting roll close order: {close_order.order_id}")
+        close_record = self.submit_order(close_order)
+        records.append(close_record)
+
+        # 如果平仓失败，不提交开仓订单
+        if close_order.status != OrderStatus.SUBMITTED:
+            logger.warning(
+                f"Roll close order failed ({close_order.status}), "
+                f"skipping open order"
+            )
+            # 标记开仓订单为跳过
+            open_order.update_status(OrderStatus.CANCELLED)
+            open_record = OrderRecord(order=open_order)
+            open_record.add_status_history(
+                OrderStatus.CANCELLED,
+                "Skipped: close order failed",
+            )
+            records.append(open_record)
+            return records
+
+        # 2. 提交开仓订单
+        logger.info(f"Submitting roll open order: {open_order.order_id}")
+        open_record = self.submit_order(open_order)
+        records.append(open_record)
+
+        logger.info(
+            f"Roll orders completed: "
+            f"close={close_record.order.status.value}, "
+            f"open={open_record.order.status.value}"
+        )
+
+        return records
 
     def cancel_order(self, order_id: str) -> bool:
         """取消订单

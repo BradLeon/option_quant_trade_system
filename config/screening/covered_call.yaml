@@ -32,7 +32,7 @@ market_filter:
     trend_required: "neutral_or_bearish"
 
 underlying_filter:
-  min_iv_rank: 30                 # 最低 IV Rank（比 Short Put 略低）
+  min_iv_rank: 10                 # 最低 IV Rank（比 Short Put 略低）
   max_iv_hv_ratio: 1.8
   min_iv_hv_ratio: 0.9
   technical:

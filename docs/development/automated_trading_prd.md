@@ -823,8 +823,8 @@ src/business/trading/
 ├── provider/
 │   ├── __init__.py
 │   ├── base.py                 # TradingProvider abstract base
-│   ├── ibkr_trading.py         # IBKRTradingProvider (Paper Only)
-│   └── futu_trading.py         # FutuTradingProvider (Paper Only)
+│   └── ibkr_trading.py         # IBKRTradingProvider (Paper Only)
+│   # Note: Paper trading only uses IBKR. Futu is for data access only.
 │
 └── pipeline.py                 # TradingPipeline (orchestration)
 
@@ -933,10 +933,9 @@ execution:
    - 连接 4002 端口
    - 账户类型校验
    - 订单提交/查询/取消
-3. 实现 `FutuTradingProvider` (Paper Only)
-   - TrdEnv.SIMULATE
-   - 订单提交/查询/取消
-4. 编写单元测试
+3. 编写单元测试
+
+**Note**: Paper trading only uses IBKR. Futu is used for data access only (via `FutuProvider`).
 
 **产出**:
 - 可独立测试的交易接口

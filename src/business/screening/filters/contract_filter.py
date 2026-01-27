@@ -301,7 +301,7 @@ class ContractFilter:
                 option_type=opt_type,
             )
             # 输出详细评估日志
-            self._log_contract_evaluation(opp)
+            #self._log_contract_evaluation(opp)
             all_evaluated.append(opp)
 
         # 统计评估结果

@@ -108,15 +108,18 @@ class PositionSizer:
             max_by_count,
         )
 
-        # 向下取整
-        result = max(0, math.floor(final_contracts))
+        # 向下取整，最小为 1（通过筛选的合约至少开 1 张）
+        result = max(1, math.floor(final_contracts))
 
         logger.debug(
-            f"Position sizing for {opportunity.symbol}: "
-            f"kelly={kelly_fraction:.2f}, "
-            f"adjusted_kelly={adjusted_kelly:.2f}, "
-            f"kelly_capital={kelly_capital:.2f}, "
-            f"contracts_by_capital={contracts_by_capital:.1f}, "
+            f"Position sizing for {opportunity.symbol} (K={strike}): "
+            f"kelly={kelly_fraction:.4f}, "
+            f"kelly_scale={kelly_scale:.2f}, "
+            f"adjusted_kelly={adjusted_kelly:.4f}, "
+            f"nlv={nlv:.0f}, "
+            f"kelly_capital={kelly_capital:.0f}, "
+            f"notional={notional_per_contract:.0f}, "
+            f"contracts_by_capital={contracts_by_capital:.2f}, "
             f"max_by_margin={max_by_margin:.1f}, "
             f"max_by_count={max_by_count}, "
             f"result={result}"

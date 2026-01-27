@@ -448,20 +448,27 @@ class SuggestionGenerator:
         # 从 positions 获取合约详细信息
         if positions:
             pos = next((p for p in positions if p.position_id == position_id), None)
-            if pos and pos.is_option:
-                metadata["strategy_type"] = pos.strategy_type
-                metadata["option_type"] = pos.option_type
-                metadata["strike"] = pos.strike
-                metadata["expiry"] = pos.expiry
-                metadata["dte"] = pos.dte
-                metadata["underlying"] = pos.underlying or pos.symbol
-                # 构建更友好的显示名称
-                if pos.option_type and pos.strike and pos.expiry:
-                    try:
-                        exp_str = f"{pos.expiry[4:6]}/{pos.expiry[6:8]}"
-                        symbol = f"{pos.symbol} {pos.option_type.upper()} {pos.strike:.0f} {exp_str}"
-                    except (IndexError, TypeError):
-                        pass
+            if pos:
+                # 通用字段
+                metadata["quantity"] = pos.quantity
+                metadata["lot_size"] = getattr(pos, "contract_multiplier", 100)
+
+                if pos.is_option:
+                    metadata["strategy_type"] = pos.strategy_type
+                    metadata["option_type"] = pos.option_type
+                    metadata["strike"] = pos.strike
+                    metadata["expiry"] = pos.expiry
+                    metadata["dte"] = pos.dte
+                    metadata["underlying"] = pos.underlying or pos.symbol
+                    metadata["trading_class"] = pos.trading_class  # For HK options
+                    metadata["con_id"] = pos.con_id  # IBKR contract ID
+                    # 构建更友好的显示名称
+                    if pos.option_type and pos.strike and pos.expiry:
+                        try:
+                            exp_str = f"{pos.expiry[4:6]}/{pos.expiry[6:8]}"
+                            symbol = f"{pos.symbol} {pos.option_type.upper()} {pos.strike:.0f} {exp_str}"
+                        except (IndexError, TypeError):
+                            pass
 
         return PositionSuggestion(
             position_id=position_id,

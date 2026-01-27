@@ -1,19 +1,59 @@
 """
 Order Configuration - 订单管理配置
 
-加载和管理订单管理器的配置参数。
+订单管理器的配置参数。
 """
 
-from dataclasses import dataclass, field
-from pathlib import Path
+import os
+from dataclasses import dataclass
 from typing import Any
 
-import yaml
+
+def _env_str(key: str, default: str) -> str:
+    """从环境变量获取 str"""
+    return os.getenv(key, default)
+
+
+def _env_float(key: str, default: float) -> float:
+    """从环境变量获取 float"""
+    val = os.getenv(key)
+    if val is not None:
+        try:
+            return float(val)
+        except ValueError:
+            pass
+    return default
+
+
+def _env_int(key: str, default: int) -> int:
+    """从环境变量获取 int"""
+    val = os.getenv(key)
+    if val is not None:
+        try:
+            return int(val)
+        except ValueError:
+            pass
+    return default
+
+
+def _env_bool(key: str, default: bool) -> bool:
+    """从环境变量获取 bool"""
+    val = os.getenv(key)
+    if val is not None:
+        return val.lower() in ("true", "1", "yes")
+    return default
 
 
 @dataclass
 class OrderConfig:
-    """订单管理配置"""
+    """订单管理配置
+
+    支持通过环境变量覆盖默认值 (前缀: ORDER_)
+
+    示例:
+        export ORDER_EXECUTION_MODE=auto
+        export ORDER_REQUIRE_CONFIRM=false
+    """
 
     # 存储配置
     storage_path: str = "data/trading/orders"
@@ -41,24 +81,30 @@ class OrderConfig:
     require_confirm: bool = True  # CLI 需要 --confirm
 
     @classmethod
-    def load(cls, config_path: str | Path | None = None) -> "OrderConfig":
-        """从 YAML 文件加载配置"""
-        if config_path is None:
-            config_path = Path("config/trading/order.yaml")
-        else:
-            config_path = Path(config_path)
+    def load(cls) -> "OrderConfig":
+        """加载配置
 
-        if not config_path.exists():
-            return cls()
-
-        with open(config_path) as f:
-            data = yaml.safe_load(f) or {}
-
-        return cls.from_dict(data)
+        优先级: 环境变量 > 默认值
+        """
+        return cls(
+            storage_path=_env_str("ORDER_STORAGE_PATH", "data/trading/orders"),
+            storage_format=_env_str("ORDER_STORAGE_FORMAT", "json"),
+            default_time_in_force=_env_str("ORDER_DEFAULT_TIME_IN_FORCE", "DAY"),
+            default_order_type=_env_str("ORDER_DEFAULT_ORDER_TYPE", "limit"),
+            max_price_deviation_pct=_env_float("ORDER_MAX_PRICE_DEVIATION_PCT", 0.05),
+            max_retries=_env_int("ORDER_MAX_RETRIES", 3),
+            retry_delay_seconds=_env_int("ORDER_RETRY_DELAY_SECONDS", 5),
+            notify_on_submit=_env_bool("ORDER_NOTIFY_ON_SUBMIT", True),
+            notify_on_fill=_env_bool("ORDER_NOTIFY_ON_FILL", True),
+            notify_on_reject=_env_bool("ORDER_NOTIFY_ON_REJECT", True),
+            notify_on_cancel=_env_bool("ORDER_NOTIFY_ON_CANCEL", True),
+            execution_mode=_env_str("ORDER_EXECUTION_MODE", "manual"),
+            require_confirm=_env_bool("ORDER_REQUIRE_CONFIRM", True),
+        )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "OrderConfig":
-        """从字典创建配置"""
+        """从字典创建配置 (用于测试)"""
         return cls(
             storage_path=data.get("storage_path", "data/trading/orders"),
             storage_format=data.get("storage_format", "json"),

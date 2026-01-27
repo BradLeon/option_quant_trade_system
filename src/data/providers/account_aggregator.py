@@ -292,6 +292,11 @@ class AccountAggregator:
     ) -> AccountPosition:
         """Convert position values to base currency.
 
+        设计原则:
+        - 合约标识字段 (strike, underlying_price) 保持原始货币，用于 IBKR 下单匹配
+        - 财务指标字段 (market_value, pnl, avg_cost) 转换为统一货币，用于 portfolio 汇总
+        - Greeks 按数学定义转换
+
         Currency conversion rules for Greeks (based on their mathematical definitions):
         - Delta (∂C/∂S): No conversion - dimensionless ratio (currency/currency cancels)
         - Gamma (∂Δ/∂S): Divide by rate - unit is 1/currency
@@ -315,28 +320,30 @@ class AccountAggregator:
         # Get the conversion rate (e.g., HKD→USD: rate ≈ 0.128)
         rate = self._converter.get_rate(pos.currency, base_currency)
 
-        # Price fields: multiply by rate (HKD → USD)
+        # 财务指标字段: 转换为统一货币 (HKD → USD)
         converted.market_value = pos.market_value * rate
         converted.unrealized_pnl = pos.unrealized_pnl * rate
         converted.realized_pnl = pos.realized_pnl * rate
         converted.avg_cost = pos.avg_cost * rate
 
-        # Convert underlying_price for strategy calculations
-        if pos.underlying_price is not None:
-            converted.underlying_price = pos.underlying_price * rate
+        # 合约标识字段: 保持原始货币值，不转换
+        # - strike: 用于 IBKR 下单匹配 (e.g., 155 HKD 不能变成 19.84 USD)
+        # - underlying_price: 用于计算 moneyness、OTM% (与 strike 同货币)
+        # converted.strike = pos.strike  # 保持不变 (deepcopy 已复制)
+        # converted.underlying_price = pos.underlying_price  # 保持不变
 
-        # Convert strike for strategy calculations (critical for HK options!)
-        if pos.strike is not None:
-            converted.strike = pos.strike * rate
-
-        if pos.gamma is not None and converted.underlying_price is not None:
-            #   → "股价每上涨 1 港币，Delta 增加 0.0067"   → "股价每上涨 1 美元，Delta 增加 0.0067 × 7.77 = 0.052"  
+        # Greeks 转换
+        if pos.gamma is not None:
+            # Gamma 单位是 1/currency，需要除以汇率
+            # "股价每上涨 1 港币，Delta 增加 0.0067" → "股价每上涨 1 美元，Delta 增加 0.052"
             converted.gamma = pos.gamma / rate
         if pos.theta is not None:
-            # "每过1天，期权价格下跌 0.0819 港币"  -> "每过1天，期权价格下跌 0.0105 美元"   
+            # Theta 单位是 currency/day，需要乘以汇率
+            # "每过1天，期权价格下跌 0.0819 港币" → "每过1天，期权价格下跌 0.0105 美元"
             converted.theta = pos.theta * rate
         if pos.vega is not None:
-           # "IV每上升1%，期权价格上涨 0.3664 港币"  → "IV每上升1%，期权价格上涨 0.0471 美元"      
+            # Vega 单位是 currency/%，需要乘以汇率
+            # "IV每上升1%，期权价格上涨 0.3664 港币" → "IV每上升1%，期权价格上涨 0.0471 美元"
             converted.vega = pos.vega * rate
 
         converted.currency = base_currency

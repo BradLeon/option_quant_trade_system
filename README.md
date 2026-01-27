@@ -150,6 +150,7 @@ python -m src.business.cli.main --help
 | `screen` | 开仓筛选 | 筛选符合条件的期权机会 |
 | `monitor` | 持仓监控 | 三层风险预警（组合级/持仓级/资金级） |
 | `dashboard` | 实时仪表盘 | 可视化监控面板 |
+| `trade` | 自动交易 | 信号处理与订单执行 (仅 Paper) |
 | `notify` | 通知测试 | 测试飞书推送 |
 
 ---
@@ -341,6 +342,103 @@ uv run optrade notify
 
 ---
 
+### trade - 自动交易
+
+自动化交易模块，支持从筛选信号到订单执行的全流程。
+
+**重要提示**：仅支持 Paper Trading（模拟账户），确保资金安全。
+
+```bash
+# 查看帮助
+uv run optrade trade --help
+
+# ============ Screen → Trade (筛选并开仓) ============
+
+# US 市场 Short Put 筛选 (dry-run，不下单)
+uv run optrade trade screen -m us -s short_put
+
+# HK 市场 Short Put 筛选 (dry-run)
+uv run optrade trade screen -m hk -s short_put
+
+# Covered Call 策略
+uv run optrade trade screen -m us -s covered_call
+
+# 执行下单（需要确认）
+uv run optrade trade screen -m us -s short_put --execute
+
+# 执行下单，跳过确认
+uv run optrade trade screen -m us --execute -y
+
+# 跳过市场环境检查（调试用）
+uv run optrade trade screen -m us --skip-market-check
+
+# 显示详细日志
+uv run optrade trade screen -m us -v
+
+# ============ Monitor → Trade (监控并调仓) ============
+
+# 处理 IMMEDIATE 级别建议 (dry-run)
+uv run optrade trade monitor
+
+# 处理所有级别建议
+uv run optrade trade monitor -u all
+
+# 执行调仓
+uv run optrade trade monitor --execute
+
+# 执行调仓，跳过确认
+uv run optrade trade monitor --execute -y
+
+# 显示详细日志
+uv run optrade trade monitor -v
+
+# ============ 其他命令 ============
+
+# 显示交易系统状态
+uv run optrade trade status
+
+# 列出待处理订单
+uv run optrade trade orders list
+
+# 列出所有订单
+uv run optrade trade orders list --status all
+
+# 取消订单
+uv run optrade trade orders cancel <order_id> --confirm
+```
+
+**参数说明**：
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `-m, --market` | 市场：`us`, `hk` | `us` |
+| `-s, --strategy` | 策略：`short_put`, `covered_call` | `short_put` |
+| `--dry-run` | 仅生成决策，不下单 | 默认启用 |
+| `--execute` | 执行下单（覆盖 dry-run） | 否 |
+| `-y, --yes` | 跳过确认直接执行 | 否 |
+| `-u, --urgency` | 紧急级别：`immediate`, `soon`, `all` | `immediate` |
+| `--skip-market-check` | 跳过市场环境检查 | 否 |
+| `--push/--no-push` | 是否推送到飞书 | 不推送 |
+| `-v, --verbose` | 显示详细日志 | 否 |
+
+**执行流程**：
+
+```
+trade screen 流程:
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│ 连接 IBKR   │ -> │ 获取账户状态 │ -> │ 三层筛选    │ -> │ 生成决策    │
+│ Paper       │    │ NLV/Margin  │    │ L1/L2/L3    │    │ DecisionEng │
+└─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
+                                                                │
+                                                                v
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│ 返回结果    │ <- │ 提交订单    │ <- │ 风控验证    │ <- │ 生成订单    │
+│             │    │ IBKR API    │    │ RiskCheck   │    │ OrderGen    │
+└─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
+```
+
+---
+
 ### 常用工作流
 
 **每日开盘前筛选**：
@@ -379,6 +477,246 @@ uv run optrade screen -m us --push
 # 风险预警推送
 uv run optrade monitor -a paper --push
 ```
+
+---
+
+## 交易模块设计 (Trading Module)
+
+交易模块负责将筛选/监控信号转换为实际的交易订单，并提交到券商执行。
+
+### 模块架构
+
+```
+src/business/trading/
+├── pipeline.py              # 交易流水线 - 编排层
+├── account_bridge.py        # 账户数据桥接
+├── config/                  # 配置
+│   ├── decision_config.py   # 决策配置
+│   ├── order_config.py      # 订单配置
+│   └── risk_config.py       # 风控配置
+├── decision/                # 决策引擎
+│   ├── engine.py            # 决策引擎主类
+│   ├── account_analyzer.py  # 账户状态分析
+│   ├── position_sizer.py    # 仓位计算
+│   └── conflict_resolver.py # 冲突解决
+├── models/                  # 数据模型
+│   ├── decision.py          # TradingDecision, AccountState
+│   ├── order.py             # OrderRequest, OrderRecord
+│   └── trading.py           # ExecutionResult
+├── order/                   # 订单管理
+│   ├── generator.py         # 订单生成器
+│   ├── manager.py           # 订单管理器
+│   └── validator.py         # 订单验证器
+└── provider/                # 交易提供者
+    ├── base.py              # 抽象基类
+    └── ibkr_trading.py      # IBKR 实现
+```
+
+### 数据流
+
+```
+              Screen                          Monitor
+                │                                │
+                v                                v
+        ┌───────────────┐               ┌───────────────┐
+        │ ContractOpp   │               │ PositionSugg  │
+        └───────┬───────┘               └───────┬───────┘
+                │                                │
+                └────────────┬───────────────────┘
+                             │
+                             v
+                    ┌─────────────────┐
+                    │ DecisionEngine  │  信号 → 决策
+                    │                 │  - 账户分析
+                    │                 │  - 仓位计算
+                    │                 │  - 冲突解决
+                    └────────┬────────┘
+                             │
+                             v
+                    ┌─────────────────┐
+                    │ TradingDecision │  决策模型
+                    │ - OPEN/CLOSE    │  - symbol, qty
+                    │ - ROLL/ADJUST   │  - limit_price
+                    │ - priority      │  - con_id
+                    └────────┬────────┘
+                             │
+                             v
+                    ┌─────────────────┐
+                    │ OrderGenerator  │  决策 → 订单
+                    │                 │  - ROLL 生成两订单
+                    └────────┬────────┘
+                             │
+                             v
+                    ┌─────────────────┐
+                    │ OrderManager    │  订单验证 & 提交
+                    │ - validate      │  - 风控检查
+                    │ - submit        │  - 状态跟踪
+                    └────────┬────────┘
+                             │
+                             v
+                    ┌─────────────────┐
+                    │ IBKRTrading     │  券商 API
+                    │ Provider        │  - 合约构建
+                    │                 │  - 订单提交
+                    └─────────────────┘
+```
+
+### 核心组件
+
+#### 1. TradingPipeline (编排层)
+
+协调整个交易流程的入口类。
+
+```python
+from src.business.trading.pipeline import TradingPipeline
+
+pipeline = TradingPipeline()
+
+# 处理信号生成决策
+decisions = pipeline.process_signals(
+    screen_result=screen_result,
+    monitor_result=monitor_result,
+    account_state=account_state,
+)
+
+# 执行决策
+with pipeline:
+    results = pipeline.execute_decisions(
+        decisions,
+        account_state,
+        dry_run=False,  # True=仅验证不下单
+    )
+```
+
+#### 2. DecisionEngine (决策引擎)
+
+将筛选/监控信号转换为交易决策。
+
+**决策类型**：
+| 类型 | 说明 | 来源 |
+|------|------|------|
+| `OPEN` | 开仓 | Screen 信号 |
+| `CLOSE` | 平仓 | Monitor 信号 (CLOSE/TAKE_PROFIT) |
+| `ROLL` | 展期 | Monitor 信号 (ROLL) |
+| `ADJUST` | 调整 | Monitor 信号 (REDUCE/ADJUST) |
+| `HOLD` | 持有 | Monitor 信号 (无需操作) |
+
+**优先级**：
+| 优先级 | 场景 | 处理时效 |
+|--------|------|----------|
+| `CRITICAL` | 止损/追保 | 立即执行 |
+| `HIGH` | 风险预警 | 分钟级 |
+| `NORMAL` | 常规开仓 | 当日处理 |
+| `LOW` | 择时优化 | 择时执行 |
+
+#### 3. OrderGenerator (订单生成器)
+
+从 TradingDecision 生成 OrderRequest。
+
+```python
+from src.business.trading.order.generator import OrderGenerator
+
+generator = OrderGenerator()
+
+# 普通订单
+order = generator.generate(decision)
+
+# ROLL 订单 (返回两个订单: 平仓 + 开仓)
+orders = generator.generate_roll(roll_decision)
+```
+
+**quantity 约定**：
+- `TradingDecision.quantity`: 正=买入, 负=卖出
+- `OrderRequest.quantity`: 始终为正，方向由 `side` 决定
+
+#### 4. IBKRTradingProvider (IBKR 交易提供者)
+
+与 IBKR TWS API 交互。
+
+**合约匹配策略**：
+1. **优先使用 conId** - 最精确，直接通过 `qualifyContracts()` 获取完整合约
+2. **备用：参数匹配** - 使用 underlying/expiry/strike/option_type 构建合约
+
+**交易所设置**：
+| 市场 | Exchange | 说明 |
+|------|----------|------|
+| US | `SMART` | 智能路由 |
+| HK | `SEHK` | 香港联交所 |
+
+### 风控机制
+
+#### 账户级风控
+
+在 `AccountStateAnalyzer` 中检查：
+
+| 检查项 | 阈值 | 说明 |
+|--------|------|------|
+| margin_utilization | < 70% | 保证金使用率 |
+| cash_ratio | > 10% | 现金缓冲比例 |
+| gross_leverage | < 4.0x | 总杠杆 |
+| position_count | < 20 | 持仓数量限制 |
+| underlying_exposure | < 15% | 单标的暴露 |
+
+#### 订单级风控
+
+在 `OrderValidator` 中检查：
+
+| 检查项 | 说明 |
+|--------|------|
+| price_deviation | 限价与市价偏离 < 5% |
+| quantity_limit | 单笔数量限制 |
+| notional_limit | 单笔名义价值限制 |
+
+### 使用示例
+
+```python
+from src.data.providers.broker_manager import BrokerManager
+from src.data.models.account import AccountType
+from src.business.trading.pipeline import TradingPipeline
+from src.business.trading.account_bridge import portfolio_to_account_state
+
+# 1. 连接 IBKR Paper Account
+manager = BrokerManager(account_type="paper")
+conn = manager.connect(ibkr=True, futu=False)
+
+# 2. 获取账户状态
+aggregator = conn.get_aggregator()
+portfolio = aggregator.get_consolidated_portfolio(account_type=AccountType.PAPER)
+account_state = portfolio_to_account_state(portfolio, broker="ibkr")
+
+# 3. 运行筛选 (假设已有 screen_result)
+pipeline = TradingPipeline()
+decisions = pipeline.process_signals(
+    screen_result=screen_result,
+    monitor_result=None,
+    account_state=account_state,
+)
+
+# 4. 执行决策
+with pipeline:
+    results = pipeline.execute_decisions(decisions, account_state, dry_run=False)
+
+# 5. 检查结果
+for r in results:
+    print(f"{r.order.symbol}: {r.order.status.value}")
+    if r.broker_order_id:
+        print(f"  IBKR Order ID: {r.broker_order_id}")
+    if r.error_message:
+        print(f"  Error: {r.error_message}")
+```
+
+### 港股期权支持
+
+港股期权需要特殊处理：
+
+| 字段 | 说明 | 示例 |
+|------|------|------|
+| `trading_class` | 期权系列代码 | "ALB" (阿里巴巴) |
+| `con_id` | IBKR 合约 ID | 精确匹配 |
+| `exchange` | 交易所 | "SEHK" |
+| `currency` | 货币 | "HKD" |
+
+**重要**：港股期权的 `strike` 必须使用原始 HKD 值，不能转换为 USD，否则 IBKR 无法匹配合约。
 
 ---
 

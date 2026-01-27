@@ -214,8 +214,16 @@ class TradingPipeline:
             dry_run: 是否仅模拟
 
         Returns:
-            订单记录
+            订单记录，或 None（如果决策不可执行）
         """
+        # 过滤不可执行的决策
+        if not self._is_executable_decision(decision):
+            logger.info(
+                f"Skipping non-executable decision: {decision.decision_id} "
+                f"(symbol={decision.symbol}, type={decision.decision_type.value}, qty={decision.quantity})"
+            )
+            return None
+
         # 创建订单
         order = self._order_manager.create_order(decision)
 
@@ -251,6 +259,36 @@ class TradingPipeline:
         # 提交订单
         record = self._order_manager.submit_order(order)
         return record
+
+    def _is_executable_decision(self, decision: TradingDecision) -> bool:
+        """检查决策是否可执行
+
+        不可执行的决策包括:
+        - symbol 是 "portfolio" 或 "account"（组合级别建议，无具体交易操作）
+        - quantity 是 0（无交易数量）
+        - decision_type 是 HOLD（持有不操作）
+
+        Args:
+            decision: 交易决策
+
+        Returns:
+            True 如果可执行，False 如果应跳过
+        """
+        from src.business.trading.models.decision import DecisionType
+
+        # 组合/账户级别的决策不可执行
+        if decision.symbol in ("portfolio", "account"):
+            return False
+
+        # 数量为 0 的决策不可执行
+        if decision.quantity == 0:
+            return False
+
+        # HOLD 类型不可执行
+        if decision.decision_type == DecisionType.HOLD:
+            return False
+
+        return True
 
     def get_pending_decisions(self) -> list[TradingDecision]:
         """获取待执行的决策

@@ -1,97 +1,141 @@
 """
 Decision Configuration - 决策引擎配置
 
-加载和管理决策引擎的配置参数。
+只包含决策逻辑特有的配置。
+风控参数统一使用 RiskConfig。
 """
 
+import os
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
-import yaml
+from src.business.trading.config.risk_config import RiskConfig
+
+
+def _env_str(key: str, default: str) -> str:
+    """从环境变量获取 str"""
+    return os.getenv(key, default)
+
+
+def _env_bool(key: str, default: bool) -> bool:
+    """从环境变量获取 bool"""
+    val = os.getenv(key)
+    if val is not None:
+        return val.lower() in ("true", "1", "yes")
+    return default
 
 
 @dataclass
 class DecisionConfig:
-    """决策引擎配置"""
+    """决策引擎配置
 
-    # Kelly 仓位计算
-    kelly_fraction: float = 0.25  # 使用 1/4 Kelly
+    组合 RiskConfig + 决策逻辑特有配置。
+    风控参数通过 risk 属性访问。
 
-    # 账户级别限制
-    max_margin_utilization: float = 0.70  # 70%
-    min_cash_ratio: float = 0.05  # 5%
-    max_gross_leverage: float = 4.0  # 4x
+    Usage:
+        config = DecisionConfig.load()
+        # 访问风控参数
+        max_margin = config.risk.max_margin_utilization
+        # 访问决策配置
+        broker = config.default_broker
+    """
 
-    # 订单级别限制
-    max_projected_margin_utilization: float = 0.80  # 80% 开仓后预计保证金使用率上限
+    # =========================================================================
+    # 风控配置 (委托给 RiskConfig)
+    # =========================================================================
 
-    # 持仓级别限制
-    max_contracts_per_underlying: int = 10
-    max_notional_pct_per_underlying: float = 0.05  # 5% of NLV
-    max_total_option_positions: int = 20
+    risk: RiskConfig = field(default_factory=RiskConfig.load)
 
-    # 保证金估算参数 (基于 IBKR Reg T 规则)
-    # 参考: https://www.interactivebrokers.com/en/trading/margin-options.php
-    # Naked short option: Premium + Max((X% * Underlying - OTM), (10% * Strike))
-    margin_rate_stock_option: float = 0.20  # 股票期权: 20% of underlying
-    margin_rate_index_option: float = 0.15  # 指数期权: 15% of underlying
-    margin_rate_minimum: float = 0.10  # 最低保证金率: 10% of strike
-    margin_safety_buffer: float = 0.80  # 保证金使用安全系数 (只使用 80% 可用保证金)
+    # =========================================================================
+    # 决策逻辑配置
+    # =========================================================================
 
-    # 冲突解决
+    # 冲突解决策略
     close_before_open: bool = True  # 平仓优先于开仓
     single_action_per_underlying: bool = True  # 同一标的只允许一个动作
 
     # 默认券商
-    default_broker: str = "ibkr"
+    default_broker: str = "ibkr"  # ibkr or futu
 
     # 价格类型
     default_price_type: str = "mid"  # bid, ask, mid, market
 
+    # =========================================================================
+    # 风控参数的便捷访问 (向后兼容)
+    # =========================================================================
+
+    @property
+    def kelly_fraction(self) -> float:
+        return self.risk.kelly_fraction
+
+    @property
+    def max_margin_utilization(self) -> float:
+        return self.risk.max_margin_utilization
+
+    @property
+    def min_cash_ratio(self) -> float:
+        return self.risk.min_cash_ratio
+
+    @property
+    def max_gross_leverage(self) -> float:
+        return self.risk.max_gross_leverage
+
+    @property
+    def max_projected_margin_utilization(self) -> float:
+        return self.risk.max_projected_margin_utilization
+
+    @property
+    def max_contracts_per_underlying(self) -> int:
+        return self.risk.max_contracts_per_underlying
+
+    @property
+    def max_notional_pct_per_underlying(self) -> float:
+        return self.risk.max_notional_pct_per_underlying
+
+    @property
+    def max_total_option_positions(self) -> int:
+        return self.risk.max_total_option_positions
+
+    @property
+    def margin_rate_stock_option(self) -> float:
+        return self.risk.margin_rate_stock_option
+
+    @property
+    def margin_rate_index_option(self) -> float:
+        return self.risk.margin_rate_index_option
+
+    @property
+    def margin_rate_minimum(self) -> float:
+        return self.risk.margin_rate_minimum
+
+    @property
+    def margin_safety_buffer(self) -> float:
+        return self.risk.margin_safety_buffer
+
     @classmethod
-    def load(cls, config_path: str | Path | None = None) -> "DecisionConfig":
-        """从 YAML 文件加载配置
+    def load(cls) -> "DecisionConfig":
+        """加载配置
 
-        Args:
-            config_path: 配置文件路径，默认为 config/trading/decision.yaml
-
-        Returns:
-            DecisionConfig 实例
+        优先级: 环境变量 > 默认值
         """
-        if config_path is None:
-            config_path = Path("config/trading/decision.yaml")
-        else:
-            config_path = Path(config_path)
-
-        if not config_path.exists():
-            return cls()
-
-        with open(config_path) as f:
-            data = yaml.safe_load(f) or {}
-
-        return cls.from_dict(data)
+        return cls(
+            risk=RiskConfig.load(),
+            close_before_open=_env_bool("DECISION_CLOSE_BEFORE_OPEN", True),
+            single_action_per_underlying=_env_bool(
+                "DECISION_SINGLE_ACTION_PER_UNDERLYING", True
+            ),
+            default_broker=_env_str("DECISION_DEFAULT_BROKER", "ibkr"),
+            default_price_type=_env_str("DECISION_DEFAULT_PRICE_TYPE", "mid"),
+        )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DecisionConfig":
-        """从字典创建配置"""
+        """从字典创建配置 (用于测试)"""
+        # 如果包含风控参数，传递给 RiskConfig
+        risk = RiskConfig.from_dict(data)
+
         return cls(
-            kelly_fraction=data.get("kelly_fraction", 0.25),
-            max_margin_utilization=data.get("max_margin_utilization", 0.70),
-            min_cash_ratio=data.get("min_cash_ratio", 0.05),
-            max_gross_leverage=data.get("max_gross_leverage", 4.0),
-            max_projected_margin_utilization=data.get(
-                "max_projected_margin_utilization", 0.80
-            ),
-            max_contracts_per_underlying=data.get("max_contracts_per_underlying", 10),
-            max_notional_pct_per_underlying=data.get(
-                "max_notional_pct_per_underlying", 0.05
-            ),
-            max_total_option_positions=data.get("max_total_option_positions", 20),
-            margin_rate_stock_option=data.get("margin_rate_stock_option", 0.20),
-            margin_rate_index_option=data.get("margin_rate_index_option", 0.15),
-            margin_rate_minimum=data.get("margin_rate_minimum", 0.10),
-            margin_safety_buffer=data.get("margin_safety_buffer", 0.80),
+            risk=risk,
             close_before_open=data.get("close_before_open", True),
             single_action_per_underlying=data.get("single_action_per_underlying", True),
             default_broker=data.get("default_broker", "ibkr"),
@@ -100,21 +144,11 @@ class DecisionConfig:
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典"""
-        return {
-            "kelly_fraction": self.kelly_fraction,
-            "max_margin_utilization": self.max_margin_utilization,
-            "min_cash_ratio": self.min_cash_ratio,
-            "max_gross_leverage": self.max_gross_leverage,
-            "max_projected_margin_utilization": self.max_projected_margin_utilization,
-            "max_contracts_per_underlying": self.max_contracts_per_underlying,
-            "max_notional_pct_per_underlying": self.max_notional_pct_per_underlying,
-            "max_total_option_positions": self.max_total_option_positions,
-            "margin_rate_stock_option": self.margin_rate_stock_option,
-            "margin_rate_index_option": self.margin_rate_index_option,
-            "margin_rate_minimum": self.margin_rate_minimum,
-            "margin_safety_buffer": self.margin_safety_buffer,
+        result = self.risk.to_dict()
+        result.update({
             "close_before_open": self.close_before_open,
             "single_action_per_underlying": self.single_action_per_underlying,
             "default_broker": self.default_broker,
             "default_price_type": self.default_price_type,
-        }
+        })
+        return result

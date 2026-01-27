@@ -24,6 +24,7 @@ from src.business.monitoring.suggestions import (
 )
 from src.business.screening.models import ContractOpportunity, ScreeningResult
 from src.business.trading.config.decision_config import DecisionConfig
+from src.data.utils.symbol_formatter import SymbolFormatter
 from src.business.trading.decision.account_analyzer import AccountStateAnalyzer
 from src.business.trading.decision.conflict_resolver import ConflictResolver
 from src.business.trading.decision.position_sizer import PositionSizer
@@ -137,14 +138,17 @@ class DecisionEngine:
             return None
 
         # 创建决策
-      
+        # 根据 symbol 推断 currency
+        underlying = opportunity.symbol.split()[0] if " " in opportunity.symbol else opportunity.symbol
+        ibkr_params = SymbolFormatter.to_ibkr_contract(underlying)
+
         decision = TradingDecision(
             decision_id=self._generate_decision_id(),
             decision_type=DecisionType.OPEN,
             source=DecisionSource.SCREEN_SIGNAL,
             priority=DecisionPriority.NORMAL,
             symbol=opportunity.symbol,
-            underlying=opportunity.symbol.split()[0] if " " in opportunity.symbol else opportunity.symbol,
+            underlying=underlying,
             option_type=opportunity.option_type,
             strike=opportunity.strike,
             expiry=opportunity.expiry,
@@ -157,6 +161,7 @@ class DecisionEngine:
             reason=self._build_open_reason(opportunity),
             broker=self._config.default_broker,
             contract_multiplier=opportunity.lot_size,
+            currency=ibkr_params.currency,
             timestamp=datetime.now(),
         )
 
@@ -195,6 +200,10 @@ class DecisionEngine:
 
         # 从 metadata 获取期权信息
         metadata = suggestion.metadata or {}
+        underlying = metadata.get("underlying") or suggestion.symbol.split()[0]
+
+        # 根据 underlying 推断 currency
+        ibkr_params = SymbolFormatter.to_ibkr_contract(underlying)
 
         # 确定数量 (Monitor 信号支持 CLOSE/REDUCE/ROLL 等多种动作)
         quantity = self._determine_close_quantity(suggestion, position_context)
@@ -208,16 +217,31 @@ class DecisionEngine:
         else:
             price_type = self._config.default_price_type
 
+        # trading_class (for HK options)
+        trading_class = metadata.get("trading_class")
+        con_id = metadata.get("con_id")  # IBKR contract ID
+
+        # 展期参数 (仅 ROLL 类型)
+        roll_to_expiry = None
+        roll_to_strike = None
+        roll_credit = None
+        if decision_type == DecisionType.ROLL:
+            roll_to_expiry = metadata.get("suggested_expiry")
+            roll_to_strike = metadata.get("suggested_strike")  # 可选，None 表示保持不变
+            roll_credit = metadata.get("roll_credit")
+
         decision = TradingDecision(
             decision_id=self._generate_decision_id(),
             decision_type=decision_type,
             source=DecisionSource.MONITOR_ALERT,
             priority=priority,
             symbol=suggestion.symbol,
-            underlying=metadata.get("underlying"),
+            underlying=underlying,
             option_type=metadata.get("option_type"),
             strike=metadata.get("strike"),
             expiry=metadata.get("expiry"),
+            trading_class=trading_class,  # For HK options (e.g., "ALB" for 9988)
+            con_id=con_id,  # IBKR contract ID
             quantity=quantity,
             price_type=price_type,
             account_state=account_state,
@@ -225,6 +249,11 @@ class DecisionEngine:
             reason=suggestion.reason,
             trigger_alerts=[a.message for a in suggestion.trigger_alerts],
             broker=self._config.default_broker,
+            contract_multiplier=metadata.get("lot_size", 100),
+            currency=ibkr_params.currency,
+            roll_to_expiry=roll_to_expiry,
+            roll_to_strike=roll_to_strike,
+            roll_credit=roll_credit,
             timestamp=datetime.now(),
         )
 
@@ -232,6 +261,7 @@ class DecisionEngine:
             f"Generated {decision_type.value.upper()} decision: "
             f"{decision.decision_id} for {suggestion.symbol}, "
             f"priority={priority.value}, price_type={price_type}"
+            + (f", roll_to={roll_to_expiry}" if roll_to_expiry else "")
         )
 
         return decision
@@ -266,7 +296,10 @@ class DecisionEngine:
 
         # 处理 Screen 信号
         if screen_result and screen_result.confirmed:
-            for opportunity in screen_result.confirmed:
+            # 每个 (underlying, option_type) 只选 annual_roc 最高的合约
+            best_opportunities = self._select_best_opportunities(screen_result.confirmed)
+
+            for opportunity in best_opportunities:
                 decision = self.process_screen_signal(
                     opportunity, account_state
                 )
@@ -322,7 +355,8 @@ class DecisionEngine:
 
         优先级:
         1. 从 position_context 获取 (最准确)
-        2. 从 suggestion.metadata["quantity"] 获取 (备用)
+        2. 从 suggestion.metadata 获取 (备用)
+           - "quantity" 或 "current_position"
         3. 返回 0 (需要后续查询补充)
         """
         # 优先从 position_context 获取
@@ -333,14 +367,63 @@ class DecisionEngine:
 
         # 备用: 从 metadata 获取
         metadata = suggestion.metadata or {}
-        if "quantity" in metadata:
-            qty = metadata["quantity"]
+        qty = metadata.get("quantity") or metadata.get("current_position")
+        if qty is not None:
             # 平仓方向与持仓方向相反
             return -int(qty) if qty != 0 else 0
 
-        # 如果都没有，记录警告并返回 0
-        logger.warning(
-            f"No quantity available for {suggestion.symbol}, "
-            "position_context and metadata['quantity'] both missing"
-        )
+        # 如果都没有，返回 0
+        # 注：对于 portfolio 级别建议或 HOLD/MONITOR 类型，无数量是正常的
+        if suggestion.symbol not in ("portfolio", "account") and \
+                suggestion.action not in (ActionType.HOLD, ActionType.MONITOR, ActionType.REVIEW):
+            logger.warning(
+                f"No quantity available for {suggestion.symbol}, "
+                "position_context and metadata['quantity'/'current_position'] both missing"
+            )
         return 0
+
+    def _select_best_opportunities(
+        self,
+        opportunities: list[ContractOpportunity],
+    ) -> list[ContractOpportunity]:
+        """每个 (underlying, option_type) 只选 annual_roc 最高的合约
+
+        当同一标的有多个满足条件的合约时，只选择年化收益率最高的那个，
+        避免在同一标的上开设过多仓位。
+
+        Args:
+            opportunities: 所有通过筛选的合约机会
+
+        Returns:
+            去重后的合约列表，每个 (underlying, option_type) 只保留一个
+        """
+        from collections import defaultdict
+
+        # 按 (underlying, option_type) 分组
+        groups: dict[tuple[str, str], list[ContractOpportunity]] = defaultdict(list)
+        for opp in opportunities:
+            # 从 symbol 提取 underlying (e.g., "GOOG 250213P00310000" -> "GOOG")
+            underlying = opp.symbol.split()[0] if " " in opp.symbol else opp.symbol
+            key = (underlying, opp.option_type or "unknown")
+            groups[key].append(opp)
+
+        # 每组选 annual_roc 最高的
+        best: list[ContractOpportunity] = []
+        for key, group in groups.items():
+            sorted_group = sorted(
+                group,
+                key=lambda x: x.annual_roc or 0,
+                reverse=True
+            )
+            best.append(sorted_group[0])
+
+            if len(group) > 1:
+                selected = sorted_group[0]
+                ann_roc = selected.annual_roc or 0
+                logger.info(
+                    f"Selected best contract for {key[0]} {key[1]}: "
+                    f"K={selected.strike} Exp={selected.expiry} "
+                    f"(AnnROC={ann_roc:.1%}), skipped {len(group) - 1} others"
+                )
+
+        return best

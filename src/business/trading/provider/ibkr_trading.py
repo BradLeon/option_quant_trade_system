@@ -67,6 +67,20 @@ class IBKRTradingProvider(TradingProvider):
     PAPER_PORT = 4002  # Paper Trading Gateway
     LIVE_PORT = 4001  # Live Trading Gateway (禁止使用)
 
+    # IBKR 错误代码映射
+    ERROR_CODES: dict[int, str] = {
+        200: "No security definition found",
+        201: "Order rejected",
+        202: "Order cancelled",
+        203: "Order in error state",
+        321: "Invalid contract",
+        322: "Cannot transmit order",
+        354: "Requested market data not subscribed",
+        399: "Order message error",
+        10147: "Order not active",
+        10148: "Order rejected",
+    }
+
     def __init__(
         self,
         host: str | None = None,
@@ -113,6 +127,9 @@ class IBKRTradingProvider(TradingProvider):
         self._connected = False
         self._lock = Lock()
         self._account_id: str | None = None
+
+        # 订单错误缓存 (order_id -> error_message)
+        self._order_errors: dict[int, str] = {}
 
         logger.info(
             f"IBKRTradingProvider initialized: "
@@ -185,6 +202,9 @@ class IBKRTradingProvider(TradingProvider):
                         "This system does NOT support live trading."
                     )
 
+                # 注册错误处理器以捕获 IBKR 错误消息
+                self._ib.errorEvent += self._on_error
+
                 self._connected = True
                 logger.info(
                     f"Connected to IBKR Paper Trading: "
@@ -202,12 +222,15 @@ class IBKRTradingProvider(TradingProvider):
         with self._lock:
             if self._ib:
                 try:
+                    # 移除错误处理器
+                    self._ib.errorEvent -= self._on_error
                     self._ib.disconnect()
                 except Exception as e:
                     logger.warning(f"Error disconnecting: {e}")
                 finally:
                     self._ib = None
                     self._connected = False
+                    self._order_errors.clear()
                     logger.info("Disconnected from IBKR")
 
     def submit_order(self, order: OrderRequest) -> TradingResult:
@@ -244,23 +267,74 @@ class IBKRTradingProvider(TradingProvider):
             # 构建订单
             ib_order = self._build_order(order)
 
-            # 提交订单
-            trade: Trade = self._ib.placeOrder(contract, ib_order)
-
-            # 等待订单确认
-            self._ib.sleep(1)
-
-            # 获取订单 ID
-            broker_order_id = str(trade.order.orderId)
-
+            # 记录合约详情（用于诊断合约问题）
             logger.info(
-                f"Order submitted: {order.order_id} -> broker_id={broker_order_id}, "
-                f"symbol={order.symbol}, qty={order.quantity}, "
-                f"side={order.side.value}, price={order.limit_price}"
+                f"Contract details: symbol={getattr(contract, 'symbol', 'N/A')}, "
+                f"secType={getattr(contract, 'secType', 'N/A')}, "
+                f"exchange={getattr(contract, 'exchange', 'N/A')}, "
+                f"currency={getattr(contract, 'currency', 'N/A')}, "
+                f"strike={getattr(contract, 'strike', 'N/A')}, "
+                f"expiry={getattr(contract, 'lastTradeDateOrContractMonth', 'N/A')}, "
+                f"right={getattr(contract, 'right', 'N/A')}, "
+                f"tradingClass={getattr(contract, 'tradingClass', 'N/A')}, "
+                f"multiplier={getattr(contract, 'multiplier', 'N/A')}"
             )
 
-            return TradingResult.success_result(
+            # 提交订单
+            trade: Trade = self._ib.placeOrder(contract, ib_order)
+            broker_order_id = str(trade.order.orderId)
+
+            # 短暂等待让错误事件有机会被接收
+            self._ib.sleep(0.2)
+
+            # 等待订单状态确认（最多 5 秒）
+            # IBKR 需要时间处理订单，状态从 PendingSubmit -> Submitted/Inactive
+            max_wait_seconds = 5
+
+            for _ in range(max_wait_seconds * 10):  # 每 0.1 秒检查一次
+                self._ib.sleep(0.1)
+                status = trade.orderStatus.status
+
+                # IBKR 已接受订单（进入订单簿）
+                if status in ("Submitted", "PreSubmitted", "Filled"):
+                    logger.info(
+                        f"Order accepted: {order.order_id} -> broker_id={broker_order_id}, "
+                        f"status={status}, symbol={order.symbol}, qty={order.quantity}, "
+                        f"side={order.side.value}, price={order.limit_price}"
+                    )
+                    return TradingResult.success_result(
+                        internal_order_id=order.order_id,
+                        broker_order_id=broker_order_id,
+                        broker_status=status,
+                    )
+
+                # IBKR 拒绝订单
+                if status in ("Inactive", "Cancelled", "ApiCancelled"):
+                    # 获取 IBKR 错误信息
+                    error_details = self._get_order_error_details(trade)
+                    logger.warning(
+                        f"Order rejected: {order.order_id} -> broker_id={broker_order_id}, "
+                        f"status={status}, symbol={order.symbol}, reason={error_details}"
+                    )
+                    return TradingResult.failure_result(
+                        internal_order_id=order.order_id,
+                        error_code="ORDER_REJECTED",
+                        error_message=f"Order rejected by IBKR: {error_details}",
+                        broker_status=status,
+                        broker_order_id=broker_order_id,
+                    )
+
+            # 超时：状态仍为 PendingSubmit 或其他中间状态
+            final_status = trade.orderStatus.status
+            logger.warning(
+                f"Order status timeout: {order.order_id} -> broker_id={broker_order_id}, "
+                f"status={final_status} after {max_wait_seconds}s"
+            )
+            return TradingResult.failure_result(
                 internal_order_id=order.order_id,
+                error_code="ORDER_TIMEOUT",
+                error_message=f"Order not confirmed within {max_wait_seconds}s: status={final_status}",
+                broker_status=final_status,
                 broker_order_id=broker_order_id,
             )
 
@@ -275,11 +349,25 @@ class IBKRTradingProvider(TradingProvider):
     def _build_contract(self, order: OrderRequest) -> Any:
         """构建 IBKR 合约对象
 
-        使用 SymbolFormatter 正确处理 HK/US 市场的合约参数:
-        - HK 期权: symbol="9988", exchange="SEHK", currency="HKD"
-        - US 期权: symbol="NVDA", exchange="SMART", currency="USD"
+        优先使用 conId（合约唯一标识符）进行精确匹配。
+        如果没有 conId，则使用 symbol/strike/expiry 等参数构建。
         """
-        # 获取 IBKR 合约参数 (symbol, exchange, currency)
+        # 优先使用 conId（最精确的匹配方式）
+        if order.con_id:
+            contract = Contract()
+            contract.conId = order.con_id
+            # 用 qualifyContracts 填充合约详情（包括 exchange）
+            try:
+                self._ib.qualifyContracts(contract)
+                logger.debug(
+                    f"Using conId={order.con_id}, qualified: "
+                    f"symbol={contract.symbol}, exchange={contract.exchange}"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to qualify contract with conId={order.con_id}: {e}")
+            return contract
+
+        # 没有 conId，使用参数构建合约
         symbol_for_ibkr = order.underlying or order.symbol
         ibkr_params = SymbolFormatter.to_ibkr_contract(symbol_for_ibkr)
 
@@ -293,12 +381,14 @@ class IBKRTradingProvider(TradingProvider):
             # 转换 right: put/call -> P/C
             right = "P" if order.option_type == "put" else "C"
 
+            exchange = "SEHK" if ibkr_params.currency == "HKD" else "SMART" 
+            # 使用 SMART 路由
             contract = Option(
                 symbol=ibkr_params.symbol,
                 lastTradeDateOrContractMonth=expiry,
                 strike=order.strike,
                 right=right,
-                exchange=ibkr_params.exchange,
+                exchange=exchange,
                 currency=ibkr_params.currency,
                 multiplier=str(order.contract_multiplier),
             )
@@ -429,3 +519,71 @@ class IBKRTradingProvider(TradingProvider):
         except Exception as e:
             logger.error(f"Get open orders failed: {e}")
             return []
+
+    def _on_error(self, reqId: int, errorCode: int, errorString: str, contract: Any) -> None:
+        """IBKR 错误事件处理器
+
+        捕获所有 IBKR 错误消息并存储到订单错误缓存。
+
+        Args:
+            reqId: 请求 ID (通常是 order ID)
+            errorCode: 错误代码
+            errorString: 错误描述
+            contract: 相关合约 (可能为 None)
+        """
+        # 只记录订单相关的错误 (reqId > 0)
+        if reqId > 0:
+            error_msg = f"[{errorCode}] {errorString}"
+            self._order_errors[reqId] = error_msg
+            logger.debug(f"IBKR error captured: reqId={reqId}, {error_msg}")
+        else:
+            # reqId <= 0 是系统级消息，记录但不存储
+            logger.debug(f"IBKR system message: [{errorCode}] {errorString}")
+
+    def _get_order_error_details(self, trade: Any) -> str:
+        """从 Trade 对象获取错误详情
+
+        IBKR 的错误信息可能来自:
+        1. 错误事件缓存 (通过 _on_error 捕获)
+        2. trade.log - 包含订单状态变更日志
+        3. trade.orderStatus.whyHeld - 持仓原因（如果有）
+
+        Args:
+            trade: ib_async Trade 对象
+
+        Returns:
+            错误详情字符串
+        """
+        details = []
+        order_id = trade.order.orderId
+
+        # 首先检查错误缓存 (优先级最高，因为包含具体错误代码)
+        if order_id in self._order_errors:
+            details.append(self._order_errors[order_id])
+            # 清除已使用的错误
+            del self._order_errors[order_id]
+
+        # 从 log 获取错误信息
+        try:
+            if hasattr(trade, 'log') and trade.log:
+                # log 是 TradeLogEntry 列表，每个条目有 time, status, message
+                for entry in trade.log:
+                    if hasattr(entry, 'message') and entry.message:
+                        details.append(entry.message)
+                    elif hasattr(entry, 'errorCode') and entry.errorCode:
+                        details.append(f"Error {entry.errorCode}")
+        except Exception as e:
+            logger.debug(f"Could not extract trade.log: {e}")
+
+        # 从 orderStatus 获取额外信息
+        try:
+            if hasattr(trade, 'orderStatus'):
+                os = trade.orderStatus
+                if hasattr(os, 'whyHeld') and os.whyHeld:
+                    details.append(f"whyHeld={os.whyHeld}")
+        except Exception as e:
+            logger.debug(f"Could not extract orderStatus details: {e}")
+
+        if details:
+            return "; ".join(details)
+        return f"status={trade.orderStatus.status}"

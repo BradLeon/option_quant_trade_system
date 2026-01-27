@@ -124,6 +124,7 @@ class PositionContext:
     strike: float | None = None
     expiry: str | None = None  # YYYYMMDD or YYYY-MM-DD
     trading_class: str | None = None
+    con_id: int | None = None  # IBKR contract ID
     dte: int | None = None
 
     quantity: float = 0.0
@@ -167,6 +168,7 @@ class TradingDecision:
     strike: float | None = None
     expiry: str | None = None  # YYYY-MM-DD
     trading_class: str | None = None
+    con_id: int | None = None  # IBKR contract ID
 
     # 交易参数
     quantity: int = 0  # 正=买, 负=卖
@@ -197,6 +199,11 @@ class TradingDecision:
     # 合约参数
     contract_multiplier: int = 100  # 合约乘数 (US=100, HK 视标的而定)
     currency: str = "USD"  # 交易币种
+
+    # 展期参数 (仅 ROLL 类型使用)
+    roll_to_expiry: str | None = None  # 新到期日 YYYY-MM-DD
+    roll_to_strike: float | None = None  # 新行权价 (None 表示保持不变)
+    roll_credit: float | None = None  # 预期展期收益 (正=收credit, 负=付debit)
 
     def approve(self, notes: str = "") -> None:
         """批准决策"""
@@ -241,4 +248,9 @@ class TradingDecision:
             "is_approved": self.is_approved,
             "approval_notes": self.approval_notes,
             "broker": self.broker,
+            "contract_multiplier": self.contract_multiplier,
+            "currency": self.currency,
+            "roll_to_expiry": self.roll_to_expiry,
+            "roll_to_strike": self.roll_to_strike,
+            "roll_credit": self.roll_credit,
         }

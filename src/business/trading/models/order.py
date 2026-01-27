@@ -75,6 +75,7 @@ class OrderRequest:
     strike: float | None = None
     expiry: str | None = None  # YYYYMMDD or YYYY-MM-DD
     trading_class: str | None = None
+    con_id: int | None = None  # IBKR contract ID (unique identifier)
 
     # 订单参数
     side: OrderSide = OrderSide.BUY

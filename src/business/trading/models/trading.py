@@ -66,6 +66,7 @@ class TradingResult:
     success: bool
     internal_order_id: str | None = None
     broker_order_id: str | None = None
+    broker_status: str | None = None  # IBKR 返回的实际状态 (Submitted/Inactive/etc)
 
     # 错误信息
     error_code: str | None = None
@@ -86,6 +87,7 @@ class TradingResult:
         cls,
         internal_order_id: str,
         broker_order_id: str,
+        broker_status: str | None = None,
         **kwargs: Any,
     ) -> "TradingResult":
         """创建成功结果"""
@@ -93,6 +95,7 @@ class TradingResult:
             success=True,
             internal_order_id=internal_order_id,
             broker_order_id=broker_order_id,
+            broker_status=broker_status,
             **kwargs,
         )
 
@@ -102,6 +105,7 @@ class TradingResult:
         internal_order_id: str | None,
         error_code: str,
         error_message: str,
+        broker_status: str | None = None,
         **kwargs: Any,
     ) -> "TradingResult":
         """创建失败结果"""
@@ -110,6 +114,7 @@ class TradingResult:
             internal_order_id=internal_order_id,
             error_code=error_code,
             error_message=error_message,
+            broker_status=broker_status,
             **kwargs,
         )
 

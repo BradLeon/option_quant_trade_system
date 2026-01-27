@@ -1768,7 +1768,11 @@ class IBKRProvider(DataProvider, AccountProvider):
                     position.option_type = "call" if contract.right == "C" else "put"
                     # IBKR returns multiplier as string, convert to int
                     mult = contract.multiplier
-                    position.contract_multiplier = int(mult) 
+                    position.contract_multiplier = int(mult)
+                    # Capture trading class (important for HK options)
+                    position.trading_class = getattr(contract, 'tradingClass', None)
+                    # Capture contract ID (unique identifier for precise order matching)
+                    position.con_id = getattr(contract, 'conId', None)
                 else:
                     # Stock Greeks: delta = +1 (long) or -1 (short), others = 0
                     position.delta = 1.0 if position.quantity > 0 else -1.0 if position.quantity < 0 else 0.0
