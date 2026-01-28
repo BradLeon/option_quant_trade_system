@@ -109,26 +109,32 @@ class ConflictResolver:
     def _resolve_by_underlying(
         self, decisions: list[TradingDecision]
     ) -> list[TradingDecision]:
-        """按标的解决冲突
+        """按标的+期权类型解决冲突
 
-        同一标的只保留一个最高优先级的决策。
+        同一 underlying + option_type 组合只保留一个最高优先级的决策。
+        例如: GOOG PUT 和 GOOG CALL 是不同的组，各保留一个。
         """
-        by_underlying: dict[str, list[TradingDecision]] = defaultdict(list)
+        # 使用 (underlying, option_type) 作为分组键
+        by_key: dict[tuple[str, str | None], list[TradingDecision]] = defaultdict(list)
 
         for decision in decisions:
             underlying = decision.underlying or decision.symbol
-            by_underlying[underlying].append(decision)
+            option_type = decision.option_type  # "put", "call", or None
+            key = (underlying, option_type)
+            by_key[key].append(decision)
 
         result = []
-        for underlying, group in by_underlying.items():
+        for key, group in by_key.items():
+            underlying, option_type = key
             if len(group) == 1:
                 result.append(group[0])
             else:
                 # 多个决策，选择最高优先级
                 winner = self._select_winner(group)
                 result.append(winner)
+                opt_str = option_type.upper() if option_type else "N/A"
                 logger.debug(
-                    f"Underlying {underlying}: selected {winner.decision_id} "
+                    f"{underlying} {opt_str}: selected {winner.decision_id} "
                     f"({winner.decision_type.value}, {winner.priority.value}) "
                     f"from {len(group)} candidates"
                 )

@@ -261,6 +261,16 @@ class IBKRTradingProvider(TradingProvider):
             )
 
         try:
+            # 打印 OrderRequest 详情
+            logger.info(
+                f"OrderRequest: order_id={order.order_id}, symbol={order.symbol}, "
+                f"underlying={order.underlying}, option_type={order.option_type}, "
+                f"strike={order.strike}, expiry={order.expiry}, "
+                f"trading_class={order.trading_class}, con_id={order.con_id}, "
+                f"side={order.side.value if order.side else 'N/A'}, qty={order.quantity}, "
+                f"limit_price={order.limit_price}, multiplier={order.contract_multiplier}"
+            )
+
             # 构建合约
             contract = self._build_contract(order)
 
@@ -381,8 +391,8 @@ class IBKRTradingProvider(TradingProvider):
             # 转换 right: put/call -> P/C
             right = "P" if order.option_type == "put" else "C"
 
-            exchange = "SEHK" if ibkr_params.currency == "HKD" else "SMART" 
-            # 使用 SMART 路由
+            exchange = "SEHK" if ibkr_params.currency == "HKD" else "SMART"
+            # 构建期权合约 (不预设 multiplier，让 qualifyContracts 自动填充)
             contract = Option(
                 symbol=ibkr_params.symbol,
                 lastTradeDateOrContractMonth=expiry,
@@ -390,12 +400,39 @@ class IBKRTradingProvider(TradingProvider):
                 right=right,
                 exchange=exchange,
                 currency=ibkr_params.currency,
-                multiplier=str(order.contract_multiplier),
             )
 
             # 设置 trading class (如果有, 主要用于 HK 期权)
             if order.trading_class:
                 contract.tradingClass = order.trading_class
+
+            # 尝试 qualify 合约以确保参数正确
+            logger.info(
+                f"Qualifying option contract: symbol={contract.symbol}, "
+                f"exchange={contract.exchange}, strike={contract.strike}, "
+                f"expiry={contract.lastTradeDateOrContractMonth}, right={contract.right}, "
+                f"tradingClass={getattr(contract, 'tradingClass', 'N/A')}, "
+                f"multiplier={contract.multiplier}"
+            )
+            try:
+                qualified = self._ib.qualifyContracts(contract)
+                if qualified and len(qualified) > 0 and qualified[0] is not None:
+                    contract = qualified[0]
+                    logger.info(
+                        f"Option contract qualified: symbol={contract.symbol}, "
+                        f"conId={contract.conId}, exchange={contract.exchange}, "
+                        f"localSymbol={getattr(contract, 'localSymbol', 'N/A')}"
+                    )
+                else:
+                    # qualify 失败，保持原始合约，记录详细信息
+                    logger.warning(
+                        f"Failed to qualify option contract: {order.symbol}, "
+                        f"will use original contract parameters. "
+                        f"Check if exchange/tradingClass is correct for HK options."
+                    )
+            except Exception as e:
+                # 异常时保持原始合约
+                logger.warning(f"Exception during option contract qualification: {e}")
 
         else:
             # 股票合约

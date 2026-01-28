@@ -18,11 +18,13 @@ Trade Command - 交易命令
 =========
 
 # Screen → Trade (筛选并开仓)
-optrade trade screen -m us -s short_put              # US 市场 Short Put (dry-run)
-optrade trade screen -m hk -s short_put              # HK 市场 Short Put (dry-run)
-optrade trade screen -m us --execute                 # 执行下单
-optrade trade screen -m us --execute -y              # 执行下单，跳过确认
-optrade trade screen -m us --skip-market-check       # 跳过市场环境检查
+optrade trade screen                                 # 所有市场、所有策略 (dry-run)
+optrade trade screen -m us                           # 只筛选 US 市场
+optrade trade screen -s short_put                    # 只筛选 Short Put 策略
+optrade trade screen -S AAPL -S NVDA                 # 指定标的
+optrade trade screen --execute                       # 执行下单
+optrade trade screen --execute -y                    # 执行下单，跳过确认
+optrade trade screen --skip-market-check             # 跳过市场环境检查
 
 # Monitor → Trade (监控并调仓)
 optrade trade monitor                                # IMMEDIATE 级别 (dry-run)
@@ -154,16 +156,22 @@ def status(verbose: bool, as_json: bool) -> None:
 @click.option(
     "--market",
     "-m",
-    type=click.Choice(["us", "hk"]),
-    default="us",
-    help="市场: us 或 hk",
+    type=click.Choice(["us", "hk", "all"], case_sensitive=False),
+    default="all",
+    help="市场：us, hk, 或 all (默认筛选所有市场)",
 )
 @click.option(
     "--strategy",
     "-s",
-    type=click.Choice(["short_put", "covered_call"]),
-    default="short_put",
-    help="策略类型",
+    type=click.Choice(["short_put", "covered_call", "all"], case_sensitive=False),
+    default="all",
+    help="策略：short_put, covered_call, 或 all (默认筛选所有策略)",
+)
+@click.option(
+    "--symbol",
+    "-S",
+    multiple=True,
+    help="指定标的（可多次指定）。不指定则使用股票池",
 )
 @click.option(
     "--dry-run",
@@ -201,6 +209,7 @@ def status(verbose: bool, as_json: bool) -> None:
 def trade_screen(
     market: str,
     strategy: str,
+    symbol: tuple[str, ...],
     dry_run: bool,
     execute: bool,
     yes: bool,
@@ -213,18 +222,27 @@ def trade_screen(
     连接 IBKR Paper Account，运行三层筛选，生成开仓决策并提交订单。
 
     \b
+    默认筛选所有市场 (US+HK)、所有策略 (Short Put + Covered Call)。
+
+    \b
     示例:
-      # 筛选 US Short Put (dry-run)
+      # 默认：筛选所有市场、所有策略 (dry-run)
+      optrade trade screen
+
+      # 只筛选 US Short Put
       optrade trade screen -m us -s short_put
 
+      # 指定标的
+      optrade trade screen -S AAPL -S NVDA
+
       # 筛选并执行
-      optrade trade screen -m us -s short_put --execute
+      optrade trade screen --execute
 
       # 跳过市场环境检查
-      optrade trade screen -m us --skip-market-check
+      optrade trade screen --skip-market-check
 
       # 跳过确认
-      optrade trade screen -m us --execute -y
+      optrade trade screen --execute -y
     """
     # 配置日志
     log_level = logging.DEBUG if verbose else logging.INFO
@@ -236,10 +254,16 @@ def trade_screen(
     # execute 覆盖 dry_run
     effective_dry_run = dry_run and not execute
 
+    # 解析市场和策略列表
+    markets = ["us", "hk"] if market.lower() == "all" else [market.lower()]
+    strategy_strs = ["short_put", "covered_call"] if strategy.lower() == "all" else [strategy.lower()]
+
     click.echo("\n" + "=" * 60)
     click.echo("📊 Trade Screen (Screen → Trade 全流程)")
-    click.echo(f"   市场: {market.upper()}")
-    click.echo(f"   策略: {strategy}")
+    click.echo(f"   市场: {', '.join(m.upper() for m in markets)}")
+    click.echo(f"   策略: {', '.join(strategy_strs)}")
+    if symbol:
+        click.echo(f"   标的: {', '.join(symbol)}")
     click.echo(f"   模式: {'DRY-RUN' if effective_dry_run else '🔴 EXECUTE'}")
     click.echo("=" * 60)
 
@@ -291,51 +315,77 @@ def trade_screen(
 
         click.echo(f"\n🔍 运行三层筛选...")
 
-        market_type = MarketType.US if market == "us" else MarketType.HK
-        strategy_type = StrategyType.from_string(strategy)
-
-        # 获取股票池
         pool_manager = StockPoolManager()
-        symbols = pool_manager.get_default_pool(market_type)
-        pool_name = pool_manager.get_default_pool_name(market_type)
-        click.echo(f"   股票池: {pool_name} ({len(symbols)} 个标的)")
+        all_confirmed = []
+        all_screen_results = []
 
-        # 创建筛选管道
-        config = ScreeningConfig.load(strategy)
         with UnifiedDataProvider(ibkr_provider=conn.ibkr) as provider:
-            pipeline = ScreeningPipeline(config, provider)
-            screen_result = pipeline.run(
-                symbols=symbols,
-                market_type=market_type,
-                strategy_type=strategy_type,
-                skip_market_check=skip_market_check,
-            )
+            for mkt in markets:
+                market_type = MarketType.US if mkt == "us" else MarketType.HK
 
-        # 显示筛选结果
-        if not screen_result.passed:
-            market_status = screen_result.market_status
-            status_str = "不利" if market_status and not market_status.is_favorable else "未知"
-            click.echo(f"\n⚠️  筛选未通过: 市场环境{status_str}")
-            click.echo("   原因: 市场环境不适合开仓")
-            _cleanup_connection(conn)
-            return
+                # 确定标的列表
+                if symbol:
+                    # 用户指定了标的，按市场过滤
+                    symbol_list = [s for s in symbol if _is_market_symbol(s, mkt)]
+                    if not symbol_list:
+                        continue
+                    pool_name = f"自定义 ({len(symbol_list)} 只)"
+                else:
+                    # 使用默认股票池
+                    symbol_list = pool_manager.get_default_pool(market_type)
+                    pool_name = pool_manager.get_default_pool_name(market_type)
 
-        confirmed_count = len(screen_result.confirmed) if screen_result.confirmed else 0
-        click.echo(f"   ✅ 筛选通过: {confirmed_count} 个确认机会")
+                for strat_str in strategy_strs:
+                    strategy_type = StrategyType.from_string(strat_str)
 
-        if confirmed_count == 0:
+                    click.echo(f"\n   {mkt.upper()} | {strat_str} | {pool_name} ({len(symbol_list)} 只)")
+
+                    # 创建筛选管道
+                    config = ScreeningConfig.load(strat_str)
+                    pipeline = ScreeningPipeline(config, provider)
+                    screen_result = pipeline.run(
+                        symbols=symbol_list,
+                        market_type=market_type,
+                        strategy_type=strategy_type,
+                        skip_market_check=skip_market_check,
+                    )
+
+                    # 检查筛选结果
+                    if not screen_result.passed:
+                        market_status = screen_result.market_status
+                        status_str = "不利" if market_status and not market_status.is_favorable else "未知"
+                        click.echo(f"      ⚠️  市场环境{status_str}")
+                        continue
+
+                    confirmed = screen_result.confirmed or []
+                    if confirmed:
+                        click.echo(f"      ✅ 确认 {len(confirmed)} 个机会")
+                        all_confirmed.extend(confirmed)
+                        all_screen_results.append(screen_result)
+                    else:
+                        click.echo(f"      ❌ 无符合条件的合约")
+
+        # 检查是否有任何机会
+        if not all_confirmed:
             click.echo("\n📋 无符合条件的开仓机会")
             _cleanup_connection(conn)
             return
 
-        # 显示筛选结果详情
-        _print_screen_summary(screen_result.confirmed)
+        click.echo(f"\n📊 共发现 {len(all_confirmed)} 个开仓机会")
 
-        # 4. 生成决策
+        # 显示筛选结果详情
+        _print_screen_summary(all_confirmed)
+
+        # 4. 生成决策 (使用第一个有结果的 screen_result 作为基础)
         click.echo(f"\n📋 生成决策...")
         trading_pipeline = TradingPipeline()
+
+        # 合并所有 screen_result 的 confirmed 到第一个结果
+        merged_screen_result = all_screen_results[0]
+        merged_screen_result.confirmed = all_confirmed
+
         decisions = trading_pipeline.process_signals(
-            screen_result=screen_result,
+            screen_result=merged_screen_result,
             monitor_result=None,
             account_state=account_state,
         )
@@ -355,6 +405,7 @@ def trade_screen(
 
             click.echo(f"\n   [{i}] {d.decision_type.value.upper()} {d.underlying} {opt_type} K={strike_str} Exp={exp_str}")
             click.echo(f"       Symbol: {d.symbol}")
+            click.echo(f"       TradingClass: {d.trading_class or 'N/A'}, ConId: {d.con_id or 'N/A'}")
             click.echo(f"       Qty: {d.quantity}, Price: ${d.limit_price or 0:.2f}")
             click.echo(f"       {d.reason}")
 
@@ -390,7 +441,24 @@ def trade_screen(
 
         # 推送结果
         if push:
-            _push_trade_result(decisions, effective_dry_run)
+            click.echo(f"\n📤 推送到飞书...")
+            if effective_dry_run:
+                # Dry-run 模式：推送决策
+                _push_trade_decisions(
+                    decisions,
+                    dry_run=True,
+                    command="screen",
+                    market=market,
+                    strategy=strategy,
+                )
+            else:
+                # 执行模式：推送执行结果
+                _push_trade_results(
+                    results,
+                    command="screen",
+                    market=market,
+                    strategy=strategy,
+                )
 
         click.echo("\n" + "=" * 60)
         click.echo("✅ 完成")
@@ -416,20 +484,87 @@ def _cleanup_connection(conn) -> None:
         pass
 
 
-def _push_trade_result(decisions: list, dry_run: bool) -> None:
-    """推送交易结果到飞书"""
+def _is_market_symbol(symbol: str, market: str) -> bool:
+    """判断标的是否属于指定市场"""
+    if market == "hk":
+        return symbol.endswith(".HK")
+    else:  # us
+        return not symbol.endswith(".HK")
+
+
+def _push_trade_decisions(
+    decisions: list,
+    dry_run: bool,
+    command: str = "screen",
+    market: str = "",
+    strategy: str = "",
+) -> None:
+    """推送交易决策到飞书
+
+    Args:
+        decisions: 决策列表
+        dry_run: 是否为 dry-run 模式
+        command: 命令类型 (screen/monitor)
+        market: 市场 (us/hk)
+        strategy: 策略
+    """
     try:
         from src.business.notification.dispatcher import MessageDispatcher
 
         dispatcher = MessageDispatcher()
-        mode = "DRY-RUN" if dry_run else "EXECUTED"
-        title = f"Trade Screen [{mode}]"
-        content = f"生成 {len(decisions)} 个决策\n"
-        for d in decisions:
-            content += f"- {d.decision_type.value.upper()} {d.symbol} qty={d.quantity}\n"
-        dispatcher.send_text(title, content)
+        send_result = dispatcher.send_trade_decisions(
+            decisions,
+            dry_run=dry_run,
+            command=command,
+            market=market,
+            strategy=strategy,
+            force=True,
+        )
+
+        if send_result.is_success:
+            click.echo(f"  ✅ 决策推送成功")
+        else:
+            click.echo(f"  ⚠️ 决策推送失败: {send_result.error}")
+
     except Exception as e:
-        logger.warning(f"Failed to push: {e}")
+        logger.warning(f"Failed to push decisions: {e}")
+        click.echo(f"  ⚠️ 决策推送异常: {e}")
+
+
+def _push_trade_results(
+    results: list,
+    command: str = "screen",
+    market: str = "",
+    strategy: str = "",
+) -> None:
+    """推送执行结果到飞书
+
+    Args:
+        results: 订单记录列表
+        command: 命令类型 (screen/monitor)
+        market: 市场 (us/hk)
+        strategy: 策略
+    """
+    try:
+        from src.business.notification.dispatcher import MessageDispatcher
+
+        dispatcher = MessageDispatcher()
+        send_result = dispatcher.send_trade_results(
+            results,
+            command=command,
+            market=market,
+            strategy=strategy,
+            force=True,
+        )
+
+        if send_result.is_success:
+            click.echo(f"  ✅ 结果推送成功")
+        else:
+            click.echo(f"  ⚠️ 结果推送失败: {send_result.error}")
+
+    except Exception as e:
+        logger.warning(f"Failed to push results: {e}")
+        click.echo(f"  ⚠️ 结果推送异常: {e}")
 
 
 def _print_screen_summary(confirmed: list, max_show: int = 10) -> None:
@@ -740,7 +875,24 @@ def trade_monitor(
 
         # 推送结果
         if push:
-            _push_trade_result(decisions, effective_dry_run)
+            click.echo(f"\n📤 推送到飞书...")
+            if effective_dry_run:
+                # Dry-run 模式：推送决策
+                _push_trade_decisions(
+                    decisions,
+                    dry_run=True,
+                    command="monitor",
+                    market="",  # monitor 不区分市场
+                    strategy="",
+                )
+            else:
+                # 执行模式：推送执行结果
+                _push_trade_results(
+                    results,
+                    command="monitor",
+                    market="",
+                    strategy="",
+                )
 
         click.echo("\n" + "=" * 60)
         click.echo("✅ 完成")
