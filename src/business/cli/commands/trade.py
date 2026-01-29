@@ -645,6 +645,13 @@ def _print_opportunity_card(opp, index: int) -> None:
 
 @trade.command("monitor")
 @click.option(
+    "--account-type",
+    "-a",
+    type=click.Choice(["paper", "real"]),
+    default="paper",
+    help="账户类型：paper（模拟）或 real（真实）",
+)
+@click.option(
     "--urgency",
     "-u",
     type=click.Choice(["immediate", "soon", "all"]),
@@ -680,6 +687,7 @@ def _print_opportunity_card(opp, index: int) -> None:
     help="显示详细日志",
 )
 def trade_monitor(
+    account_type: str,
     urgency: str,
     dry_run: bool,
     execute: bool,
@@ -712,19 +720,24 @@ def trade_monitor(
     # execute 覆盖 dry_run
     effective_dry_run = dry_run and not execute
 
+    # 转换 account_type 字符串为枚举
+    from src.data.models.account import AccountType as AccType
+    acc_type_enum = AccType.PAPER if account_type == "paper" else AccType.REAL
+    acc_type_label = "Paper" if account_type == "paper" else "Real"
+
     click.echo("\n" + "=" * 60)
     click.echo("📊 Trade Monitor (Monitor → Trade 全流程)")
+    click.echo(f"   账户类型: {acc_type_label}")
     click.echo(f"   紧急级别: {urgency.upper()}")
     click.echo(f"   模式: {'DRY-RUN' if effective_dry_run else '🔴 EXECUTE'}")
     click.echo("=" * 60)
 
     try:
-        # 1. 连接 IBKR Paper Account
+        # 1. 连接 IBKR Account
         from src.data.providers.broker_manager import BrokerManager
-        from src.data.models.account import AccountType as AccType
 
-        click.echo("\n📡 连接 IBKR Paper Account...")
-        manager = BrokerManager(account_type="paper")
+        click.echo(f"\n📡 连接 IBKR {acc_type_label} Account...")
+        manager = BrokerManager(account_type=account_type)
         conn = manager.connect(ibkr=True, futu=False)
 
         if not conn.ibkr:
@@ -739,7 +752,7 @@ def trade_monitor(
         from src.engine.account.metrics import calc_capital_metrics
 
         aggregator = conn.get_aggregator()
-        portfolio = aggregator.get_consolidated_portfolio(account_type=AccType.PAPER)
+        portfolio = aggregator.get_consolidated_portfolio(account_type=acc_type_enum)
         account_state = portfolio_to_account_state(portfolio, broker="ibkr")
 
         click.echo(f"\n💰 账户状态:")

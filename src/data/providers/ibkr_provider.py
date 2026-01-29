@@ -716,9 +716,10 @@ class IBKRProvider(DataProvider, AccountProvider):
         api_greeks_count = 0
         bs_fallback_count = 0
 
-        # Batch size: 30 contracts per batch for reasonable throughput
-        # Higher batch sizes may overwhelm IBKR's streaming capacity
-        BATCH_SIZE = 30
+        # Batch size: 20 contracts per batch
+        # NOTE: 减小批次以避免超过 IBKR 100 条并发市场数据限制
+        # 预留空间给其他订阅（持仓监控、底层股票等）
+        BATCH_SIZE = 20
         WAIT_SECONDS = 5  # Wait time for Greeks to populate
 
         total_batches = (len(contracts) + BATCH_SIZE - 1) // BATCH_SIZE
@@ -844,6 +845,7 @@ class IBKRProvider(DataProvider, AccountProvider):
                 continue
 
             # Phase 2: Subscribe to all contracts in batch (parallel)
+            # NOTE: 必须使用 snapshot=False，因为 generic ticks 不支持 snapshot 模式
             tickers: list[tuple[OptionContract, Option, any]] = []
             for contract, opt in qualified_items:
                 ticker = self._ib.reqMktData(opt, "100,101,104,106", snapshot=False, regulatorySnapshot=False)
