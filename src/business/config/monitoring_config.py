@@ -37,7 +37,7 @@ Monitoring Configuration - 监控配置管理
 |-----------------|---------------|---------------|---------------|-------------------------|-------------------------------------------|
 | OTM%            | ≥10%          | 5%~10%        | <5%           | 虚值百分比（统一公式）  | 立即 Roll 到下个月或更远行权价            |
 | |Delta|         | ≤0.20         | 0.20~0.40     | >0.50         | 方向性风险（绝对值）    | 必须行动：对冲正股或平仓                  |
-| DTE             | ≥14 天        | 7~14 天       | <7 天         | 到期天数                | 强制平仓或展期，绝不持有进入最后一周      |
+| DTE             | ≥14 天        | 4~14 天       | <4 天         | 到期天数                | 强制平仓或展期，绝不持有进入最后 4 天     |
 | P&L%            | ≥50%          | -100%~50%     | <-100%        | 持仓盈亏                | 无条件止损，不要抗单                      |
 | Gamma Risk%     | ≤0.5%         | 0.5%~1%       | >1%           | Gamma/Margin 百分比     | 减仓或平仓，降低 Gamma 风险敞口           |
 | TGR             | ≥1.5          | 1.0~1.5       | <1.0          | 标准化 Theta/Gamma 比   | 平仓，换到更高效的合约                    |
@@ -312,7 +312,7 @@ class PositionThresholds:
     基于实战经验优化的阈值设计：
     - OTM%: 统一公式 Put=(S-K)/S, Call=(K-S)/S
     - |Delta|: 使用绝对值，更早预警
-    - DTE: 绿色提高到14天，避免 Short Gamma 进入最后一周
+    - DTE: 绿色提高到14天，红色阈值 DTE < 4 天
     - Gamma Risk%: 相对 Margin 的百分比
     """
 
@@ -350,13 +350,13 @@ class PositionThresholds:
     dte: ThresholdRange = field(
         default_factory=lambda: ThresholdRange(
             green=(14, float("inf")),      # DTE ≥ 14 天
-            yellow=(7, 14),                # 7 ~ 14 天
-            red_below=7,                   # DTE < 7 天
+            yellow=(4, 14),                # 4 ~ 14 天
+            red_below=4,                   # DTE < 4 天
             hysteresis=1,
             alert_type="DTE_WARNING",
-            red_below_message="DTE < 7 天: {value:.0f} 天，Short Gamma 风险极高",
+            red_below_message="DTE < 4 天: {value:.0f} 天，Short Gamma 风险极高",
             yellow_message="DTE 进入两周内: {value:.0f} 天",
-            red_below_action="强制平仓或展期，绝不持有 Short Gamma 进入最后一周",
+            red_below_action="强制平仓或展期，绝不持有 Short Gamma 进入最后 4 天",
             yellow_action="准备展期或平仓计划",
         )
     )
