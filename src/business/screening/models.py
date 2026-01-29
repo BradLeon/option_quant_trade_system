@@ -293,6 +293,7 @@ class ContractOpportunity:
     timestamp: datetime = field(default_factory=datetime.now)
 
     # 合约数据
+    lot_size: int = 100  # 合约乘数 (US=100, HK 视标的而定)
     bid: Optional[float] = None
     ask: Optional[float] = None
     mid_price: Optional[float] = None

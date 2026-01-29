@@ -68,6 +68,8 @@ class AccountPosition:
     strike: float | None = None
     expiry: str | None = None
     option_type: str | None = None
+    trading_class: str | None = None  # For HK options (e.g., "ALB" for 9988)
+    con_id: int | None = None  # IBKR contract ID (unique identifier for precise matching)
     contract_multiplier: int = 1
     # Greeks (options)
     delta: float | None = None

@@ -7,9 +7,9 @@
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from enum import Enum
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from src.business.monitoring.models import (
     Alert,
@@ -18,7 +18,26 @@ from src.business.monitoring.models import (
     MonitorResult,
     PositionData,
 )
+from src.business.monitoring.roll_calculator import RollTargetCalculator
+from src.data.models.option import OptionChain
 from src.engine.models.enums import StrategyType
+
+
+@runtime_checkable
+class OptionChainProvider(Protocol):
+    """期权链数据提供者协议
+
+    任何实现了 get_option_chain 方法的对象都可以作为提供者。
+    """
+
+    def get_option_chain(
+        self,
+        underlying: str,
+        expiry_start: date | None = None,
+        expiry_end: date | None = None,
+    ) -> OptionChain | None:
+        """获取期权链数据"""
+        ...
 
 logger = logging.getLogger(__name__)
 
@@ -77,11 +96,13 @@ ALERT_ACTION_MAP: dict[tuple[AlertType, AlertLevel], tuple[ActionType, UrgencyLe
     (AlertType.TGR_LOW, AlertLevel.RED): (ActionType.ADJUST, UrgencyLevel.IMMEDIATE),
     # Capital 级 - 核心风控四大支柱
     (AlertType.MARGIN_UTILIZATION, AlertLevel.RED): (ActionType.REDUCE, UrgencyLevel.IMMEDIATE),
-    (AlertType.CASH_RATIO, AlertLevel.RED): (ActionType.HOLD, UrgencyLevel.IMMEDIATE),
+    (AlertType.CASH_RATIO, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
     (AlertType.GROSS_LEVERAGE, AlertLevel.RED): (ActionType.REDUCE, UrgencyLevel.IMMEDIATE),
     (AlertType.STRESS_TEST_LOSS, AlertLevel.RED): (ActionType.HEDGE, UrgencyLevel.IMMEDIATE),
-    (AlertType.CONCENTRATION, AlertLevel.RED): (ActionType.DIVERSIFY, UrgencyLevel.IMMEDIATE),
-    (AlertType.DELTA_EXPOSURE, AlertLevel.RED): (ActionType.HEDGE, UrgencyLevel.IMMEDIATE),
+    (AlertType.CONCENTRATION, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
+    (AlertType.DELTA_EXPOSURE, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
+    (AlertType.VEGA_EXPOSURE, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
+    (AlertType.THETA_EXPOSURE, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
     # === YELLOW Alerts → SOON or MONITOR ===
     (AlertType.DTE_WARNING, AlertLevel.YELLOW): (ActionType.ROLL, UrgencyLevel.SOON),
     (AlertType.MONEYNESS, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
@@ -129,8 +150,8 @@ STRATEGY_SPECIFIC_SUGGESTIONS: dict[
         "可持有到期（Gamma 风险由正股覆盖）"
     ),
     (AlertType.DTE_WARNING, AlertLevel.RED, StrategyType.SHORT_STRANGLE): (
-        ActionType.ROLL, UrgencyLevel.IMMEDIATE,
-        "强制平仓或双腿同时展期"
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "强制平仓（盈利止盈，亏损不展期，等待新开仓机会）"
     ),
 
     # === |Delta| > 0.50 (RED) - 按策略区分 ===
@@ -263,6 +284,103 @@ URGENCY_PRIORITY = {
 }
 
 
+# =============================================================================
+# POSITION SELECTOR 配置
+# 用于 Capital/Portfolio 级 Alert 选择具体持仓
+# =============================================================================
+
+@dataclass
+class PositionSelectorConfig:
+    """持仓选择器配置
+
+    当 Capital/Portfolio 级 RED Alert 触发时，用于选择具体持仓进行操作。
+    """
+
+    sort_key: str  # 排序字段
+    ascending: bool  # 升序/降序
+    action: ActionType  # 目标操作
+    max_positions: int = 3  # 最多选择持仓数
+    filter_profitable_only: bool = False  # 只选盈利持仓
+    filter_gamma_negative: bool = False  # 只选 Gamma < 0 的持仓
+    filter_vega_negative: bool = False  # 只选 Vega < 0 的持仓
+    filter_tgr_below: float | None = None  # TGR 阈值
+
+
+# AlertType -> PositionSelectorConfig
+# 用于将 Capital/Portfolio 级 RED Alert 转换为具体持仓操作
+PORTFOLIO_ALERT_POSITION_SELECTOR: dict[AlertType, PositionSelectorConfig] = {
+    # === Capital 级 ===
+    # Margin > 70%: 按 Theta/Margin 升序（效率最低先平）
+    AlertType.MARGIN_UTILIZATION: PositionSelectorConfig(
+        sort_key="theta_margin_ratio",
+        ascending=True,
+        action=ActionType.CLOSE,
+    ),
+    # Cash < 10%: 按 P&L% 降序（盈利最多先平）
+    AlertType.CASH_RATIO: PositionSelectorConfig(
+        sort_key="unrealized_pnl_pct",
+        ascending=False,
+        action=ActionType.CLOSE,
+        filter_profitable_only=True,
+    ),
+    # Leverage > 4x: 按 Notional 降序（敞口最大先平）
+    AlertType.GROSS_LEVERAGE: PositionSelectorConfig(
+        sort_key="notional",
+        ascending=False,
+        action=ActionType.CLOSE,
+    ),
+    # Stress > 20%: 按 |Gamma| × S² 降序（Gamma 空头最大先平）
+    AlertType.STRESS_TEST_LOSS: PositionSelectorConfig(
+        sort_key="gamma_s_squared",
+        ascending=False,
+        action=ActionType.CLOSE,
+        filter_gamma_negative=True,
+    ),
+
+    # === Portfolio 级 ===
+    # BWD% > 50%: 按 Delta 贡献降序
+    AlertType.DELTA_EXPOSURE: PositionSelectorConfig(
+        sort_key="delta_contribution",
+        ascending=False,
+        action=ActionType.CLOSE,
+    ),
+    # Gamma% < -0.5%: 按 Gamma 升序（负最大先平）
+    AlertType.GAMMA_EXPOSURE: PositionSelectorConfig(
+        sort_key="gamma",
+        ascending=True,
+        action=ActionType.CLOSE,
+        filter_gamma_negative=True,
+    ),
+    # Vega% < -0.5%: 按 Vega 升序（负最大先平）
+    AlertType.VEGA_EXPOSURE: PositionSelectorConfig(
+        sort_key="vega",
+        ascending=True,
+        action=ActionType.CLOSE,
+        filter_vega_negative=True,
+    ),
+    # Theta% > 0.30%: 按 Theta 降序（Theta 最高先平）
+    AlertType.THETA_EXPOSURE: PositionSelectorConfig(
+        sort_key="theta",
+        ascending=False,
+        action=ActionType.CLOSE,
+    ),
+    # TGR < 1.0: 按 Position TGR 升序（TGR 最低先平）
+    AlertType.TGR_LOW: PositionSelectorConfig(
+        sort_key="tgr",
+        ascending=True,
+        action=ActionType.CLOSE,
+        filter_tgr_below=0.5,
+    ),
+    # HHI > 0.50: 按市值降序（占比最高先平）
+    AlertType.CONCENTRATION: PositionSelectorConfig(
+        sort_key="market_value_abs",
+        ascending=False,
+        action=ActionType.CLOSE,
+    ),
+    # IV_HV_QUALITY: 不配置 → 保持 HOLD，不生成订单
+}
+
+
 class SuggestionGenerator:
     """建议生成器
 
@@ -281,6 +399,8 @@ class SuggestionGenerator:
         | None = None,
         vix_high_threshold: float = 25.0,
         vix_extreme_threshold: float = 35.0,
+        roll_calculator: RollTargetCalculator | None = None,
+        option_chain_provider: OptionChainProvider | None = None,
     ):
         """初始化建议生成器
 
@@ -288,10 +408,14 @@ class SuggestionGenerator:
             action_map: 自定义 Alert → Action 映射
             vix_high_threshold: VIX 高波动阈值
             vix_extreme_threshold: VIX 极端波动阈值
+            roll_calculator: 展期目标计算器
+            option_chain_provider: 期权链数据提供者（用于获取真实到期日和行权价）
         """
         self._action_map = action_map or ALERT_ACTION_MAP
         self._vix_high = vix_high_threshold
         self._vix_extreme = vix_extreme_threshold
+        self._roll_calculator = roll_calculator or RollTargetCalculator()
+        self._option_chain_provider = option_chain_provider
 
     def generate(
         self,
@@ -312,21 +436,64 @@ class SuggestionGenerator:
         if not monitor_result.alerts:
             return []
 
-        # Step 1: 按 position_id 分组 alerts
-        grouped_alerts = self._group_alerts_by_position(monitor_result.alerts)
+        suggestions: list[PositionSuggestion] = []
 
-        # Step 2: 为每个持仓生成建议
-        suggestions = []
+        # Step 1: 分离组合级和持仓级 Alert
+        portfolio_alerts: list[Alert] = []
+        position_alerts: list[Alert] = []
+
+        for alert in monitor_result.alerts:
+            if self._is_portfolio_level_alert(alert):
+                portfolio_alerts.append(alert)
+            else:
+                position_alerts.append(alert)
+
+        # Step 2: 处理组合级 RED Alert → 选择具体持仓
+        positions_list = positions or []
+        processed_position_ids: set[str] = set()  # 避免重复
+
+        for alert in portfolio_alerts:
+            if alert.level == AlertLevel.RED:
+                config = PORTFOLIO_ALERT_POSITION_SELECTOR.get(alert.alert_type)
+                if config:
+                    selected = self._select_positions_for_alert(alert, positions_list)
+                    for pos in selected:
+                        # 避免同一持仓被多个组合级 Alert 重复添加
+                        if pos.position_id in processed_position_ids:
+                            continue
+                        processed_position_ids.add(pos.position_id)
+
+                        suggestion = self._create_suggestion_for_portfolio_alert(
+                            alert, pos, config
+                        )
+                        suggestions.append(suggestion)
+                else:
+                    # 无配置的组合级 Alert，仍走原逻辑（生成 portfolio 级建议）
+                    position_alerts.append(alert)
+            else:
+                # 非 RED 级别的组合级 Alert，仍走原逻辑
+                position_alerts.append(alert)
+
+        # Step 3: 处理持仓级 Alert（现有逻辑）
+        grouped_alerts = self._group_alerts_by_position(position_alerts)
+
         for position_id, alerts in grouped_alerts.items():
+            # 跳过已被组合级 Alert 处理的持仓
+            if position_id in processed_position_ids:
+                logger.debug(
+                    f"Skipping position {position_id} - already processed by portfolio alert"
+                )
+                continue
+
             suggestion = self._generate_for_position(position_id, alerts, positions)
             if suggestion:
                 suggestions.append(suggestion)
 
-        # Step 3: 市场环境调整
+        # Step 4: 市场环境调整
         if vix:
             suggestions = self._adjust_for_market(suggestions, vix)
 
-        # Step 4: 按优先级排序
+        # Step 5: 按优先级排序
         suggestions = self._sort_by_priority(suggestions)
 
         return suggestions
@@ -448,20 +615,54 @@ class SuggestionGenerator:
         # 从 positions 获取合约详细信息
         if positions:
             pos = next((p for p in positions if p.position_id == position_id), None)
-            if pos and pos.is_option:
-                metadata["strategy_type"] = pos.strategy_type
-                metadata["option_type"] = pos.option_type
-                metadata["strike"] = pos.strike
-                metadata["expiry"] = pos.expiry
-                metadata["dte"] = pos.dte
-                metadata["underlying"] = pos.underlying or pos.symbol
-                # 构建更友好的显示名称
-                if pos.option_type and pos.strike and pos.expiry:
-                    try:
-                        exp_str = f"{pos.expiry[4:6]}/{pos.expiry[6:8]}"
-                        symbol = f"{pos.symbol} {pos.option_type.upper()} {pos.strike:.0f} {exp_str}"
-                    except (IndexError, TypeError):
-                        pass
+            if pos:
+                # 通用字段
+                metadata["quantity"] = pos.quantity
+                metadata["lot_size"] = getattr(pos, "contract_multiplier", 100)
+
+                if pos.is_option:
+                    metadata["strategy_type"] = pos.strategy_type
+                    metadata["option_type"] = pos.option_type
+                    metadata["strike"] = pos.strike
+                    metadata["expiry"] = pos.expiry
+                    metadata["dte"] = pos.dte
+                    metadata["underlying"] = pos.underlying or pos.symbol
+                    metadata["trading_class"] = pos.trading_class  # For HK options
+                    metadata["con_id"] = pos.con_id  # IBKR contract ID
+                    # 构建更友好的显示名称
+                    if pos.option_type and pos.strike and pos.expiry:
+                        try:
+                            exp_str = f"{pos.expiry[4:6]}/{pos.expiry[6:8]}"
+                            symbol = f"{pos.symbol} {pos.option_type.upper()} {pos.strike:.0f} {exp_str}"
+                        except (IndexError, TypeError):
+                            pass
+
+                    # ROLL 操作：计算展期目标参数
+                    if action == ActionType.ROLL:
+                        # 获取期权链数据（如果有提供者）
+                        available_expiries, available_strikes = self._fetch_option_chain_data(
+                            underlying=pos.underlying or pos.symbol,
+                            option_type=pos.option_type,
+                        )
+
+                        roll_target = self._roll_calculator.calculate(
+                            position=pos,
+                            alert=primary_alert,
+                            available_expiries=available_expiries,
+                            available_strikes=available_strikes,
+                        )
+                        metadata["suggested_expiry"] = roll_target.suggested_expiry
+                        metadata["suggested_strike"] = roll_target.suggested_strike
+                        metadata["suggested_dte"] = roll_target.suggested_dte
+                        metadata["roll_credit"] = roll_target.roll_credit
+                        metadata["roll_reason"] = roll_target.reason
+                        logger.info(
+                            f"Roll target calculated for {pos.symbol}: "
+                            f"expiry={roll_target.suggested_expiry}, "
+                            f"strike={roll_target.suggested_strike}, "
+                            f"dte={roll_target.suggested_dte}"
+                            f"{' [from chain]' if available_expiries else ''}"
+                        )
 
         return PositionSuggestion(
             position_id=position_id,
@@ -473,6 +674,71 @@ class SuggestionGenerator:
             trigger_alerts=alerts,
             metadata=metadata,
         )
+
+    def _fetch_option_chain_data(
+        self,
+        underlying: str,
+        option_type: str | None,
+    ) -> tuple[list[str] | None, list[float] | None]:
+        """获取期权链数据用于 ROLL 目标计算
+
+        Args:
+            underlying: 标的代码
+            option_type: 期权类型 ("put" / "call")
+
+        Returns:
+            (available_expiries, available_strikes) 元组
+            如果无法获取，返回 (None, None)
+        """
+        if not self._option_chain_provider:
+            return None, None
+
+        try:
+            # 获取期权链（DTE 25-60 天范围）
+            today = date.today()
+            expiry_start = today + timedelta(days=25)
+            expiry_end = today + timedelta(days=60)
+
+            chain = self._option_chain_provider.get_option_chain(
+                underlying=underlying,
+                expiry_start=expiry_start,
+                expiry_end=expiry_end,
+            )
+
+            if not chain:
+                logger.debug(f"No option chain data for {underlying}")
+                return None, None
+
+            # 提取到期日列表
+            available_expiries = [
+                d.strftime("%Y-%m-%d") for d in chain.expiry_dates
+            ]
+
+            # 根据期权类型选择合约列表提取 strikes
+            if option_type == "put":
+                contracts = chain.puts
+            elif option_type == "call":
+                contracts = chain.calls
+            else:
+                contracts = chain.puts + chain.calls
+
+            # 提取唯一的 strikes
+            available_strikes = sorted(set(
+                q.contract.strike_price
+                for q in contracts
+                if q.contract and q.contract.strike_price
+            ))
+
+            logger.debug(
+                f"Option chain for {underlying}: "
+                f"{len(available_expiries)} expiries, {len(available_strikes)} strikes"
+            )
+
+            return available_expiries, available_strikes
+
+        except Exception as e:
+            logger.warning(f"Failed to fetch option chain for {underlying}: {e}")
+            return None, None
 
     def _build_reason(self, primary: Alert, all_alerts: list[Alert]) -> str:
         """构建原因说明
@@ -624,3 +890,224 @@ class SuggestionGenerator:
             return (-urgency_score, -alert_score)
 
         return sorted(suggestions, key=sort_key)
+
+    # =========================================================================
+    # Portfolio/Capital 级 Alert 持仓选择
+    # =========================================================================
+
+    def _is_portfolio_level_alert(self, alert: Alert) -> bool:
+        """判断是否为组合级 Alert（无 position_id）
+
+        Capital/Portfolio Monitor 生成的 Alert 没有 position_id 和 symbol。
+
+        Args:
+            alert: Alert 对象
+
+        Returns:
+            是否为组合级 Alert
+        """
+        return alert.position_id is None and alert.symbol is None
+
+    def _calc_sort_value(self, pos: PositionData, sort_key: str) -> float:
+        """计算排序值
+
+        Args:
+            pos: 持仓数据
+            sort_key: 排序字段名
+
+        Returns:
+            排序值
+        """
+        if sort_key == "theta_margin_ratio":
+            # Theta / Margin，效率越低值越小
+            theta = pos.theta or 0
+            margin = pos.margin or 1
+            if margin == 0:
+                margin = 1
+            return theta / margin
+
+        elif sort_key == "notional":
+            # Strike × Quantity × Multiplier
+            strike = pos.strike or 0
+            qty = abs(pos.quantity)
+            multiplier = pos.contract_multiplier or 100
+            return strike * qty * multiplier
+
+        elif sort_key == "gamma_s_squared":
+            # |Gamma| × S²，Gamma 风险贡献
+            gamma = abs(pos.gamma or 0)
+            underlying_price = pos.underlying_price or 0
+            return gamma * (underlying_price ** 2)
+
+        elif sort_key == "delta_contribution":
+            # |Delta| × Beta × S，Delta 风险贡献
+            delta = abs(pos.delta or 0)
+            beta = pos.beta or 1
+            underlying_price = pos.underlying_price or 0
+            return delta * beta * underlying_price
+
+        elif sort_key == "market_value_abs":
+            # |Market Value|
+            return abs(pos.market_value or 0)
+
+        else:
+            # 其他字段直接从 PositionData 获取
+            return getattr(pos, sort_key, 0) or 0
+
+    def _select_positions_for_alert(
+        self,
+        alert: Alert,
+        positions: list[PositionData],
+    ) -> list[PositionData]:
+        """根据 Alert 类型选择目标持仓
+
+        用于将 Capital/Portfolio 级 RED Alert 转换为具体持仓操作。
+
+        Args:
+            alert: 组合级 Alert
+            positions: 所有持仓数据
+
+        Returns:
+            选中的持仓列表
+        """
+        config = PORTFOLIO_ALERT_POSITION_SELECTOR.get(alert.alert_type)
+        if not config:
+            logger.debug(
+                f"No position selector config for {alert.alert_type.value}, "
+                "skipping position selection"
+            )
+            return []
+
+        # 过滤期权持仓
+        candidates = [p for p in positions if p.is_option]
+
+        if not candidates:
+            logger.debug("No option positions available for selection")
+            return []
+
+        # 应用过滤条件
+        if config.filter_profitable_only:
+            profitable = [p for p in candidates if (p.unrealized_pnl_pct or 0) > 0]
+            if not profitable:
+                # 回退逻辑：按 DTE 升序（最临近到期先平）
+                logger.info(
+                    f"No profitable positions for {alert.alert_type.value}, "
+                    "falling back to DTE ascending"
+                )
+                candidates.sort(key=lambda p: p.dte or 999)
+                return candidates[: config.max_positions]
+            candidates = profitable
+
+        if config.filter_gamma_negative:
+            candidates = [p for p in candidates if (p.gamma or 0) < 0]
+            if not candidates:
+                logger.debug(
+                    f"No gamma-negative positions for {alert.alert_type.value}"
+                )
+                return []
+
+        if config.filter_vega_negative:
+            candidates = [p for p in candidates if (p.vega or 0) < 0]
+            if not candidates:
+                logger.debug(
+                    f"No vega-negative positions for {alert.alert_type.value}"
+                )
+                return []
+
+        if config.filter_tgr_below is not None:
+            candidates = [
+                p for p in candidates
+                if (p.tgr or 999) < config.filter_tgr_below
+            ]
+            if not candidates:
+                logger.debug(
+                    f"No positions with TGR < {config.filter_tgr_below} "
+                    f"for {alert.alert_type.value}"
+                )
+                return []
+
+        # 排序
+        candidates.sort(
+            key=lambda p: self._calc_sort_value(p, config.sort_key),
+            reverse=not config.ascending,
+        )
+
+        selected = candidates[: config.max_positions]
+
+        logger.info(
+            f"Selected {len(selected)} positions for {alert.alert_type.value} "
+            f"(sort_key={config.sort_key}, ascending={config.ascending}): "
+            f"{[p.symbol for p in selected]}"
+        )
+
+        return selected
+
+    def _create_suggestion_for_portfolio_alert(
+        self,
+        alert: Alert,
+        pos: PositionData,
+        config: PositionSelectorConfig,
+    ) -> PositionSuggestion:
+        """为组合级 Alert 创建持仓建议
+
+        Args:
+            alert: 组合级 Alert
+            pos: 选中的持仓
+            config: 选择器配置
+
+        Returns:
+            PositionSuggestion
+        """
+        # 构建 symbol 显示名称
+        symbol = pos.symbol
+        if pos.option_type and pos.strike and pos.expiry:
+            try:
+                exp_str = f"{pos.expiry[4:6]}/{pos.expiry[6:8]}"
+                symbol = f"{pos.symbol} {pos.option_type.upper()} {pos.strike:.0f} {exp_str}"
+            except (IndexError, TypeError):
+                pass
+
+        # 构建 metadata
+        metadata: dict[str, Any] = {
+            "quantity": pos.quantity,
+            "lot_size": pos.contract_multiplier or 100,
+            "portfolio_alert": True,  # 标记来自组合级 Alert
+        }
+
+        if pos.is_option:
+            metadata["strategy_type"] = pos.strategy_type
+            metadata["option_type"] = pos.option_type
+            metadata["strike"] = pos.strike
+            metadata["expiry"] = pos.expiry
+            metadata["dte"] = pos.dte
+            metadata["underlying"] = pos.underlying or pos.symbol
+            metadata["trading_class"] = pos.trading_class
+            metadata["con_id"] = pos.con_id
+
+        # 构建 reason
+        reason = f"[Portfolio] {alert.message}"
+
+        # 构建 details
+        details_parts = []
+        if pos.strategy_type:
+            details_parts.append(pos.strategy_type.value.upper())
+        if pos.option_type:
+            details_parts.append(pos.option_type.upper())
+        if pos.strike:
+            details_parts.append(f"K={pos.strike:.0f}")
+        if pos.dte is not None:
+            details_parts.append(f"DTE={pos.dte}")
+        if pos.unrealized_pnl_pct:
+            details_parts.append(f"PnL={pos.unrealized_pnl_pct:.1%}")
+        details = " | ".join(details_parts) if details_parts else ""
+
+        return PositionSuggestion(
+            position_id=pos.position_id,
+            symbol=symbol,
+            action=config.action,
+            urgency=UrgencyLevel.IMMEDIATE,
+            reason=reason,
+            details=details,
+            trigger_alerts=[alert],
+            metadata=metadata,
+        )

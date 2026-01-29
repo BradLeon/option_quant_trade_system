@@ -23,7 +23,10 @@ from src.business.notification.channels.feishu import FeishuChannel
 from src.business.notification.formatters.dashboard_formatter import DashboardFormatter
 from src.business.notification.formatters.monitoring_formatter import MonitoringFormatter
 from src.business.notification.formatters.screening_formatter import ScreeningFormatter
+from src.business.notification.formatters.trading_formatter import TradingFormatter
 from src.business.screening.models import ScreeningResult
+from src.business.trading.models.decision import TradingDecision
+from src.business.trading.models.order import OrderRecord
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +60,7 @@ class MessageDispatcher:
         self.screening_formatter = ScreeningFormatter(templates)
         self.monitoring_formatter = MonitoringFormatter(templates)
         self.dashboard_formatter = DashboardFormatter(templates)
+        self.trading_formatter = TradingFormatter(templates)
 
         # 消息去重缓存
         self._sent_messages: dict[str, datetime] = {}
@@ -366,6 +370,135 @@ class MessageDispatcher:
 
         # 格式化消息
         card_data = self.dashboard_formatter.format(result)
+
+        # 检查去重
+        if not force and self._is_duplicate(card_data):
+            return SendResult(
+                status=SendStatus.RATE_LIMITED,
+                error="Duplicate message",
+            )
+
+        # 发送消息
+        send_result = self.channel.send_card(card_data)
+
+        if send_result.is_success:
+            self._mark_sent(card_data)
+
+        return send_result
+
+    def send_trade_decisions(
+        self,
+        decisions: list[TradingDecision],
+        dry_run: bool = True,
+        command: str = "trade",
+        market: str = "",
+        strategy: str = "",
+        force: bool = False,
+    ) -> SendResult:
+        """发送交易决策
+
+        Args:
+            decisions: 决策列表
+            dry_run: 是否为 dry-run 模式
+            command: 命令类型 (screen/monitor)
+            market: 市场 (us/hk)
+            strategy: 策略
+            force: 是否强制发送（忽略限制）
+
+        Returns:
+            SendResult
+        """
+        if not decisions:
+            return SendResult(
+                status=SendStatus.FAILED,
+                error="No decisions to send",
+            )
+
+        # 检查限制
+        if not force:
+            if self._is_silent_period():
+                return SendResult(
+                    status=SendStatus.SILENCED,
+                    error="In silent period",
+                )
+
+            if self._is_rate_limited():
+                return SendResult(
+                    status=SendStatus.RATE_LIMITED,
+                    error="Rate limited",
+                )
+
+        # 格式化消息
+        card_data = self.trading_formatter.format_decisions(
+            decisions,
+            dry_run=dry_run,
+            command=command,
+            market=market,
+            strategy=strategy,
+        )
+
+        # 检查去重
+        if not force and self._is_duplicate(card_data):
+            return SendResult(
+                status=SendStatus.RATE_LIMITED,
+                error="Duplicate message",
+            )
+
+        # 发送消息
+        send_result = self.channel.send_card(card_data)
+
+        if send_result.is_success:
+            self._mark_sent(card_data)
+
+        return send_result
+
+    def send_trade_results(
+        self,
+        results: list[OrderRecord],
+        command: str = "trade",
+        market: str = "",
+        strategy: str = "",
+        force: bool = False,
+    ) -> SendResult:
+        """发送交易执行结果
+
+        Args:
+            results: 订单记录列表
+            command: 命令类型 (screen/monitor)
+            market: 市场 (us/hk)
+            strategy: 策略
+            force: 是否强制发送（忽略限制）
+
+        Returns:
+            SendResult
+        """
+        if not results:
+            return SendResult(
+                status=SendStatus.FAILED,
+                error="No results to send",
+            )
+
+        # 检查限制
+        if not force:
+            if self._is_silent_period():
+                return SendResult(
+                    status=SendStatus.SILENCED,
+                    error="In silent period",
+                )
+
+            if self._is_rate_limited():
+                return SendResult(
+                    status=SendStatus.RATE_LIMITED,
+                    error="Rate limited",
+                )
+
+        # 格式化消息
+        card_data = self.trading_formatter.format_execution_results(
+            results,
+            command=command,
+            market=market,
+            strategy=strategy,
+        )
 
         # 检查去重
         if not force and self._is_duplicate(card_data):

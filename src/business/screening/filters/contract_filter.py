@@ -301,7 +301,7 @@ class ContractFilter:
                 option_type=opt_type,
             )
             # 输出详细评估日志
-            self._log_contract_evaluation(opp)
+            #self._log_contract_evaluation(opp)
             all_evaluated.append(opp)
 
         # 统计评估结果
@@ -566,6 +566,7 @@ class ContractFilter:
             strike=strike,
             option_type=option_type,
             trading_class=contract.trading_class,  # IBKR 需要 trading_class 来识别 HK 期权
+            lot_size=contract.lot_size,  # 合约乘数 (US=100, HK 视标的而定)
             bid=bid,
             ask=ask,
             mid_price=mid_price,

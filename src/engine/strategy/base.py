@@ -42,6 +42,7 @@ class OptionStrategy(ABC):
         self.legs = legs
         self.params = params
         self._margin_per_share: float | None = None  # 真实保证金（per-share）
+        self._cached_effective_margin: float | None = None  # 缓存的有效保证金
 
     @property
     def leg(self) -> OptionLeg:
@@ -174,6 +175,7 @@ class OptionStrategy(ABC):
             margin_per_share: Real margin per-share from broker API.
         """
         self._margin_per_share = margin_per_share
+        self._cached_effective_margin = None  # 清除缓存
 
     def get_effective_margin(self) -> float:
         """Get effective margin for ROC calculations.
@@ -183,12 +185,19 @@ class OptionStrategy(ABC):
         2. Reg T formula from calc_margin_requirement()
         3. Capital at risk as fallback
 
+        Results are cached to avoid redundant calculations.
+
         Returns:
             Effective margin in dollars (per-share).
         """
+        # 返回缓存值（如果有）
+        if self._cached_effective_margin is not None:
+            return self._cached_effective_margin
+
         # Priority 1: Real margin per-share
         if self._margin_per_share is not None:
-            return self._margin_per_share
+            self._cached_effective_margin = self._margin_per_share
+            return self._cached_effective_margin
 
         # Priority 2: Reg T formula
         try:
@@ -197,6 +206,7 @@ class OptionStrategy(ABC):
                 f"Using Reg T margin={margin:.2f} (no real margin set) "
                 f"for K={self.leg.strike if self.leg else '?'}"
             )
+            self._cached_effective_margin = margin
             return margin
         except Exception as e:
             logger.warning(f"calc_margin_requirement() failed: {e}, using capital at risk fallback")
@@ -204,6 +214,7 @@ class OptionStrategy(ABC):
         # Priority 3: Fallback to capital at risk
         fallback = self._calc_capital_at_risk()
         logger.warning(f"Using capital at risk fallback: {fallback:.2f}")
+        self._cached_effective_margin = fallback
         return fallback
 
     def _get_total_gamma(self) -> float | None:

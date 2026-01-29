@@ -195,42 +195,32 @@ def _load_from_account(
         (持仓列表, 资金指标)
     """
     from src.data.models.account import AccountType as AccType
-    from src.data.providers.account_aggregator import AccountAggregator
-    from src.data.providers.ibkr_provider import IBKRProvider
-    from src.data.providers.futu_provider import FutuProvider
+    from src.data.providers.broker_manager import BrokerManager
     from src.data.providers.unified_provider import UnifiedDataProvider
     from src.business.monitoring.data_bridge import MonitoringDataBridge
 
     click.echo(f"📡 连接账户: {account_type}")
 
-    # 初始化 providers
-    ibkr = None
-    futu = None
+    # 使用 BrokerManager 统一连接
+    manager = BrokerManager(account_type=account_type)
+    conn = manager.connect(ibkr=not futu_only, futu=not ibkr_only)
 
-    if not futu_only:
-        try:
-            ibkr = IBKRProvider()
-            ibkr.connect()
-            click.echo("  ✅ IBKR 连接成功")
-        except Exception as e:
-            click.echo(f"  ⚠️ IBKR 连接失败: {e}")
+    # 显示连接状态
+    if conn.ibkr:
+        click.echo("  ✅ IBKR 连接成功")
+    elif conn.ibkr_error and not futu_only:
+        click.echo(f"  ⚠️ IBKR 连接失败: {conn.ibkr_error}")
 
-    if not ibkr_only:
-        try:
-            futu = FutuProvider()
-            futu.connect()
-            click.echo("  ✅ Futu 连接成功")
-        except Exception as e:
-            click.echo(f"  ⚠️ Futu 连接失败: {e}")
+    if conn.futu:
+        click.echo("  ✅ Futu 连接成功")
+    elif conn.futu_error and not ibkr_only:
+        click.echo(f"  ⚠️ Futu 连接失败: {conn.futu_error}")
 
-    if not ibkr and not futu:
+    if not conn.any_connected:
         raise click.ClickException("无法连接任何券商账户")
 
-    # 创建聚合器
-    aggregator = AccountAggregator(
-        ibkr_provider=ibkr,
-        futu_provider=futu,
-    )
+    # 获取聚合器
+    aggregator = conn.get_aggregator()
 
     # 获取合并后的组合
     acc_type = AccType.PAPER if account_type == "paper" else AccType.REAL
@@ -242,10 +232,14 @@ def _load_from_account(
 
     # 使用 DataBridge 转换持仓
     unified_provider = UnifiedDataProvider(
-        ibkr_provider=ibkr,
-        futu_provider=futu,
+        ibkr_provider=conn.ibkr,
+        futu_provider=conn.futu,
     )
-    bridge = MonitoringDataBridge(data_provider=unified_provider, ibkr_provider=ibkr, futu_provider=futu)
+    bridge = MonitoringDataBridge(
+        data_provider=unified_provider,
+        ibkr_provider=conn.ibkr,
+        futu_provider=conn.futu,
+    )
     position_list = bridge.convert_positions(portfolio)
 
     click.echo(f"  转换后持仓: {len(position_list)} 个")
@@ -254,14 +248,14 @@ def _load_from_account(
     capital_metrics = calc_capital_metrics(portfolio)
 
     # 清理连接
-    if ibkr:
+    if conn.ibkr:
         try:
-            ibkr.disconnect()
+            conn.ibkr.disconnect()
         except Exception:
             pass
-    if futu:
+    if conn.futu:
         try:
-            futu.disconnect()
+            conn.futu.disconnect()
         except Exception:
             pass
 
