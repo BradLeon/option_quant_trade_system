@@ -3,6 +3,7 @@
 import logging
 import os
 import time
+from collections import deque
 from datetime import date, datetime
 from threading import Lock
 from typing import Any
@@ -120,8 +121,9 @@ class FutuProvider(DataProvider, AccountProvider):
         self._connected = False
         self._lock = Lock()
 
-        # Rate limiting
-        self._last_request_time: dict[str, float] = {}
+        # Rate limiting with sliding window
+        # Each operation tracks timestamps of recent requests in a deque
+        self._request_timestamps: dict[str, deque[float]] = {}
         self._rate_limits = {
             "quote": (60, 30),  # 60 requests per 30 seconds
             "option_chain": (10, 30),  # 10 requests per 30 seconds
@@ -173,6 +175,10 @@ class FutuProvider(DataProvider, AccountProvider):
     def disconnect(self) -> None:
         """Close connection to OpenD gateway."""
         with self._lock:
+            # Close trade context first
+            self._close_trade_context()
+
+            # Close quote context
             if self._quote_ctx:
                 try:
                     self._quote_ctx.close()
@@ -184,10 +190,13 @@ class FutuProvider(DataProvider, AccountProvider):
                     logger.info("Disconnected from Futu OpenD")
 
     def _check_rate_limit(self, operation: str) -> None:
-        """Check and enforce rate limits.
+        """Check and enforce rate limits using sliding window algorithm.
+
+        This ensures we never exceed max_requests within any period window,
+        using a sliding window that tracks actual request timestamps.
 
         Args:
-            operation: Operation type (quote, option_chain, history_kline).
+            operation: Operation type (quote, option_chain, history_kline, margin_query).
 
         Raises:
             RateLimitError: If rate limit would be exceeded.
@@ -197,18 +206,34 @@ class FutuProvider(DataProvider, AccountProvider):
 
         max_requests, period = self._rate_limits[operation]
         current_time = time.time()
-        last_time = self._last_request_time.get(operation, 0)
 
-        # Simple rate limiting: ensure minimum interval between requests
-        min_interval = period / max_requests
-        elapsed = current_time - last_time
+        # Initialize deque for this operation if not exists
+        if operation not in self._request_timestamps:
+            self._request_timestamps[operation] = deque()
 
-        if elapsed < min_interval:
-            sleep_time = min_interval - elapsed
-            logger.debug(f"Rate limiting: sleeping {sleep_time:.2f}s")
-            time.sleep(sleep_time)
+        timestamps = self._request_timestamps[operation]
 
-        self._last_request_time[operation] = time.time()
+        # Remove timestamps older than the rate limit period
+        while timestamps and timestamps[0] < current_time - period:
+            timestamps.popleft()
+
+        # If we've hit the limit, wait until the oldest request expires
+        while len(timestamps) >= max_requests:
+            oldest = timestamps[0]
+            wait_time = oldest + period - current_time + 0.1  # +0.1s buffer
+            if wait_time > 0:
+                logger.debug(
+                    f"Rate limit reached for {operation}: {len(timestamps)}/{max_requests} "
+                    f"in last {period}s, sleeping {wait_time:.2f}s"
+                )
+                time.sleep(wait_time)
+                current_time = time.time()
+            # Remove expired timestamps after waiting
+            while timestamps and timestamps[0] < current_time - period:
+                timestamps.popleft()
+
+        # Record this request
+        timestamps.append(time.time())
 
     def _ensure_connected(self) -> None:
         """Ensure connection is established."""
