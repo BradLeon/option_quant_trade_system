@@ -854,6 +854,128 @@ with IBKRProvider() as provider:
 | 市场情绪分析 | Yahoo | VIX + Put/Call Ratio |
 | 宏观分析 | Yahoo | 完整宏观指标 |
 
+### IBC 自动化运行 (推荐)
+
+#### 为什么需要 IBC？
+
+IBKR TWS 在无人值守运行时存在以下问题，导致定时任务失败：
+
+| 问题 | 说明 |
+|------|------|
+| 强制每日重启 | IBKR 要求 TWS 每 24 小时重启一次，重启后需要重新登录 |
+| 2FA 认证阻塞 | 重启后需要手动完成双因素认证，无法自动恢复 |
+| 弹窗干扰 | 各种警告对话框会阻塞 API 连接 |
+| 会话冲突 | 其他设备登录会踢掉当前会话 |
+
+**IBC (IB Controller)** 是社区开源工具，通过 Java Agent 注入 TWS 进程，拦截并自动处理这些场景：
+- 自动输入用户名/密码完成登录
+- 自动处理 2FA 超时并重试
+- 自动点击确认各种弹窗
+- 自动处理每日重启流程
+- 支持通过参数切换 Paper/Live 账户
+
+#### 文件结构
+
+| 文件 | 位置 | 功能 |
+|------|------|------|
+| `IBC/` | `~/IBC/` | IBC 程序目录 (从 GitHub clone) |
+| `config.ini` | `~/IBC/config.ini` | Paper 账户的 IBC 配置 (用户名/密码/交易模式) |
+| `config-live.ini` | `~/IBC/config-live.ini` | Live 账户的 IBC 配置 |
+| `start_tws.sh` | `~/start_tws.sh` | TWS 启动脚本，支持 `paper`/`live` 参数 |
+| `ensure_tws.sh` | `~/ensure_tws.sh` | 智能账户切换脚本，确保 TWS 以正确账户运行 |
+| `com.ibc.tws.plist` | `~/Library/LaunchAgents/` | macOS 开机自启动配置 |
+
+#### 端口映射
+
+系统根据 `IBKR_APP_TYPE` 环境变量自动选择端口：
+
+```env
+# .env 配置
+IBKR_APP_TYPE=tws  # 使用 TWS 端口 (配合 IBC)
+```
+
+| 应用类型 | Paper 端口 | Live 端口 |
+|----------|-----------|-----------|
+| TWS (`tws`) | 7497 | 7496 |
+| Gateway (`gateway`) | 4002 | 4001 |
+
+当 CLI 指定 `-a paper` 时，代码自动连接 7497；指定 `-a real` 时连接 7496。
+
+#### 使用方式
+
+**手动启动 TWS**：
+```bash
+~/start_tws.sh          # 默认 paper 账户
+~/start_tws.sh paper    # 明确指定 paper
+~/start_tws.sh live     # 切换到 live 账户
+```
+
+**定时任务中使用**：
+```bash
+# 确保 TWS 以正确账户运行，然后执行命令
+~/ensure_tws.sh paper && uv run optrade trade monitor -a paper --execute -y --push
+```
+
+**开机自启动** (macOS)：
+```bash
+launchctl load ~/Library/LaunchAgents/com.ibc.tws.plist    # 启用
+launchctl unload ~/Library/LaunchAgents/com.ibc.tws.plist  # 停用
+```
+
+#### 工作流程
+
+```
+定时任务触发
+      │
+      v
+┌─────────────────┐
+│ ensure_tws.sh   │ ──检测端口──> TWS 已运行且账户匹配? ──是──> 直接执行命令
+│     paper       │                    │
+└─────────────────┘                   否
+                                       │
+                                       v
+                              ┌─────────────────┐
+                              │   stop_tws()    │  杀掉旧进程
+                              └────────┬────────┘
+                                       │
+                                       v
+                              ┌─────────────────┐
+                              │ start_tws.sh    │  用正确配置启动
+                              │     paper       │
+                              └────────┬────────┘
+                                       │
+                                       v
+                              ┌─────────────────┐
+                              │ 等待端口就绪     │  最多 60 秒
+                              │   (7497)        │
+                              └────────┬────────┘
+                                       │
+                                       v
+                              执行 optrade 命令
+```
+
+#### 快速安装
+
+```bash
+# 1. 克隆 IBC
+cd ~ && git clone https://github.com/IbcAlpha/IBC.git
+
+# 2. 创建配置文件 (根据模板修改用户名密码)
+cp ~/IBC/resources/config.ini ~/IBC/config.ini
+cp ~/IBC/resources/config.ini ~/IBC/config-live.ini
+# 编辑 config.ini 设置 Paper 账户凭据
+# 编辑 config-live.ini 设置 Live 账户凭据
+
+# 3. 创建启动脚本 (参考上方 start_tws.sh 和 ensure_tws.sh)
+# 4. 设置执行权限
+chmod +x ~/start_tws.sh ~/ensure_tws.sh
+
+# 5. 测试启动
+~/start_tws.sh paper
+```
+
+详细配置参考：[IBC 用户指南](https://github.com/IbcAlpha/IBC/blob/master/userguide.md)
+
 ## 计算引擎层 (Calculation Engine)
 
 计算引擎层提供期权量化指标的计算功能，采用四层架构设计：
