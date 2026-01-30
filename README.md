@@ -17,6 +17,13 @@ option_quant_trade_system/
 │   │   ├── currency/            # 汇率转换 (Yahoo Finance FX)
 │   │   ├── formatters/          # 数据格式化 (QuantConnect)
 │   │   └── cache/               # 数据缓存 (Supabase)
+│   ├── backtest/                # 策略回测系统 (NEW)
+│   │   ├── config/              # 回测配置 (BacktestConfig)
+│   │   ├── data/                # 数据层 (ThetaData, DuckDB)
+│   │   ├── engine/              # 回测引擎 (Executor, Simulator)
+│   │   ├── analysis/            # 分析 (Metrics, TradeAnalyzer)
+│   │   ├── visualization/       # 可视化 (Plotly Dashboard)
+│   │   └── optimization/        # 优化 (Parallel, Sweep, Benchmark, WalkForward)
 │   └── engine/                  # 计算引擎层
 │       ├── models/              # 引擎数据模型
 │       │   ├── bs_params.py     # BSParams - B-S计算参数封装
@@ -1283,6 +1290,230 @@ print(get_sentiment_summary(hk_sentiment))
 - HK市场的`vhsi_3m_proxy`目前不可用（IBKR远期期权合约未上市），term_structure返回None
 - 综合评分采用加权计算：VIX(25%) + 期限结构(15%) + 主趋势(25%) + 次趋势(15%) + PCR(20%)
 - 缺失数据时权重自动重新分配
+
+## 策略回测系统 (Backtest Module)
+
+策略回测系统支持基于历史数据的期权策略验证，最大化复用现有 ScreeningPipeline/MonitoringPipeline。
+
+### 模块结构
+
+```
+src/backtest/
+├── config/                      # 回测配置
+│   └── backtest_config.py       # BacktestConfig 数据类
+├── data/                        # 数据层
+│   ├── thetadata_client.py      # ThetaData REST API 客户端
+│   ├── data_downloader.py       # 批量数据下载器
+│   ├── duckdb_provider.py       # DuckDB 数据提供者 (实现 DataProvider)
+│   └── schema.py                # DuckDB/Parquet 表结构定义
+├── engine/                      # 回测引擎
+│   ├── backtest_executor.py     # 回测执行器 (主入口)
+│   ├── account_simulator.py     # 账户模拟器 (资金/保证金)
+│   ├── position_tracker.py      # 持仓跟踪器
+│   └── trade_simulator.py       # 交易模拟器 (滑点/佣金)
+├── analysis/                    # 分析模块
+│   ├── metrics.py               # BacktestMetrics (Sharpe/Sortino/Calmar)
+│   └── trade_analyzer.py        # 交易分析 (按标的/月份/年份)
+├── visualization/               # 可视化
+│   └── dashboard.py             # Plotly 仪表盘 (HTML 报告)
+└── optimization/                # 优化模块
+    ├── parallel_runner.py       # 并行回测 (多进程/多线程)
+    ├── parameter_sweep.py       # 参数网格搜索
+    ├── benchmark.py             # 基准比较 (SPY Buy&Hold)
+    └── walk_forward.py          # 滚动验证 (过拟合检测)
+```
+
+### 快速开始
+
+```python
+from datetime import date
+from src.backtest import (
+    BacktestConfig,
+    DuckDBProvider,
+    BacktestExecutor,
+    BacktestMetrics,
+    BacktestDashboard,
+)
+
+# 1. 配置回测
+config = BacktestConfig(
+    name="SHORT_PUT_2023",
+    start_date=date(2023, 1, 1),
+    end_date=date(2023, 12, 31),
+    symbols=["AAPL", "MSFT", "NVDA"],
+    initial_capital=100_000,
+    max_positions=10,
+    max_position_pct=0.10,  # 单标的最大 10%
+)
+
+# 2. 创建数据提供者
+provider = DuckDBProvider(
+    data_dir="/path/to/thetadata",
+    as_of_date=config.start_date,
+)
+
+# 3. 运行回测
+executor = BacktestExecutor(config, provider)
+result = executor.run()
+
+# 4. 计算指标
+metrics = BacktestMetrics.from_backtest_result(result)
+print(f"总收益: {metrics.total_return_pct:.2%}")
+print(f"Sharpe: {metrics.sharpe_ratio:.2f}")
+print(f"最大回撤: {metrics.max_drawdown:.2%}")
+
+# 5. 生成报告
+dashboard = BacktestDashboard(result, metrics)
+dashboard.generate_report("reports/backtest_2023.html")
+```
+
+### CLI 命令
+
+```bash
+# 运行回测
+uv run optrade trade backtest --config config/backtest/short_put.yaml
+
+# 指定输出目录
+uv run optrade trade backtest --config short_put.yaml --output reports/
+
+# 详细日志
+uv run optrade trade backtest --config short_put.yaml -v
+```
+
+### 参数优化
+
+```python
+from src.backtest import ParameterSweep, SweepResult
+
+# 创建参数搜索
+sweep = ParameterSweep(base_config)
+sweep.add_param("max_positions", [5, 10, 15])
+sweep.add_param("max_position_pct", [0.05, 0.10, 0.15])
+
+# 并行执行 (9 种组合)
+result = sweep.run(max_workers=4)
+
+# 查看最佳参数
+print(f"最佳 Sharpe 参数: {result.best_by_sharpe.params}")
+print(f"最佳收益参数: {result.best_by_return.params}")
+
+# 生成热力图
+x, y, z = result.get_heatmap_data("max_positions", "max_position_pct", "sharpe_ratio")
+```
+
+### 基准比较
+
+```python
+from src.backtest import BenchmarkComparison
+
+# 与 SPY 比较
+benchmark = BenchmarkComparison(result)
+comparison = benchmark.compare_with_spy(provider)
+
+print(f"策略收益: {comparison.strategy_total_return:.2%}")
+print(f"SPY收益: {comparison.benchmark_total_return:.2%}")
+print(f"Alpha: {comparison.alpha:.2%}")
+print(f"Beta: {comparison.beta:.2f}")
+print(f"信息比率: {comparison.information_ratio:.2f}")
+
+# 集成到仪表盘
+dashboard = BacktestDashboard(result, metrics, benchmark_result=comparison)
+dashboard.generate_report("reports/backtest_with_benchmark.html")
+```
+
+### Walk-Forward 验证
+
+```python
+from src.backtest import WalkForwardValidator
+
+# 滚动验证 (12个月训练 + 3个月测试)
+validator = WalkForwardValidator(base_config)
+wf_result = validator.run(
+    train_months=12,
+    test_months=3,
+    n_splits=4,
+)
+
+print(f"样本内收益: {wf_result.is_total_return:.2%}")
+print(f"样本外收益: {wf_result.oos_total_return:.2%}")
+print(f"过拟合评分: {wf_result.overfitting_score:.2f}")  # 0-1, 越高越可能过拟合
+
+# 查看详细摘要
+print(wf_result.summary())
+```
+
+### 性能优化
+
+```python
+from src.backtest import ParallelBacktestRunner
+
+# 多标的并行回测
+runner = ParallelBacktestRunner(max_workers=4)
+result = runner.run_multi_symbol(
+    base_config=config,
+    symbols=["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN"],
+)
+
+print(f"完成: {result.completed_tasks}/{result.total_tasks}")
+print(f"成功率: {result.success_rate:.1%}")
+
+# 创建优化的 DuckDB 数据库 (带索引)
+provider.create_optimized_db("backtest.duckdb", symbols=["AAPL", "MSFT"])
+provider.use_optimized_db("backtest.duckdb")
+```
+
+### Greeks 计算缓存
+
+```python
+from src.engine.bs import calc_bs_greeks_cached, get_greeks_cache_info
+
+# 使用缓存的 Greeks 计算 (重复计算时性能提升显著)
+greeks = calc_bs_greeks_cached(params)
+
+# 查看缓存效率
+info = get_greeks_cache_info()
+print(f"缓存命中率: {info.hits / (info.hits + info.misses):.1%}")
+```
+
+### 数据准备
+
+回测系统使用 ThetaData 作为历史数据源。数据需要预先下载到本地：
+
+```python
+from src.backtest import ThetaDataClient, DataDownloader
+
+# 1. 创建客户端
+client = ThetaDataClient(api_key="your_api_key")
+
+# 2. 下载数据
+downloader = DataDownloader(client, data_dir="/path/to/data")
+downloader.download_symbols(
+    symbols=["AAPL", "MSFT"],
+    start_date=date(2020, 1, 1),
+    end_date=date(2024, 12, 31),
+)
+```
+
+### 回测配置文件
+
+```yaml
+# config/backtest/short_put.yaml
+name: SHORT_PUT_2020_2024
+start_date: 2020-01-01
+end_date: 2024-12-31
+symbols:
+  - AAPL
+  - MSFT
+  - NVDA
+strategy_type: SHORT_PUT
+initial_capital: 100000
+max_margin_utilization: 0.5
+max_position_pct: 0.10
+max_positions: 10
+slippage_pct: 0.001
+commission_per_contract: 0.65
+data_dir: /Volumes/TradingData/thetadata
+```
 
 ## 账户持仓模块 (Account & Position)
 

@@ -1168,3 +1168,253 @@ def cancel(order_id: str, confirm: bool) -> None:
         logger.exception("Failed to cancel order")
         click.echo(f"Error: {e}", err=True)
         raise SystemExit(1)
+
+
+# ============================================================================
+# Backtest Commands
+# ============================================================================
+
+
+@trade.group()
+def backtest() -> None:
+    """策略回测
+
+    \b
+    回测命令:
+      run      运行回测
+      report   生成报告
+    """
+    pass
+
+
+@backtest.command("run")
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(exists=True),
+    required=True,
+    help="回测配置文件路径 (YAML)",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default="reports/backtest",
+    help="输出目录 (默认: reports/backtest)",
+)
+@click.option(
+    "--report/--no-report",
+    default=True,
+    help="是否生成 HTML 报告",
+)
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    help="显示详细日志",
+)
+def backtest_run(
+    config: str,
+    output: str,
+    report: bool,
+    verbose: bool,
+) -> None:
+    """运行策略回测
+
+    从 YAML 配置文件运行回测，生成 HTML 报告。
+
+    \b
+    配置文件示例 (config/backtest/short_put.yaml):
+      name: SHORT_PUT_2024
+      start_date: 2024-01-01
+      end_date: 2024-12-31
+      symbols: [AAPL, MSFT, GOOGL]
+      strategy_type: short_put
+      initial_capital: 100000
+
+    \b
+    示例:
+      optrade trade backtest run -c config/backtest/short_put.yaml
+      optrade trade backtest run -c config.yaml -o reports/my_backtest
+    """
+    # 配置日志
+    log_level = logging.DEBUG if verbose else logging.WARNING
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+
+    from pathlib import Path
+
+    try:
+        from src.backtest import (
+            BacktestConfig,
+            BacktestExecutor,
+            BacktestMetrics,
+            BacktestDashboard,
+        )
+    except ImportError as e:
+        raise click.ClickException(f"Backtest module not available: {e}")
+
+    click.echo("\n" + "=" * 60)
+    click.echo("📊 Strategy Backtest")
+    click.echo("=" * 60)
+
+    # 1. 加载配置
+    click.echo(f"\n📄 加载配置: {config}")
+    try:
+        bt_config = BacktestConfig.from_yaml(config)
+    except Exception as e:
+        raise click.ClickException(f"配置加载失败: {e}")
+
+    click.echo(f"   名称: {bt_config.name}")
+    click.echo(f"   区间: {bt_config.start_date} ~ {bt_config.end_date}")
+    click.echo(f"   标的: {', '.join(bt_config.symbols[:5])}{'...' if len(bt_config.symbols) > 5 else ''}")
+    click.echo(f"   策略: {bt_config.strategy_type.value}")
+    click.echo(f"   本金: ${bt_config.initial_capital:,.0f}")
+
+    # 2. 创建执行器
+    click.echo(f"\n🚀 运行回测...")
+
+    # 进度条
+    progress_bar = None
+
+    def progress_callback(current_date, current_day, total_days):
+        nonlocal progress_bar
+        if progress_bar is None:
+            progress_bar = click.progressbar(
+                length=total_days,
+                label="   Progress",
+                show_pos=True,
+            )
+            progress_bar.__enter__()
+        progress_bar.update(1)
+
+    try:
+        executor = BacktestExecutor(
+            config=bt_config,
+            progress_callback=progress_callback,
+        )
+
+        result = executor.run()
+
+        # 关闭进度条
+        if progress_bar:
+            progress_bar.__exit__(None, None, None)
+
+    except Exception as e:
+        if progress_bar:
+            progress_bar.__exit__(None, None, None)
+        raise click.ClickException(f"回测执行失败: {e}")
+
+    # 3. 计算指标
+    click.echo(f"\n📈 计算指标...")
+    metrics = BacktestMetrics.from_backtest_result(result)
+
+    # 4. 显示结果摘要
+    click.echo(f"\n" + "=" * 60)
+    click.echo("📊 回测结果摘要")
+    click.echo("=" * 60)
+
+    click.echo(f"\n--- 收益 ---")
+    click.echo(f"   总收益:     ${metrics.total_return:,.2f} ({metrics.total_return_pct:.2%})")
+    if metrics.annualized_return is not None:
+        click.echo(f"   年化收益:   {metrics.annualized_return:.2%}")
+    click.echo(f"   最终净值:   ${metrics.final_nlv:,.2f}")
+
+    click.echo(f"\n--- 风险 ---")
+    if metrics.max_drawdown is not None:
+        click.echo(f"   最大回撤:   {metrics.max_drawdown:.2%}")
+    if metrics.volatility is not None:
+        click.echo(f"   波动率:     {metrics.volatility:.2%}")
+
+    click.echo(f"\n--- 风险调整收益 ---")
+    if metrics.sharpe_ratio is not None:
+        click.echo(f"   Sharpe:     {metrics.sharpe_ratio:.2f}")
+    if metrics.sortino_ratio is not None:
+        click.echo(f"   Sortino:    {metrics.sortino_ratio:.2f}")
+    if metrics.calmar_ratio is not None:
+        click.echo(f"   Calmar:     {metrics.calmar_ratio:.2f}")
+
+    click.echo(f"\n--- 交易 ---")
+    click.echo(f"   总交易数:   {metrics.total_trades}")
+    if metrics.win_rate is not None:
+        click.echo(f"   胜率:       {metrics.win_rate:.1%}")
+    if metrics.profit_factor is not None:
+        click.echo(f"   盈亏比:     {metrics.profit_factor:.2f}")
+
+    click.echo(f"\n--- 费用 ---")
+    click.echo(f"   佣金:       ${metrics.total_commission:,.2f}")
+    click.echo(f"   滑点:       ${metrics.total_slippage:,.2f}")
+    click.echo(f"   总费用占比: {metrics.commission_pct:.2%}")
+
+    # 5. 生成报告
+    if report:
+        click.echo(f"\n📝 生成报告...")
+        output_dir = Path(output)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        report_path = output_dir / f"{bt_config.name}_{bt_config.end_date}.html"
+
+        try:
+            dashboard = BacktestDashboard(result, metrics)
+            dashboard.generate_report(report_path)
+            click.echo(f"   ✅ 报告已保存: {report_path}")
+        except ImportError:
+            click.echo(f"   ⚠️  Plotly 未安装，跳过 HTML 报告")
+            click.echo(f"      安装: pip install plotly")
+        except Exception as e:
+            click.echo(f"   ⚠️  报告生成失败: {e}")
+
+        # 保存 JSON 结果
+        json_path = output_dir / f"{bt_config.name}_{bt_config.end_date}.json"
+        try:
+            with open(json_path, "w") as f:
+                json.dump(metrics.to_dict(), f, indent=2, default=str)
+            click.echo(f"   ✅ JSON 已保存: {json_path}")
+        except Exception as e:
+            click.echo(f"   ⚠️  JSON 保存失败: {e}")
+
+    click.echo(f"\n" + "=" * 60)
+    click.echo(f"✅ 回测完成 ({result.execution_time_seconds:.1f}s)")
+    click.echo("=" * 60 + "\n")
+
+
+@backtest.command("report")
+@click.argument("result_json", type=click.Path(exists=True))
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    help="输出 HTML 路径 (默认与 JSON 同名)",
+)
+def backtest_report(result_json: str, output: str) -> None:
+    """从 JSON 结果生成 HTML 报告
+
+    \b
+    示例:
+      optrade trade backtest report reports/backtest/SHORT_PUT_2024.json
+    """
+    from pathlib import Path
+
+    json_path = Path(result_json)
+
+    if output:
+        output_path = Path(output)
+    else:
+        output_path = json_path.with_suffix(".html")
+
+    click.echo(f"\n📝 生成报告: {output_path}")
+
+    try:
+        # 加载 JSON
+        with open(json_path) as f:
+            data = json.load(f)
+
+        # 由于我们只有 metrics，创建一个最小的报告
+        # 实际上需要完整的 BacktestResult 来生成完整报告
+        click.echo(f"   ⚠️  仅从 JSON 生成报告需要完整的回测结果")
+        click.echo(f"   建议使用 'backtest run' 直接生成报告")
+
+    except Exception as e:
+        raise click.ClickException(f"报告生成失败: {e}")

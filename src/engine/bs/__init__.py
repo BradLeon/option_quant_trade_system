@@ -30,6 +30,14 @@ from src.engine.bs.greeks import (
     calc_bs_theta,
     calc_bs_vega,
 )
+from src.engine.bs.greeks_cache import (
+    CachedGreeksCalculator,
+    GreeksResult,
+    calc_bs_greeks_cached,
+    clear_greeks_cache,
+    get_cached_calculator,
+    get_greeks_cache_info,
+)
 from src.engine.bs.probability import (
     calc_call_exercise_prob,
     calc_call_itm_prob,
@@ -59,6 +67,13 @@ __all__ = [
     "calc_bs_vega",
     "calc_bs_rho",
     "calc_bs_greeks",
+    # Cached Greeks calculations
+    "CachedGreeksCalculator",
+    "GreeksResult",
+    "calc_bs_greeks_cached",
+    "clear_greeks_cache",
+    "get_cached_calculator",
+    "get_greeks_cache_info",
     # Probability calculations
     "calc_exercise_prob",
     "calc_itm_prob",
