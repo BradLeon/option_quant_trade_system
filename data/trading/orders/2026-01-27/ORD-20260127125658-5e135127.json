@@ -1,0 +1,59 @@
+{
+  "order": {
+    "order_id": "ORD-20260127125658-5e135127",
+    "decision_id": "DEC-20260127125658-4d87dae2",
+    "symbol": "AAPL 250221P00180000",
+    "asset_class": "option",
+    "underlying": "AAPL",
+    "option_type": "put",
+    "strike": 180.0,
+    "expiry": "2025-02-21",
+    "trading_class": null,
+    "side": "buy",
+    "order_type": "market",
+    "quantity": 2,
+    "limit_price": null,
+    "stop_price": null,
+    "time_in_force": "DAY",
+    "contract_multiplier": 100,
+    "currency": "USD",
+    "broker": "ibkr",
+    "account_type": "paper",
+    "status": "submitted",
+    "validation_errors": [],
+    "created_at": "2026-01-27T12:56:58.776714",
+    "updated_at": "2026-01-27T12:56:58.776752",
+    "context": {
+      "decision_type": "close",
+      "source": "monitor_alert",
+      "priority": "high",
+      "reason": "达到止盈目标 65%",
+      "trigger_alerts": [
+        "达到止盈目标"
+      ],
+      "price_type": "mid"
+    }
+  },
+  "fills": [],
+  "total_filled_quantity": 0,
+  "average_fill_price": null,
+  "total_commission": 0.0,
+  "status_history": [
+    [
+      "approved",
+      "2026-01-27T12:56:58.776744",
+      "Order validated"
+    ],
+    [
+      "submitted",
+      "2026-01-27T12:56:58.776753",
+      "Submitted to ibkr, broker_id=MOCK-17E02CBE"
+    ]
+  ],
+  "broker_order_id": "MOCK-17E02CBE",
+  "broker_status": null,
+  "is_complete": false,
+  "completion_time": null,
+  "error_message": null,
+  "retry_count": 0
+}

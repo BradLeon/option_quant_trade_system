@@ -647,9 +647,9 @@ def _print_opportunity_card(opp, index: int) -> None:
 @click.option(
     "--account-type",
     "-a",
-    type=click.Choice(["paper", "real"]),
+    type=click.Choice(["paper", "live"]),
     default="paper",
-    help="账户类型：paper（模拟）或 real（真实）",
+    help="账户类型：paper（模拟）或 live（真实）",
 )
 @click.option(
     "--urgency",
@@ -722,8 +722,8 @@ def trade_monitor(
 
     # 转换 account_type 字符串为枚举
     from src.data.models.account import AccountType as AccType
-    acc_type_enum = AccType.PAPER if account_type == "paper" else AccType.REAL
-    acc_type_label = "Paper" if account_type == "paper" else "Real"
+    acc_type_enum = AccType.PAPER if account_type == "paper" else AccType.LIVE
+    acc_type_label = "Paper" if account_type == "paper" else "Live"
 
     click.echo("\n" + "=" * 60)
     click.echo("📊 Trade Monitor (Monitor → Trade 全流程)")

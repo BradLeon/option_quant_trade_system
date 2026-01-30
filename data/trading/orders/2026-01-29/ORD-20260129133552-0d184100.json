@@ -1,0 +1,57 @@
+{
+  "order": {
+    "order_id": "ORD-20260129133552-0d184100",
+    "decision_id": "DEC-20260129133551-4d593b73",
+    "symbol": "9988.HK",
+    "asset_class": "option",
+    "underlying": "9988.HK",
+    "option_type": "put",
+    "strike": 160.0,
+    "expiry": "2026-02-06",
+    "trading_class": "ALB",
+    "side": "sell",
+    "order_type": "limit",
+    "quantity": 1,
+    "limit_price": 0.6,
+    "stop_price": null,
+    "time_in_force": "DAY",
+    "contract_multiplier": 100,
+    "currency": "HKD",
+    "broker": "ibkr",
+    "account_type": "paper",
+    "status": "submitted",
+    "validation_errors": [],
+    "created_at": "2026-01-29T13:35:52.122901",
+    "updated_at": "2026-01-29T13:35:52.768401",
+    "context": {
+      "decision_type": "open",
+      "source": "screen_signal",
+      "priority": "normal",
+      "reason": "通过三层筛选 | ROC=11.8% | 胜率=89% | Kelly=0.01 | Δ=-0.10 | Θ=-0.12",
+      "trigger_alerts": [],
+      "price_type": "mid"
+    }
+  },
+  "fills": [],
+  "total_filled_quantity": 0,
+  "average_fill_price": null,
+  "total_commission": 0.0,
+  "status_history": [
+    [
+      "approved",
+      "2026-01-29T13:35:52.123146",
+      "Order validated"
+    ],
+    [
+      "submitted",
+      "2026-01-29T13:35:52.768408",
+      "Submitted to ibkr, broker_id=4, status=PreSubmitted"
+    ]
+  ],
+  "broker_order_id": "4",
+  "broker_status": "PreSubmitted",
+  "is_complete": false,
+  "completion_time": null,
+  "error_message": null,
+  "retry_count": 0
+}

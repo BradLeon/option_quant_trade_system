@@ -683,7 +683,7 @@ def main():
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    account_type = AccountType.PAPER if args.account_type == "paper" else AccountType.REAL
+    account_type = AccountType.PAPER if args.account_type == "paper" else AccountType.LIVE
 
     print("\n" + "=" * 120)
     print("  Position-Level Strategy Verification")

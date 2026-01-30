@@ -183,24 +183,24 @@ TGR = |Theta| / (|Gamma| × S² × σ_daily) × 100
 ### 命令行监控
 
 ```bash
-# 实时监控（real 账户）
-python src/business/cli/main.py monitor --account-type real
+# 实时监控（live 账户）
+python src/business/cli/main.py monitor --account-type live
 
 # 纸交易监控（paper 账户）
 python src/business/cli/main.py monitor --account-type paper
 
 # 启用详细日志
-python src/business/cli/main.py monitor --account-type real -v
+python src/business/cli/main.py monitor --account-type live -v
 ```
 
 ### 仪表板模式
 
 ```bash
 # 启动 Dashboard（实时刷新）
-python src/business/cli/main.py dashboard --account-type real
+python src/business/cli/main.py dashboard --account-type live
 
 # 指定刷新间隔（秒）
-python src/business/cli/main.py dashboard --account-type real --refresh 30
+python src/business/cli/main.py dashboard --account-type live --refresh 30
 ```
 
 ### 输出示例

@@ -1,0 +1,67 @@
+{
+  "order": {
+    "order_id": "ORD-20260130100543-fff6affc",
+    "decision_id": "DEC-20260130100512-14fe662c",
+    "symbol": "9988.HK PUT 148 02/26",
+    "asset_class": "option",
+    "underlying": "9988.HK",
+    "option_type": "put",
+    "strike": 147.5,
+    "expiry": "20260226",
+    "trading_class": "ALB",
+    "side": "buy",
+    "order_type": "market",
+    "quantity": 1,
+    "limit_price": null,
+    "stop_price": null,
+    "time_in_force": "DAY",
+    "contract_multiplier": 500,
+    "currency": "HKD",
+    "broker": "ibkr",
+    "account_type": "paper",
+    "status": "submitted",
+    "validation_errors": [],
+    "created_at": "2026-01-30T10:05:43.246976",
+    "updated_at": "2026-01-30T10:05:44.556100",
+    "context": {
+      "decision_type": "close",
+      "source": "monitor_alert",
+      "priority": "critical",
+      "reason": "TGR 过低: 0.01，时间收益/波动风险比不足 → 平仓换到更高效的合约",
+      "trigger_alerts": [
+        "9988.HK otm_pct 正常: 0.12410926365795727",
+        "9988.HK delta 正常: 0.11329549218665422",
+        "9988.HK dte 正常: 26",
+        "持仓 9988.HK 盈亏: -27.1%",
+        "Gamma Risk% 偏高: 0.51%",
+        "TGR 过低: 0.01，时间收益/波动风险比不足",
+        "IV/HV 偏低: 1.06",
+        "Expected ROC 为负: -85.7%，预期亏损",
+        "9988.HK win_probability 正常: 0.868661308897297"
+      ],
+      "price_type": "market"
+    }
+  },
+  "fills": [],
+  "total_filled_quantity": 0,
+  "average_fill_price": null,
+  "total_commission": 0.0,
+  "status_history": [
+    [
+      "approved",
+      "2026-01-30T10:05:43.247163",
+      "Order validated"
+    ],
+    [
+      "submitted",
+      "2026-01-30T10:05:44.556110",
+      "Submitted to ibkr, broker_id=4, status=Submitted"
+    ]
+  ],
+  "broker_order_id": "4",
+  "broker_status": "Submitted",
+  "is_complete": false,
+  "completion_time": null,
+  "error_message": null,
+  "retry_count": 0
+}

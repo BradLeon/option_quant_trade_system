@@ -14,7 +14,7 @@ from src.data.models.enums import Market
 class AccountType(Enum):
     """Account type enumeration."""
 
-    REAL = "real"
+    LIVE = "live"
     PAPER = "paper"
 
 

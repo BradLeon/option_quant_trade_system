@@ -1,0 +1,57 @@
+{
+  "order": {
+    "order_id": "ORD-20260128172240-e13838d0",
+    "decision_id": "DEC-20260128172239-1c1920ad",
+    "symbol": "GOOG",
+    "asset_class": "option",
+    "underlying": "GOOG",
+    "option_type": "put",
+    "strike": 312.5,
+    "expiry": "2026-02-06",
+    "trading_class": "GOOG",
+    "side": "sell",
+    "order_type": "limit",
+    "quantity": 1,
+    "limit_price": 3.05,
+    "stop_price": null,
+    "time_in_force": "DAY",
+    "contract_multiplier": 100,
+    "currency": "USD",
+    "broker": "ibkr",
+    "account_type": "paper",
+    "status": "submitted",
+    "validation_errors": [],
+    "created_at": "2026-01-28T17:22:40.202929",
+    "updated_at": "2026-01-28T17:22:40.772764",
+    "context": {
+      "decision_type": "open",
+      "source": "screen_signal",
+      "priority": "normal",
+      "reason": "通过三层筛选 | ROC=49.0% | 胜率=81% | Kelly=0.01 | Δ=-0.19 | Θ=-0.36",
+      "trigger_alerts": [],
+      "price_type": "mid"
+    }
+  },
+  "fills": [],
+  "total_filled_quantity": 0,
+  "average_fill_price": null,
+  "total_commission": 0.0,
+  "status_history": [
+    [
+      "approved",
+      "2026-01-28T17:22:40.203105",
+      "Order validated"
+    ],
+    [
+      "submitted",
+      "2026-01-28T17:22:40.772773",
+      "Submitted to ibkr, broker_id=4, status=PreSubmitted"
+    ]
+  ],
+  "broker_order_id": "4",
+  "broker_status": "PreSubmitted",
+  "is_complete": false,
+  "completion_time": null,
+  "error_message": null,
+  "retry_count": 0
+}

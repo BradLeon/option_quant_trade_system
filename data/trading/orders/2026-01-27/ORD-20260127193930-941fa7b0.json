@@ -1,0 +1,67 @@
+{
+  "order": {
+    "order_id": "ORD-20260127193930-941fa7b0",
+    "decision_id": "DEC-20260127193926-b4e29919",
+    "symbol": "9988.HK CALL 20 01/29",
+    "asset_class": "option",
+    "underlying": "9988.HK",
+    "option_type": "call",
+    "strike": 19.87001061439514,
+    "expiry": "20260129",
+    "trading_class": "ALB",
+    "side": "buy",
+    "order_type": "market",
+    "quantity": 1,
+    "limit_price": null,
+    "stop_price": null,
+    "time_in_force": "DAY",
+    "contract_multiplier": 500,
+    "currency": "HKD",
+    "broker": "ibkr",
+    "account_type": "paper",
+    "status": "submitted",
+    "validation_errors": [],
+    "created_at": "2026-01-27T19:39:30.680803",
+    "updated_at": "2026-01-27T19:39:31.683510",
+    "context": {
+      "decision_type": "close",
+      "source": "monitor_alert",
+      "priority": "critical",
+      "reason": "持仓 9988.HK 触发止损: -347.9% → 平仓 Call 腿止损",
+      "trigger_alerts": [
+        "OTM% 过低: -8.6%，接近行权",
+        "|Delta| 过大: 0.93，接近行权",
+        "DTE < 3 天: 1 天，接近到期",
+        "持仓 9988.HK 触发止损: -347.9%",
+        "Gamma Risk% 偏高: 15.37%（正股覆盖，风险可控）",
+        "TGR 过低: 0.90，时间收益/波动风险比不足",
+        "IV/HV 偏低: 1.11",
+        "9988.HK expected_roc 正常: 0.19846879459537967",
+        "9988.HK win_probability 正常: 0.9999999999999938"
+      ],
+      "price_type": "market"
+    }
+  },
+  "fills": [],
+  "total_filled_quantity": 0,
+  "average_fill_price": null,
+  "total_commission": 0.0,
+  "status_history": [
+    [
+      "approved",
+      "2026-01-27T19:39:30.681105",
+      "Order validated"
+    ],
+    [
+      "submitted",
+      "2026-01-27T19:39:31.683524",
+      "Submitted to ibkr, broker_id=3"
+    ]
+  ],
+  "broker_order_id": "3",
+  "broker_status": null,
+  "is_complete": false,
+  "completion_time": null,
+  "error_message": null,
+  "retry_count": 0
+}

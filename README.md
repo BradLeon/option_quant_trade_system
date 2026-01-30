@@ -234,7 +234,7 @@ uv run optrade monitor --help
 uv run optrade monitor -a paper
 
 # 从真实账户监控
-uv run optrade monitor -a real
+uv run optrade monitor -a live
 
 # 仅使用 IBKR 账户
 uv run optrade monitor -a paper --ibkr-only
@@ -265,7 +265,7 @@ uv run optrade monitor -a paper -v
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `-a, --account-type` | 账户类型：`paper`, `real` | - |
+| `-a, --account-type` | 账户类型：`paper`, `live` | - |
 | `--ibkr-only` | 仅使用 IBKR 账户 | 否 |
 | `--futu-only` | 仅使用 Futu 账户 | 否 |
 | `-p, --positions` | 持仓数据 JSON 文件 | - |
@@ -301,7 +301,7 @@ uv run optrade dashboard
 uv run optrade dashboard -a paper
 
 # 从真实账户获取数据
-uv run optrade dashboard -a real
+uv run optrade dashboard -a live
 
 # 自动刷新（每30秒）
 uv run optrade dashboard -a paper -r 30
@@ -323,7 +323,7 @@ uv run optrade dashboard -a paper -v
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `-a, --account-type` | 账户类型：`paper`, `real` | 使用示例数据 |
+| `-a, --account-type` | 账户类型：`paper`, `live` | 使用示例数据 |
 | `--ibkr-only` | 仅使用 IBKR 账户 | 否 |
 | `--futu-only` | 仅使用 Futu 账户 | 否 |
 | `-r, --refresh` | 自动刷新间隔（秒），0=不刷新 | `0` |
@@ -899,7 +899,7 @@ IBKR_APP_TYPE=tws  # 使用 TWS 端口 (配合 IBC)
 | TWS (`tws`) | 7497 | 7496 |
 | Gateway (`gateway`) | 4002 | 4001 |
 
-当 CLI 指定 `-a paper` 时，代码自动连接 7497；指定 `-a real` 时连接 7496。
+当 CLI 指定 `-a paper` 时，代码自动连接 7497；指定 `-a live` 时连接 7496。
 
 #### 使用方式
 
@@ -1329,7 +1329,7 @@ from src.data.providers.account_aggregator import AccountAggregator
 from src.data.models import AccountType
 
 # 连接多个券商
-with IBKRProvider(account_type=AccountType.REAL) as ibkr, \
+with IBKRProvider(account_type=AccountType.LIVE) as ibkr, \
      FutuProvider() as futu:
 
     # 创建 UnifiedProvider 用于期权 Greeks 路由
@@ -1348,7 +1348,7 @@ with IBKRProvider(account_type=AccountType.REAL) as ibkr, \
 
     # 获取合并后的投资组合
     portfolio = aggregator.get_consolidated_portfolio(
-        account_type=AccountType.REAL,
+        account_type=AccountType.LIVE,
         base_currency="USD",
     )
 
@@ -1762,16 +1762,16 @@ HTTPS_PROXY=http://127.0.0.1:33210
 # HK 交易时段: 北京时间 09:30-16:00
 # ------------------------------------------------------------
 # US 市场监控（每小时整点）
-0 22,23 * * 1-5 cd $PROJECT_DIR && uv run optrade monitor -a real --push >> logs/monitor_$(date +\%Y\%m\%d).log 2>&1
-0 0,1,2,3,4,5,6 * * 2-6 cd $PROJECT_DIR && uv run optrade monitor -a real --push >> logs/monitor_$(date +\%Y\%m\%d).log 2>&1
+0 22,23 * * 1-5 cd $PROJECT_DIR && uv run optrade monitor -a live --push >> logs/monitor_$(date +\%Y\%m\%d).log 2>&1
+0 0,1,2,3,4,5,6 * * 2-6 cd $PROJECT_DIR && uv run optrade monitor -a live --push >> logs/monitor_$(date +\%Y\%m\%d).log 2>&1
 
 # HK 市场监控（每小时整点）
-0 10,11,12,13,14,15,16 * * 1-5 cd $PROJECT_DIR && uv run optrade monitor -a real --push >> logs/monitor_$(date +\%Y\%m\%d).log 2>&1
+0 10,11,12,13,14,15,16 * * 1-5 cd $PROJECT_DIR && uv run optrade monitor -a live --push >> logs/monitor_$(date +\%Y\%m\%d).log 2>&1
 
 # ------------------------------------------------------------
 # Dashboard 仪表盘: 每天 9:30, 16:30, 22:30 (轻量级展示)
 # ------------------------------------------------------------
-30 9,16,22 * * * cd $PROJECT_DIR && uv run optrade dashboard -a real --push >> logs/dashboard_$(date +\%Y\%m\%d).log 2>&1
+30 9,16,22 * * * cd $PROJECT_DIR && uv run optrade dashboard -a live --push >> logs/dashboard_$(date +\%Y\%m\%d).log 2>&1
 ```
 
 **常见问题排查**：

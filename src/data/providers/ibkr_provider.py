@@ -156,7 +156,7 @@ class IBKRProvider(DataProvider, AccountProvider):
         port: int | None = None,
         client_id: int | None = None,
         timeout: int = 30,
-        account_type: AccountType = AccountType.REAL,
+        account_type: AccountType = AccountType.LIVE,
     ) -> None:
         """Initialize IBKR provider.
 

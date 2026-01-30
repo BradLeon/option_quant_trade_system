@@ -1,0 +1,57 @@
+{
+  "order": {
+    "order_id": "ORD-20260128161903-7f47756e",
+    "decision_id": "DEC-20260128161902-5464763b",
+    "symbol": "9988.HK",
+    "asset_class": "option",
+    "underlying": "9988.HK",
+    "option_type": "put",
+    "strike": 160.0,
+    "expiry": "2026-02-06",
+    "trading_class": "ALB",
+    "side": "sell",
+    "order_type": "limit",
+    "quantity": 1,
+    "limit_price": 0.82,
+    "stop_price": null,
+    "time_in_force": "DAY",
+    "contract_multiplier": 100,
+    "currency": "HKD",
+    "broker": "ibkr",
+    "account_type": "paper",
+    "status": "rejected",
+    "validation_errors": [],
+    "created_at": "2026-01-28T16:19:03.389483",
+    "updated_at": "2026-01-28T16:19:03.894493",
+    "context": {
+      "decision_type": "open",
+      "source": "screen_signal",
+      "priority": "normal",
+      "reason": "通过三层筛选 | ROC=31.4% | 胜率=88% | Kelly=0.03 | Δ=-0.12 | Θ=-0.13",
+      "trigger_alerts": [],
+      "price_type": "mid"
+    }
+  },
+  "fills": [],
+  "total_filled_quantity": 0,
+  "average_fill_price": null,
+  "total_commission": 0.0,
+  "status_history": [
+    [
+      "approved",
+      "2026-01-28T16:19:03.389537",
+      "Order validated"
+    ],
+    [
+      "rejected",
+      "2026-01-28T16:19:03.894501",
+      "Rejected: Order rejected by IBKR: [200] \\u672a\\u627e\\u5230\\u8be5\\u8bf7\\u6c42\\u7684\\u8bc1\\u5238\\u5b9a\\u4e49; Error 200, reqId 3: \\u672a\\u627e\\u5230\\u8be5\\u8bf7\\u6c42\\u7684\\u8bc1\\u5238\\u5b9a\\u4e49, status=Cancelled"
+    ]
+  ],
+  "broker_order_id": "3",
+  "broker_status": "Cancelled",
+  "is_complete": false,
+  "completion_time": null,
+  "error_message": "Order rejected by IBKR: [200] \\u672a\\u627e\\u5230\\u8be5\\u8bf7\\u6c42\\u7684\\u8bc1\\u5238\\u5b9a\\u4e49; Error 200, reqId 3: \\u672a\\u627e\\u5230\\u8be5\\u8bf7\\u6c42\\u7684\\u8bc1\\u5238\\u5b9a\\u4e49",
+  "retry_count": 0
+}

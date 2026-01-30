@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from src.data.providers.futu_provider import FutuProvider
     from src.data.providers.ibkr_provider import IBKRProvider
 
-AccountTypeStr = Literal["paper", "real"]
+AccountTypeStr = Literal["paper", "live"]
 
 
 @dataclass
@@ -55,8 +55,8 @@ class BrokerManager:
     """统一的 Broker Provider 管理器
 
     将 account_type 字符串统一映射到正确的 provider 配置:
-    - "paper" -> IBKR port 4002, Futu SIMULATE
-    - "real"  -> IBKR port 4001, Futu REAL
+    - "paper" -> IBKR port 7497/4002, Futu SIMULATE
+    - "live"  -> IBKR port 7496/4001, Futu REAL
 
     Usage:
         manager = BrokerManager(account_type="paper")
@@ -75,10 +75,10 @@ class BrokerManager:
         """初始化 BrokerManager
 
         Args:
-            account_type: "paper" 或 "real"
+            account_type: "paper" 或 "live"
         """
         self._account_type = (
-            AccountType.PAPER if account_type == "paper" else AccountType.REAL
+            AccountType.PAPER if account_type == "paper" else AccountType.LIVE
         )
         self._account_type_str = account_type
 

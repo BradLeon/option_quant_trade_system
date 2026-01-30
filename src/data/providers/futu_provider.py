@@ -1008,7 +1008,7 @@ class FutuProvider(DataProvider, AccountProvider):
         option_symbol: str,
         price: float,
         lot_size: int = 100,
-        account_type: AccountType = AccountType.REAL,
+        account_type: AccountType = AccountType.LIVE,
     ) -> MarginRequirement | None:
         """Get margin requirement for a short option position.
 

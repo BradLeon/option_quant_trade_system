@@ -1,0 +1,66 @@
+{
+  "order": {
+    "order_id": "ORD-20260127202443-eb7bd54a",
+    "decision_id": "DEC-20260127202324-22ca70a2",
+    "symbol": "9988.HK CALL 155 01/29",
+    "asset_class": "option",
+    "underlying": "9988.HK",
+    "option_type": "call",
+    "strike": 155.0,
+    "expiry": "20260129",
+    "trading_class": "ALB",
+    "side": "buy",
+    "order_type": "market",
+    "quantity": 1,
+    "limit_price": null,
+    "stop_price": null,
+    "time_in_force": "DAY",
+    "contract_multiplier": 500,
+    "currency": "HKD",
+    "broker": "ibkr",
+    "account_type": "paper",
+    "status": "rejected",
+    "validation_errors": [],
+    "created_at": "2026-01-27T20:24:43.413957",
+    "updated_at": "2026-01-27T20:24:43.718476",
+    "context": {
+      "decision_type": "close",
+      "source": "monitor_alert",
+      "priority": "critical",
+      "reason": "持仓 9988.HK 触发止损: -347.9% → 平仓 Call 腿止损",
+      "trigger_alerts": [
+        "OTM% 过低: -8.6%，接近行权",
+        "|Delta| 过大: 0.93，接近行权",
+        "DTE < 3 天: 1 天，接近到期",
+        "持仓 9988.HK 触发止损: -347.9%",
+        "Gamma Risk% 偏高: 15.37%（正股覆盖，风险可控）",
+        "TGR 过低: 0.01，时间收益/波动风险比不足",
+        "Expected ROC 为负: -24373.5%，预期亏损",
+        "9988.HK win_probability 正常: 1.0"
+      ],
+      "price_type": "market"
+    }
+  },
+  "fills": [],
+  "total_filled_quantity": 0,
+  "average_fill_price": null,
+  "total_commission": 0.0,
+  "status_history": [
+    [
+      "approved",
+      "2026-01-27T20:24:43.414607",
+      "Order validated"
+    ],
+    [
+      "rejected",
+      "2026-01-27T20:24:43.718499",
+      "Rejected: Order rejected by IBKR: [200] \\u672a\\u627e\\u5230\\u8be5\\u8bf7\\u6c42\\u7684\\u8bc1\\u5238\\u5b9a\\u4e49; Error 200, reqId 3: \\u672a\\u627e\\u5230\\u8be5\\u8bf7\\u6c42\\u7684\\u8bc1\\u5238\\u5b9a\\u4e49, status=Cancelled"
+    ]
+  ],
+  "broker_order_id": "3",
+  "broker_status": "Cancelled",
+  "is_complete": false,
+  "completion_time": null,
+  "error_message": "Order rejected by IBKR: [200] \\u672a\\u627e\\u5230\\u8be5\\u8bf7\\u6c42\\u7684\\u8bc1\\u5238\\u5b9a\\u4e49; Error 200, reqId 3: \\u672a\\u627e\\u5230\\u8be5\\u8bf7\\u6c42\\u7684\\u8bc1\\u5238\\u5b9a\\u4e49",
+  "retry_count": 0
+}

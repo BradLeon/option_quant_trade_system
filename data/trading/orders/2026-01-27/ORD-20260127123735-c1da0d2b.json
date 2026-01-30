@@ -1,0 +1,57 @@
+{
+  "order": {
+    "order_id": "ORD-20260127123735-c1da0d2b",
+    "decision_id": "DEC-TEST-US-001",
+    "symbol": "NVDA 250228P00040000",
+    "asset_class": "option",
+    "underlying": "NVDA",
+    "option_type": "put",
+    "strike": 40.0,
+    "expiry": "2025-02-28",
+    "trading_class": null,
+    "side": "sell",
+    "order_type": "limit",
+    "quantity": 1,
+    "limit_price": 0.85,
+    "stop_price": null,
+    "time_in_force": "DAY",
+    "contract_multiplier": 100,
+    "currency": "USD",
+    "broker": "ibkr",
+    "account_type": "paper",
+    "status": "rejected",
+    "validation_errors": [],
+    "created_at": "2026-01-27T12:37:35.012326",
+    "updated_at": "2026-01-27T12:37:35.012381",
+    "context": {
+      "decision_type": "open",
+      "source": "screen_signal",
+      "priority": "normal",
+      "reason": "",
+      "trigger_alerts": [],
+      "price_type": "mid"
+    }
+  },
+  "fills": [],
+  "total_filled_quantity": 0,
+  "average_fill_price": null,
+  "total_commission": 0.0,
+  "status_history": [
+    [
+      "approved",
+      "2026-01-27T12:37:35.012374",
+      "Order validated"
+    ],
+    [
+      "rejected",
+      "2026-01-27T12:37:35.012382",
+      "Rejected: Insufficient buying power"
+    ]
+  ],
+  "broker_order_id": null,
+  "broker_status": null,
+  "is_complete": false,
+  "completion_time": null,
+  "error_message": "Insufficient buying power",
+  "retry_count": 0
+}

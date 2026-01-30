@@ -1,0 +1,57 @@
+{
+  "order": {
+    "order_id": "ORD-20260130102555-3715a4ee",
+    "decision_id": "DEC-20260130102523-be4a1532",
+    "symbol": "TQQQ",
+    "asset_class": "option",
+    "underlying": "TQQQ",
+    "option_type": "call",
+    "strike": 60.0,
+    "expiry": "2026-02-20",
+    "trading_class": "TQQQ",
+    "side": "sell",
+    "order_type": "limit",
+    "quantity": 8,
+    "limit_price": 1.65,
+    "stop_price": null,
+    "time_in_force": "DAY",
+    "contract_multiplier": 100,
+    "currency": "USD",
+    "broker": "ibkr",
+    "account_type": "paper",
+    "status": "submitted",
+    "validation_errors": [],
+    "created_at": "2026-01-30T10:25:55.892059",
+    "updated_at": "2026-01-30T10:25:56.419767",
+    "context": {
+      "decision_type": "open",
+      "source": "screen_signal",
+      "priority": "normal",
+      "reason": "通过三层筛选 | ROC=203.7% | 胜率=86% | Kelly=0.20 | Δ=0.29 | Θ=-0.05",
+      "trigger_alerts": [],
+      "price_type": "mid"
+    }
+  },
+  "fills": [],
+  "total_filled_quantity": 0,
+  "average_fill_price": null,
+  "total_commission": 0.0,
+  "status_history": [
+    [
+      "approved",
+      "2026-01-30T10:25:55.892422",
+      "Order validated"
+    ],
+    [
+      "submitted",
+      "2026-01-30T10:25:56.419782",
+      "Submitted to ibkr, broker_id=10, status=PreSubmitted"
+    ]
+  ],
+  "broker_order_id": "10",
+  "broker_status": "PreSubmitted",
+  "is_complete": false,
+  "completion_time": null,
+  "error_message": null,
+  "retry_count": 0
+}
