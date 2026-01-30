@@ -119,9 +119,36 @@ class IBKRProvider(DataProvider, AccountProvider):
             positions = provider.get_positions()
     """
 
-    # Port mapping for account types (IB Gateway)
-    PAPER_PORT = 4002
-    LIVE_PORT = 4001
+    # Port mapping for account types
+    # TWS ports: Paper=7497, Live=7496
+    # Gateway ports: Paper=4002, Live=4001
+    # Default to TWS ports (set IBKR_APP_TYPE=gateway to use Gateway ports)
+    TWS_PAPER_PORT = 7497
+    TWS_LIVE_PORT = 7496
+    GATEWAY_PAPER_PORT = 4002
+    GATEWAY_LIVE_PORT = 4001
+
+    @classmethod
+    def _get_ports(cls) -> tuple[int, int]:
+        """Get paper and live ports based on IBKR_APP_TYPE setting.
+
+        Returns:
+            Tuple of (paper_port, live_port)
+        """
+        app_type = os.getenv("IBKR_APP_TYPE", "tws").lower()
+        if app_type == "gateway":
+            return cls.GATEWAY_PAPER_PORT, cls.GATEWAY_LIVE_PORT
+        return cls.TWS_PAPER_PORT, cls.TWS_LIVE_PORT
+
+    @property
+    def PAPER_PORT(self) -> int:  # noqa: N802
+        """Paper trading port (depends on IBKR_APP_TYPE)."""
+        return self._get_ports()[0]
+
+    @property
+    def LIVE_PORT(self) -> int:  # noqa: N802
+        """Live trading port (depends on IBKR_APP_TYPE)."""
+        return self._get_ports()[1]
 
     def __init__(
         self,
@@ -147,19 +174,22 @@ class IBKRProvider(DataProvider, AccountProvider):
 
         # Auto-select port based on account_type
         # Priority: explicit port > account_type-based > env var > default (live)
+        # Get ports based on IBKR_APP_TYPE (tws or gateway)
+        paper_port, live_port = self._get_ports()
+
         if port is not None:
             self._port = port
         elif account_type is not None:
             # When account_type is explicitly specified, use the corresponding port
             # This takes priority over env var to ensure correct account connection
-            self._port = self.PAPER_PORT if account_type == AccountType.PAPER else self.LIVE_PORT
+            self._port = paper_port if account_type == AccountType.PAPER else live_port
         else:
             env_port = os.getenv("IBKR_PORT")
             if env_port:
                 self._port = int(env_port)
             else:
                 # Default to live port if nothing specified
-                self._port = self.LIVE_PORT
+                self._port = live_port
 
         # Generate unique clientId based on process ID to avoid conflicts
         # TWS GUI uses 0, other apps commonly use 1-10
