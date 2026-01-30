@@ -210,3 +210,9 @@ __marimo__/
 
 # OpenSpec local files
 openspec/
+
+# Claude Code local files
+.claude/
+
+# Local data directory
+data/
