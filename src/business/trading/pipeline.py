@@ -19,6 +19,7 @@ from src.business.screening.models import ScreeningResult
 from src.business.trading.config.decision_config import DecisionConfig
 from src.business.trading.config.order_config import OrderConfig
 from src.business.trading.config.risk_config import RiskConfig
+from src.business.trading.daily_limits import DailyLimitsConfig, DailyTradeTracker
 from src.business.trading.decision.engine import DecisionEngine
 from src.business.trading.models.decision import AccountState, TradingDecision
 from src.business.trading.models.order import OrderRecord, OrderStatus
@@ -51,6 +52,7 @@ class TradingPipeline:
         decision_config: DecisionConfig | None = None,
         order_config: OrderConfig | None = None,
         risk_config: RiskConfig | None = None,
+        daily_limits_config: DailyLimitsConfig | None = None,
         trading_provider: TradingProvider | None = None,
     ) -> None:
         """初始化交易流水线
@@ -59,16 +61,24 @@ class TradingPipeline:
             decision_config: 决策配置
             order_config: 订单配置
             risk_config: 风控配置
+            daily_limits_config: 每日交易限额配置
             trading_provider: 交易提供者 (可选，后续设置)
         """
         self._decision_config = decision_config or DecisionConfig.load()
         self._order_config = order_config or OrderConfig.load()
         self._risk_config = risk_config or RiskConfig.load()
+        self._daily_limits_config = daily_limits_config or DailyLimitsConfig.load()
 
         self._decision_engine = DecisionEngine(self._decision_config)
         self._order_manager = OrderManager(
             config=self._order_config,
             risk_config=self._risk_config,
+        )
+
+        # 每日交易限额追踪器
+        self._daily_tracker = DailyTradeTracker(
+            order_store=self._order_manager._store,
+            config=self._daily_limits_config,
         )
 
         self._provider = trading_provider
@@ -171,7 +181,7 @@ class TradingPipeline:
 
         Args:
             decisions: 决策列表
-            account_state: 账户状态 (用于风控)
+            account_state: 账户状态 (用于风控和每日限额)
             dry_run: 是否仅模拟 (不实际下单)
 
         Returns:
@@ -182,13 +192,47 @@ class TradingPipeline:
 
         results: list[OrderRecord] = []
 
+        # 获取 NLV 用于每日限额检查
+        nlv = account_state.total_equity if account_state else 0.0
+
+        # 追踪本批次内已通过的 underlying 累计量
+        batch_quantities: dict[str, int] = {}
+        batch_values: dict[str, float] = {}
+
         for decision in decisions:
             try:
+                # 检查每日限额
+                if self._daily_limits_config.enabled and nlv > 0:
+                    skip_reason = self._check_daily_limits_for_decision(
+                        decision, nlv, batch_quantities, batch_values
+                    )
+                    if skip_reason:
+                        logger.info(
+                            f"Skipping decision {decision.decision_id} "
+                            f"({decision.symbol}): {skip_reason}"
+                        )
+                        continue
+
                 record = self._execute_single_decision(
                     decision, account_state, dry_run
                 )
                 if record:
                     results.append(record)
+
+                    # 更新本批次累计量（订单提交成功后）
+                    underlying = decision.underlying or decision.symbol
+                    qty = abs(decision.quantity)
+                    value = self._calc_decision_value(decision)
+                    batch_quantities[underlying] = (
+                        batch_quantities.get(underlying, 0) + qty
+                    )
+                    batch_values[underlying] = (
+                        batch_values.get(underlying, 0.0) + value
+                    )
+
+                    # 清除缓存，让后续检查能看到新订单
+                    self._daily_tracker.invalidate_cache()
+
             except Exception as e:
                 logger.error(
                     f"Failed to execute decision {decision.decision_id}: {e}"
@@ -199,6 +243,55 @@ class TradingPipeline:
             f"({'dry-run' if dry_run else 'live'})"
         )
         return results
+
+    def _check_daily_limits_for_decision(
+        self,
+        decision: TradingDecision,
+        nlv: float,
+        batch_quantities: dict[str, int],
+        batch_values: dict[str, float],
+    ) -> str | None:
+        """检查决策是否超过每日限额
+
+        Args:
+            decision: 交易决策
+            nlv: 账户净值
+            batch_quantities: 本批次已累计的数量
+            batch_values: 本批次已累计的市值
+
+        Returns:
+            如果超限，返回原因字符串；否则返回 None
+        """
+        underlying = decision.underlying or decision.symbol
+        quantity = decision.quantity
+        value = self._calc_decision_value(decision)
+
+        # 加上本批次已累计的量
+        check_qty = quantity + batch_quantities.get(underlying, 0)
+        check_val = value + batch_values.get(underlying, 0.0)
+
+        allowed, reason = self._daily_tracker.check_limits(
+            underlying=underlying,
+            quantity=check_qty,
+            value=check_val,
+            nlv=nlv,
+        )
+
+        return None if allowed else reason
+
+    def _calc_decision_value(self, decision: TradingDecision) -> float:
+        """计算决策的市值
+
+        Args:
+            decision: 交易决策
+
+        Returns:
+            市值 = |quantity| * limit_price * contract_multiplier
+        """
+        qty = abs(decision.quantity)
+        price = decision.limit_price or 0.0
+        multiplier = decision.contract_multiplier or 100
+        return qty * price * multiplier
 
     def _execute_single_decision(
         self,
@@ -330,3 +423,19 @@ class TradingPipeline:
             "open_orders": len(self.get_open_orders()),
             "timestamp": datetime.now().isoformat(),
         }
+
+    def get_daily_limits_usage(self, nlv: float) -> dict[str, dict[str, Any]]:
+        """获取每日限额使用情况
+
+        Args:
+            nlv: 账户净值
+
+        Returns:
+            {underlying: {qty_used, qty_limit, value_used, value_limit_pct, value_pct}}
+        """
+        return self._daily_tracker.get_usage_summary(nlv)
+
+    @property
+    def daily_limits_enabled(self) -> bool:
+        """每日限额是否启用"""
+        return self._daily_limits_config.enabled

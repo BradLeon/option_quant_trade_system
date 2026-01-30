@@ -13,7 +13,7 @@ Order Store - 订单存储
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -267,5 +267,92 @@ class OrderStore:
 
         except Exception as e:
             logger.error(f"Failed to get orders by decision {decision_id}: {e}")
+
+        return results
+
+    def get_daily_orders_by_underlying(
+        self,
+        underlying: str,
+        target_date: date | None = None,
+        include_pending: bool = True,
+    ) -> list[OrderRecord]:
+        """获取指定 underlying 当日的订单列表
+
+        Args:
+            underlying: 标的代码 (e.g., "AAPL", "TQQQ")
+            target_date: 目标日期，默认今天
+            include_pending: 是否包含 pending 状态的订单
+
+        Returns:
+            符合条件的订单列表
+        """
+        if target_date is None:
+            target_date = date.today()
+        elif isinstance(target_date, datetime):
+            target_date = target_date.date()
+
+        results = []
+        date_str = target_date.strftime("%Y-%m-%d")
+        date_dir = self._base_path / date_str
+
+        if not date_dir.exists():
+            return results
+
+        # 定义哪些状态算作 "pending"
+        pending_statuses = {
+            OrderStatus.PENDING_VALIDATION,
+            OrderStatus.APPROVED,
+            OrderStatus.SUBMITTED,
+            OrderStatus.ACKNOWLEDGED,
+            OrderStatus.PARTIAL_FILLED,
+        }
+
+        # 定义哪些状态算作 "有效" (包含成交)
+        valid_statuses = pending_statuses | {OrderStatus.FILLED}
+
+        try:
+            for order_file in date_dir.glob("*.json"):
+                try:
+                    with open(order_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+
+                    record = OrderRecord.from_dict(data)
+                    order = record.order
+
+                    # 检查 underlying 匹配
+                    order_underlying = order.underlying or order.symbol
+                    # 处理可能的格式差异 (US.AAPL vs AAPL)
+                    if "." in order_underlying:
+                        order_underlying = order_underlying.split(".")[-1]
+                    if "." in underlying:
+                        underlying_check = underlying.split(".")[-1]
+                    else:
+                        underlying_check = underlying
+
+                    if order_underlying.upper() != underlying_check.upper():
+                        continue
+
+                    # 检查状态
+                    if include_pending:
+                        # 包含所有有效状态
+                        if order.status not in valid_statuses:
+                            continue
+                    else:
+                        # 只包含已成交
+                        if order.status not in {
+                            OrderStatus.FILLED,
+                            OrderStatus.PARTIAL_FILLED,
+                        }:
+                            continue
+
+                    results.append(record)
+
+                except Exception as e:
+                    logger.warning(f"Failed to load order {order_file}: {e}")
+
+        except Exception as e:
+            logger.error(
+                f"Failed to get daily orders for {underlying} on {date_str}: {e}"
+            )
 
         return results
