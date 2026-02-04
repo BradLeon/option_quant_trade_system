@@ -214,5 +214,5 @@ openspec/
 # Claude Code local files
 .claude/
 
-# Local data directory
-data/
+# Local data directory (root level only)
+/data/
