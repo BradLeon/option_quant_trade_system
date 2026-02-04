@@ -186,45 +186,128 @@ class SlippageModel:
 
 @dataclass
 class CommissionModel:
-    """手续费模型
+    """手续费模型 - 基于 IBKR 真实费率
 
-    支持多种计费方式：
-    - 每张合约固定费用
-    - 交易金额百分比
-    - 阶梯费率
+    IBKR 费率结构:
+    - Option: 每张 $0.65，每笔最低 $1.00
+    - Stock: 每股 $0.005，每笔最低 $1.00
+
+    支持两种计费方式：
+    - 期权：按合约数量计费
+    - 股票：按股数计费 (covered call 被 assign 时)
     """
 
-    # 每张合约费用
-    per_contract: float = 0.65
+    # ===== 期权费用 =====
+    option_per_contract: float = 0.65  # 每张合约费用
+    option_min_per_order: float = 1.00  # 每笔最低费用
 
-    # 最低手续费
-    min_commission: float = 0.0
+    # ===== 股票费用 =====
+    stock_per_share: float = 0.005  # 每股费用
+    stock_min_per_order: float = 1.00  # 每笔最低费用
 
+    # ===== 通用设置 =====
     # 最高手续费 (0 = 无上限)
     max_commission: float = 0.0
 
-    def calculate(self, quantity: int, trade_value: float = 0.0) -> float:
-        """计算手续费
+    # 兼容旧配置 (deprecated, 请使用 option_per_contract)
+    per_contract: float = 0.0  # 如果设置，覆盖 option_per_contract
+    min_commission: float = 0.0  # 如果设置，覆盖 option_min_per_order
+
+    def __post_init__(self) -> None:
+        """兼容旧配置"""
+        # 如果使用旧配置字段，映射到新字段
+        if self.per_contract > 0:
+            self.option_per_contract = self.per_contract
+        if self.min_commission > 0:
+            self.option_min_per_order = self.min_commission
+
+    def calculate_option(self, contracts: int) -> float:
+        """计算期权手续费
 
         Args:
-            quantity: 合约数量 (绝对值)
-            trade_value: 交易金额 (可选，用于百分比计费)
+            contracts: 合约数量 (绝对值)
 
         Returns:
             手续费金额
         """
-        qty = abs(quantity)
-        commission = qty * self.per_contract
+        qty = abs(contracts)
+        if qty == 0:
+            return 0.0
 
-        # 应用最低手续费
-        if self.min_commission > 0:
-            commission = max(commission, self.min_commission)
+        commission = qty * self.option_per_contract
+
+        # 应用每笔最低费用
+        commission = max(commission, self.option_min_per_order)
 
         # 应用最高手续费
         if self.max_commission > 0:
             commission = min(commission, self.max_commission)
 
         return commission
+
+    def calculate_stock(self, shares: int) -> float:
+        """计算股票手续费
+
+        Args:
+            shares: 股数 (绝对值)
+
+        Returns:
+            手续费金额
+        """
+        qty = abs(shares)
+        if qty == 0:
+            return 0.0
+
+        commission = qty * self.stock_per_share
+
+        # 应用每笔最低费用
+        commission = max(commission, self.stock_min_per_order)
+
+        # 应用最高手续费
+        if self.max_commission > 0:
+            commission = min(commission, self.max_commission)
+
+        return commission
+
+    def calculate(self, quantity: int, trade_value: float = 0.0) -> float:
+        """计算手续费 (兼容旧接口，默认期权)
+
+        Args:
+            quantity: 合约数量 (绝对值)
+            trade_value: 交易金额 (未使用，保留兼容性)
+
+        Returns:
+            手续费金额
+        """
+        return self.calculate_option(quantity)
+
+    @classmethod
+    def ibkr_tiered(cls) -> "CommissionModel":
+        """创建 IBKR Tiered 定价模型
+
+        Returns:
+            IBKR 标准费率的 CommissionModel
+        """
+        return cls(
+            option_per_contract=0.65,
+            option_min_per_order=1.00,
+            stock_per_share=0.005,
+            stock_min_per_order=1.00,
+        )
+
+    @classmethod
+    def zero_commission(cls) -> "CommissionModel":
+        """创建零佣金模型 (用于测试)
+
+        Returns:
+            零佣金的 CommissionModel
+        """
+        return cls(
+            option_per_contract=0.0,
+            option_min_per_order=0.0,
+            stock_per_share=0.0,
+            stock_min_per_order=0.0,
+        )
 
 
 class TradeSimulator:

@@ -64,7 +64,15 @@ class BacktestConfig:
 
     # ========== 执行配置 ==========
     slippage_pct: float = 0.001  # 滑点百分比 (0.1%)
-    commission_per_contract: float = 0.65  # 每张合约手续费
+
+    # 佣金配置 (IBKR Tiered 定价)
+    # Option: 每张 $0.65，每笔最低 $1.00
+    # Stock: 每股 $0.005，每笔最低 $1.00
+    commission_per_contract: float = 0.65  # 期权每张合约手续费 (deprecated, 使用 option_commission_per_contract)
+    option_commission_per_contract: float = 0.65  # 期权每张合约手续费
+    option_commission_min_per_order: float = 1.00  # 期权每笔最低手续费
+    stock_commission_per_share: float = 0.005  # 股票每股手续费
+    stock_commission_min_per_order: float = 1.00  # 股票每笔最低手续费
 
     # ========== 数据配置 ==========
     data_dir: str = "data/backtest"  # Parquet 数据目录
@@ -167,7 +175,11 @@ class BacktestConfig:
             "max_position_pct": self.max_position_pct,
             "max_positions": self.max_positions,
             "slippage_pct": self.slippage_pct,
-            "commission_per_contract": self.commission_per_contract,
+            # 佣金配置
+            "option_commission_per_contract": self.option_commission_per_contract,
+            "option_commission_min_per_order": self.option_commission_min_per_order,
+            "stock_commission_per_share": self.stock_commission_per_share,
+            "stock_commission_min_per_order": self.stock_commission_min_per_order,
             "data_dir": self.data_dir,
             "random_seed": self.random_seed,
             "verbose": self.verbose,
@@ -263,8 +275,14 @@ class BacktestConfig:
         # 执行配置
         if self.slippage_pct < 0:
             errors.append("slippage_pct must be non-negative")
-        if self.commission_per_contract < 0:
-            errors.append("commission_per_contract must be non-negative")
+        if self.option_commission_per_contract < 0:
+            errors.append("option_commission_per_contract must be non-negative")
+        if self.option_commission_min_per_order < 0:
+            errors.append("option_commission_min_per_order must be non-negative")
+        if self.stock_commission_per_share < 0:
+            errors.append("stock_commission_per_share must be non-negative")
+        if self.stock_commission_min_per_order < 0:
+            errors.append("stock_commission_min_per_order must be non-negative")
 
         # 配置文件存在性 (警告级别)
         screening_path = Path(self.screening_config)
@@ -299,7 +317,11 @@ def create_sample_config(path: str | Path) -> None:
         max_position_pct=0.10,
         max_positions=10,
         slippage_pct=0.001,
-        commission_per_contract=0.65,
+        # IBKR Tiered 定价
+        option_commission_per_contract=0.65,
+        option_commission_min_per_order=1.00,
+        stock_commission_per_share=0.005,
+        stock_commission_min_per_order=1.00,
         data_dir="/Volumes/TradingData/processed",
     )
     sample.to_yaml(path)

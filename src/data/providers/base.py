@@ -15,7 +15,9 @@ from src.data.models import (
     OptionChain,
     OptionQuote,
     StockQuote,
+    StockVolatility,
 )
+from src.data.models.option import OptionContract
 from src.data.models.stock import KlineType
 
 
@@ -152,6 +154,64 @@ class DataProvider(ABC):
             List of MacroData instances sorted by date.
         """
         pass
+
+    # Batch Option Methods
+
+    @abstractmethod
+    def get_option_quotes_batch(
+        self,
+        contracts: list[OptionContract],
+        min_volume: int | None = None,
+    ) -> list[OptionQuote]:
+        """Get quotes for multiple option contracts.
+
+        Args:
+            contracts: List of OptionContract instances to query.
+            min_volume: Optional minimum volume filter.
+
+        Returns:
+            List of OptionQuote instances for matching contracts.
+        """
+        pass
+
+    # Screening Support Methods (optional implementations)
+
+    def check_macro_blackout(
+        self,
+        target_date: date | None = None,
+        blackout_days: int = 2,
+        blackout_events: list[str] | None = None,
+    ) -> tuple[bool, list]:
+        """Check if date is in macro event blackout period.
+
+        This is an optional method with a default implementation that
+        returns (False, []) - i.e., no blackout. Subclasses can override
+        to provide actual blackout checking using economic calendars.
+
+        Args:
+            target_date: Date to check. Defaults to current date.
+            blackout_days: Number of days before/after event to blackout.
+            blackout_events: List of event types to check (e.g., 'FOMC', 'CPI').
+
+        Returns:
+            Tuple of (is_blackout, list of upcoming events).
+        """
+        return False, []
+
+    def get_stock_volatility(self, symbol: str) -> StockVolatility | None:
+        """Get stock-level volatility metrics (IV/HV).
+
+        This is an optional method with a default implementation that
+        returns None. Subclasses can override to calculate HV from
+        historical prices and estimate IV from option data.
+
+        Args:
+            symbol: Stock symbol.
+
+        Returns:
+            StockVolatility instance or None if not available.
+        """
+        return None
 
     # Utility Methods
 

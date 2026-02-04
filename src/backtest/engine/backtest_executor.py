@@ -49,7 +49,6 @@ from src.business.screening.models import ContractOpportunity, MarketType, Scree
 from src.business.screening.pipeline import ScreeningPipeline
 from src.business.trading.decision.engine import DecisionEngine
 from src.business.trading.models.decision import AccountState, DecisionType, TradingDecision
-from src.data.providers.unified_provider import UnifiedDataProvider
 from src.engine.models.enums import StrategyType
 
 logger = logging.getLogger(__name__)
@@ -193,10 +192,18 @@ class BacktestExecutor:
             max_margin_utilization=config.max_margin_utilization,
         )
 
-        # 初始化交易模拟器
+        # 初始化交易模拟器 (使用 IBKR 真实费率)
+        from src.backtest.engine.trade_simulator import CommissionModel
+
+        commission_model = CommissionModel(
+            option_per_contract=config.option_commission_per_contract,
+            option_min_per_order=config.option_commission_min_per_order,
+            stock_per_share=config.stock_commission_per_share,
+            stock_min_per_order=config.stock_commission_min_per_order,
+        )
         self._trade_simulator = TradeSimulator(
             slippage_pct=config.slippage_pct,
-            commission_per_contract=config.commission_per_contract,
+            commission_model=commission_model,
         )
 
         # 初始化 Pipelines
@@ -213,19 +220,16 @@ class BacktestExecutor:
     def _init_pipelines(self) -> None:
         """初始化 Pipeline 组件"""
         # Screening Pipeline
+        # DuckDBProvider 实现了完整的 DataProvider 接口，可直接使用
         try:
             screening_config = ScreeningConfig.load(
                 self._config.strategy_type.value
             )
-            # 创建 UnifiedDataProvider 包装 DuckDBProvider
-            unified_provider = UnifiedDataProvider(
-                us_provider=self._data_provider,
-                hk_provider=None,
-            )
             self._screening_pipeline = ScreeningPipeline(
                 config=screening_config,
-                provider=unified_provider,
+                provider=self._data_provider,  # DuckDBProvider 直接作为 DataProvider
             )
+            logger.info("ScreeningPipeline initialized with DuckDBProvider")
         except Exception as e:
             logger.warning(f"Failed to initialize ScreeningPipeline: {e}")
             self._screening_pipeline = None

@@ -29,6 +29,7 @@ from src.business.screening.models import (
     ContractOpportunity,
     UnderlyingScore,
 )
+from src.data.providers.base import DataProvider
 from src.data.providers.unified_provider import UnifiedDataProvider
 from src.engine.contract.liquidity import (
     calc_bid_ask_spread_ratio,
@@ -71,16 +72,16 @@ class ContractFilter:
     def __init__(
         self,
         config: ScreeningConfig,
-        provider: UnifiedDataProvider | None = None,
+        provider: DataProvider | None = None,
     ) -> None:
         """初始化合约过滤器
 
         Args:
             config: 筛选配置
-            provider: 统一数据提供者，默认创建新实例
+            provider: 数据提供者 (DataProvider 或其子类)，默认创建 UnifiedDataProvider
         """
         self.config = config
-        self.provider = provider or UnifiedDataProvider()
+        self.provider: DataProvider = provider or UnifiedDataProvider()
 
     def evaluate(
         self,

@@ -32,6 +32,8 @@ from typing import Any
 import duckdb
 import pyarrow.parquet as pq
 
+import numpy as np
+
 from src.data.models import (
     Fundamental,
     KlineBar,
@@ -39,6 +41,7 @@ from src.data.models import (
     OptionChain,
     OptionQuote,
     StockQuote,
+    StockVolatility,
 )
 from src.data.models.option import Greeks, OptionContract, OptionType
 from src.data.models.stock import KlineType
@@ -1140,3 +1143,349 @@ class DuckDBProvider(DataProvider):
         self._conn = None  # Will be lazily initialized
         self.clear_cache()
         logger.info(f"Switched to optimized DuckDB: {db_path}")
+
+    # ========== Screening Support Methods ==========
+
+    def get_option_quotes_batch(
+        self,
+        contracts: list[OptionContract],
+        min_volume: int | None = None,
+    ) -> list[OptionQuote]:
+        """获取批量期权合约报价
+
+        从 option_daily Parquet 数据获取指定合约的报价信息。
+
+        Args:
+            contracts: 要查询的期权合约列表
+            min_volume: 可选的最小成交量过滤
+
+        Returns:
+            OptionQuote 列表
+        """
+        if not contracts:
+            return []
+
+        results: list[OptionQuote] = []
+
+        # 按 underlying 分组查询，提高效率
+        contracts_by_underlying: dict[str, list[OptionContract]] = {}
+        for contract in contracts:
+            underlying = contract.underlying.upper()
+            if underlying not in contracts_by_underlying:
+                contracts_by_underlying[underlying] = []
+            contracts_by_underlying[underlying].append(contract)
+
+        for underlying, underlying_contracts in contracts_by_underlying.items():
+            # 查找期权数据目录
+            option_dir = self._data_dir / "option_daily" / underlying
+            if not option_dir.exists():
+                logger.debug(f"Option data not found for {underlying}")
+                continue
+
+            # 确定 Parquet 文件
+            year = self._as_of_date.year
+            parquet_file = option_dir / f"{year}.parquet"
+            if not parquet_file.exists():
+                # 尝试其他年份文件
+                parquet_files = list(option_dir.glob("*.parquet"))
+                if not parquet_files:
+                    continue
+                parquet_file = parquet_files[0]
+
+            try:
+                conn = self._get_conn()
+
+                for contract in underlying_contracts:
+                    # 转换 option_type
+                    opt_type_str = "call" if contract.option_type == OptionType.CALL else "put"
+
+                    # 查询特定合约
+                    row = conn.execute(
+                        f"""
+                        SELECT
+                            symbol, expiration, strike, option_type, date,
+                            open, high, low, close, volume, count,
+                            bid, ask, delta, gamma, theta, vega, rho,
+                            implied_vol, underlying_price, open_interest
+                        FROM read_parquet('{parquet_file}')
+                        WHERE date = ?
+                          AND expiration = ?
+                          AND strike = ?
+                          AND option_type = ?
+                        LIMIT 1
+                        """,
+                        [
+                            self._as_of_date,
+                            contract.expiry_date,
+                            contract.strike_price,
+                            opt_type_str,
+                        ],
+                    ).fetchone()
+
+                    if row is None:
+                        continue
+
+                    # 检查最小成交量
+                    volume = row[9] or 0
+                    if min_volume is not None and volume < min_volume:
+                        continue
+
+                    # 构建 OptionQuote
+                    (
+                        symbol,
+                        expiration,
+                        strike,
+                        opt_type,
+                        data_date,
+                        open_price,
+                        high,
+                        low,
+                        close,
+                        volume,
+                        count,
+                        bid,
+                        ask,
+                        delta,
+                        gamma,
+                        theta,
+                        vega,
+                        rho,
+                        implied_vol,
+                        underlying_price,
+                        open_interest,
+                    ) = row
+
+                    greeks = Greeks(
+                        delta=delta,
+                        gamma=gamma,
+                        theta=theta,
+                        vega=vega,
+                        rho=rho,
+                    )
+
+                    quote = OptionQuote(
+                        contract=contract,
+                        timestamp=datetime.combine(data_date, datetime.min.time()),
+                        last_price=close,
+                        bid=bid,
+                        ask=ask,
+                        volume=volume,
+                        open_interest=open_interest or 0,
+                        iv=implied_vol,
+                        greeks=greeks,
+                        source="duckdb",
+                    )
+                    results.append(quote)
+
+            except Exception as e:
+                logger.error(f"Failed to get option quotes for {underlying}: {e}")
+
+        return results
+
+    def check_macro_blackout(
+        self,
+        target_date: date | None = None,
+        blackout_days: int = 2,
+        blackout_events: list[str] | None = None,
+    ) -> tuple[bool, list]:
+        """检查是否处于宏观事件黑名单期
+
+        使用 EconomicCalendarProvider 检查指定日期是否处于重大宏观事件
+        (FOMC/CPI/NFP) 的黑名单期。支持 FRED API + 静态 FOMC 日历。
+
+        Args:
+            target_date: 要检查的日期 (默认 as_of_date)
+            blackout_days: 事件前几天开始黑名单期
+            blackout_events: 要检查的事件类型列表 (默认 ["FOMC", "CPI", "NFP"])
+
+        Returns:
+            (是否处于黑名单期, 即将到来的事件列表)
+        """
+        if target_date is None:
+            target_date = self._as_of_date
+
+        try:
+            from src.data.providers.economic_calendar_provider import EconomicCalendarProvider
+
+            # 懒加载 EconomicCalendarProvider
+            if not hasattr(self, "_economic_calendar"):
+                self._economic_calendar: EconomicCalendarProvider | None = None
+
+            if self._economic_calendar is None:
+                try:
+                    self._economic_calendar = EconomicCalendarProvider()
+                    if not self._economic_calendar.is_available:
+                        logger.debug("EconomicCalendarProvider not available (no FRED API key or FOMC calendar)")
+                        self._economic_calendar = None
+                except Exception as e:
+                    logger.warning(f"Failed to initialize EconomicCalendarProvider: {e}")
+                    self._economic_calendar = None
+
+            if self._economic_calendar is None:
+                # Fail-open: 无法检查时允许交易
+                return False, []
+
+            return self._economic_calendar.check_blackout_period(
+                target_date=target_date,
+                blackout_days=blackout_days,
+                blackout_events=blackout_events,
+            )
+
+        except ImportError:
+            logger.debug("EconomicCalendarProvider not available")
+            return False, []
+        except Exception as e:
+            logger.warning(f"Error checking macro blackout: {e}")
+            return False, []
+
+    def get_stock_volatility(self, symbol: str) -> StockVolatility | None:
+        """获取股票波动率指标
+
+        计算股票的 IV 和 HV:
+        - HV: 20 日历史波动率 (从 stock_daily 计算)
+        - IV: ATM 期权的平均隐含波动率 (从 option_daily 获取)
+
+        Args:
+            symbol: 股票代码
+
+        Returns:
+            StockVolatility 对象或 None
+        """
+        symbol = symbol.upper()
+
+        # 1. 计算 20 日历史波动率
+        hv = self._calculate_historical_volatility(symbol, lookback_days=20)
+        if hv is None:
+            logger.debug(f"Cannot calculate HV for {symbol}, insufficient data")
+            return None
+
+        # 2. 获取 ATM 期权的 IV
+        iv = self._get_atm_implied_volatility(symbol)
+
+        return StockVolatility(
+            symbol=symbol,
+            timestamp=datetime.combine(self._as_of_date, datetime.min.time()),
+            iv=iv,
+            hv=hv,
+            iv_rank=None,  # 需要更多历史数据计算
+            iv_percentile=None,
+            pcr=None,  # 需要成交量数据计算
+            source="duckdb",
+        )
+
+    def _calculate_historical_volatility(
+        self,
+        symbol: str,
+        lookback_days: int = 20,
+    ) -> float | None:
+        """计算历史波动率 (年化)
+
+        使用最近 N 天的收盘价计算日收益率标准差，再年化。
+
+        Args:
+            symbol: 股票代码
+            lookback_days: 回溯天数 (默认 20)
+
+        Returns:
+            年化历史波动率 (小数形式) 或 None
+        """
+        stock_path = self._data_dir / "stock_daily.parquet"
+        if not stock_path.exists():
+            return None
+
+        try:
+            conn = self._get_conn()
+            rows = conn.execute(
+                f"""
+                SELECT date, close
+                FROM read_parquet('{stock_path}')
+                WHERE symbol = ? AND date <= ?
+                ORDER BY date DESC
+                LIMIT ?
+                """,
+                [symbol, self._as_of_date, lookback_days + 1],
+            ).fetchall()
+
+            if len(rows) < lookback_days + 1:
+                logger.debug(f"Not enough data for HV calculation: got {len(rows)}, need {lookback_days + 1}")
+                return None
+
+            # 按日期升序排列
+            closes = [row[1] for row in reversed(rows)]
+
+            # 计算日收益率
+            returns = np.diff(np.log(closes))
+
+            # 年化波动率 (假设 252 个交易日)
+            hv = float(np.std(returns) * np.sqrt(252))
+            return hv
+
+        except Exception as e:
+            logger.error(f"Failed to calculate HV for {symbol}: {e}")
+            return None
+
+    def _get_atm_implied_volatility(self, symbol: str) -> float | None:
+        """获取 ATM 期权的平均隐含波动率
+
+        找到接近当前股价的期权 (moneyness 0.95-1.05)，计算平均 IV。
+
+        Args:
+            symbol: 股票代码
+
+        Returns:
+            平均 IV (小数形式) 或 None
+        """
+        # 获取当前股价
+        stock_quote = self.get_stock_quote(symbol)
+        if stock_quote is None:
+            return None
+
+        underlying_price = stock_quote.close
+
+        # 查找期权数据
+        option_dir = self._data_dir / "option_daily" / symbol
+        if not option_dir.exists():
+            return None
+
+        # 确定 Parquet 文件
+        year = self._as_of_date.year
+        parquet_file = option_dir / f"{year}.parquet"
+        if not parquet_file.exists():
+            parquet_files = list(option_dir.glob("*.parquet"))
+            if not parquet_files:
+                return None
+            parquet_file = parquet_files[0]
+
+        try:
+            conn = self._get_conn()
+
+            # ATM 范围: strike 在 underlying_price 的 95%-105% 之间
+            strike_low = underlying_price * 0.95
+            strike_high = underlying_price * 1.05
+
+            rows = conn.execute(
+                f"""
+                SELECT implied_vol
+                FROM read_parquet('{parquet_file}')
+                WHERE date = ?
+                  AND strike >= ?
+                  AND strike <= ?
+                  AND implied_vol > 0
+                  AND implied_vol < 5
+                """,
+                [self._as_of_date, strike_low, strike_high],
+            ).fetchall()
+
+            if not rows:
+                return None
+
+            # 计算平均 IV
+            ivs = [row[0] for row in rows if row[0] is not None]
+            if not ivs:
+                return None
+
+            return float(np.mean(ivs))
+
+        except Exception as e:
+            logger.error(f"Failed to get ATM IV for {symbol}: {e}")
+            return None
