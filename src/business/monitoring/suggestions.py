@@ -90,6 +90,7 @@ ALERT_ACTION_MAP: dict[tuple[AlertType, AlertLevel], tuple[ActionType, UrgencyLe
     # === RED Alerts → IMMEDIATE ===
     (AlertType.STOP_LOSS, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
     (AlertType.DTE_WARNING, AlertLevel.RED): (ActionType.ROLL, UrgencyLevel.IMMEDIATE),
+    (AlertType.DTE_PROFITABLE, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
     (AlertType.MONEYNESS, AlertLevel.RED): (ActionType.ROLL, UrgencyLevel.IMMEDIATE),
     (AlertType.DELTA_CHANGE, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
     (AlertType.GAMMA_EXPOSURE, AlertLevel.RED): (ActionType.REDUCE, UrgencyLevel.IMMEDIATE),
@@ -140,18 +141,32 @@ STRATEGY_SPECIFIC_SUGGESTIONS: dict[
     tuple[AlertType, AlertLevel, StrategyType],
     tuple[ActionType, UrgencyLevel, str]
 ] = {
-    # === DTE < 7 天 (RED) - 按策略区分 ===
+    # === DTE < 4 天且亏损 (RED) - 按策略区分 ===
     (AlertType.DTE_WARNING, AlertLevel.RED, StrategyType.SHORT_PUT): (
         ActionType.ROLL, UrgencyLevel.IMMEDIATE,
-        "强制平仓或展期到下月"
+        "DTE < 4 且亏损，强制展期到下月"
     ),
     (AlertType.DTE_WARNING, AlertLevel.RED, StrategyType.COVERED_CALL): (
-        ActionType.HOLD, UrgencyLevel.MONITOR,
-        "可持有到期（Gamma 风险由正股覆盖）"
+        ActionType.ROLL, UrgencyLevel.IMMEDIATE,
+        "DTE < 4 且亏损，展期到下月"
     ),
     (AlertType.DTE_WARNING, AlertLevel.RED, StrategyType.SHORT_STRANGLE): (
+        ActionType.ROLL, UrgencyLevel.IMMEDIATE,
+        "DTE < 4 且亏损，强制展期到下月"
+    ),
+
+    # === DTE < 4 天且盈利 (RED) - 统一平仓止盈 ===
+    (AlertType.DTE_PROFITABLE, AlertLevel.RED, StrategyType.SHORT_PUT): (
         ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
-        "强制平仓（盈利止盈，亏损不展期，等待新开仓机会）"
+        "DTE < 4 且盈利，平仓锁定利润"
+    ),
+    (AlertType.DTE_PROFITABLE, AlertLevel.RED, StrategyType.COVERED_CALL): (
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "DTE < 4 且盈利，平仓锁定利润"
+    ),
+    (AlertType.DTE_PROFITABLE, AlertLevel.RED, StrategyType.SHORT_STRANGLE): (
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "DTE < 4 且盈利，平仓锁定利润"
     ),
 
     # === |Delta| > 0.50 (RED) - 按策略区分 ===
@@ -263,7 +278,8 @@ ALERT_PRIORITY = {
     AlertType.GROSS_LEVERAGE: 85,  # 敞口
     AlertType.STRESS_TEST_LOSS: 80,  # 稳健
     AlertType.MONEYNESS: 75,  # 行权风险
-    AlertType.DTE_WARNING: 70,
+    AlertType.DTE_WARNING: 70,  # DTE 临近且亏损 → 展期
+    AlertType.DTE_PROFITABLE: 68,  # DTE 临近且盈利 → 平仓
     AlertType.DELTA_CHANGE: 65,
     AlertType.GAMMA_EXPOSURE: 60,
     AlertType.DELTA_EXPOSURE: 50,

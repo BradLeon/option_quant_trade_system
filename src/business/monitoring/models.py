@@ -52,7 +52,8 @@ class AlertType(str, Enum):
     POSITION_IV_HV = "position_iv_hv"  # 持仓级 IV/HV 比率
     POSITION_TGR = "position_tgr"  # 持仓级 TGR
     IV_HV_CHANGE = "iv_hv_change"  # IV/HV 变化
-    DTE_WARNING = "dte_warning"  # 临近到期
+    DTE_WARNING = "dte_warning"  # 临近到期（亏损时展期）
+    DTE_PROFITABLE = "dte_profitable"  # 临近到期且盈利（应平仓止盈）
     PROFIT_TARGET = "profit_target"  # 达到止盈
     STOP_LOSS = "stop_loss"  # 达到止损
     PNL_TARGET = "pnl_target"  # 盈亏目标（通用）

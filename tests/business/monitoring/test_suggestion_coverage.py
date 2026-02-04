@@ -547,18 +547,18 @@ POSITION_TEST_CASES = [
         expected_position_ids=["pos1"],
     ),
 
-    # 2b. DTE_WARNING (DTE < 7) - COVERED_CALL 策略
-    # 文档: Covered Call：可持有到期（Gamma 风险由正股覆盖）
+    # 2b. DTE_WARNING (DTE < 4 且亏损) - COVERED_CALL 策略
+    # 新规则: DTE < 4 且 P&L ≤ 0 → 展期（统一所有策略）
     TestCase(
         name="DTE_WARNING_RED_COVERED_CALL",
-        description="DTE < 7 天，COVERED_CALL：可持有到期（正股覆盖 Gamma 风险）",
+        description="DTE < 4 天且亏损，COVERED_CALL：展期到下月",
         alerts=[
             create_mock_alert(
                 AlertType.DTE_WARNING,
                 AlertLevel.RED,
-                "DTE 5 < 7",
-                current_value=5,
-                threshold_value=7,
+                "DTE 3 < 4 且亏损",
+                current_value=3,
+                threshold_value=4,
                 position_id="pos1",
                 symbol="AAPL",
             )
@@ -566,29 +566,30 @@ POSITION_TEST_CASES = [
         positions=[
             create_mock_position(
                 "pos1", "AAPL",
-                dte=5,
+                dte=3,
                 option_type="call",
                 strategy_type=StrategyType.COVERED_CALL,
+                unrealized_pnl_pct=-0.1,  # 亏损
             ),
         ],
         expected_count=1,
-        expected_action=ActionType.HOLD,  # COVERED_CALL -> HOLD（可持有到期）
-        expected_urgency=UrgencyLevel.MONITOR,
+        expected_action=ActionType.ROLL,  # DTE < 4 且亏损 → ROLL
+        expected_urgency=UrgencyLevel.IMMEDIATE,
         expected_position_ids=["pos1"],
     ),
 
-    # 2c. DTE_WARNING (DTE < 7) - SHORT_STRANGLE 策略
-    # 规则: Straddle/Strangle：强制平仓（盈利止盈，亏损不展期，等待新开仓机会）
+    # 2c. DTE_WARNING (DTE < 4 且亏损) - SHORT_STRANGLE 策略
+    # 新规则: DTE < 4 且 P&L ≤ 0 → 展期（统一所有策略）
     TestCase(
         name="DTE_WARNING_RED_STRANGLE",
-        description="DTE < 7 天，STRANGLE：强制平仓（不展期）",
+        description="DTE < 4 天且亏损，STRANGLE：展期到下月",
         alerts=[
             create_mock_alert(
                 AlertType.DTE_WARNING,
                 AlertLevel.RED,
-                "DTE 5 < 7",
-                current_value=5,
-                threshold_value=7,
+                "DTE 3 < 4 且亏损",
+                current_value=3,
+                threshold_value=4,
                 position_id="pos1",
                 symbol="AAPL",
             )
@@ -596,12 +597,13 @@ POSITION_TEST_CASES = [
         positions=[
             create_mock_position(
                 "pos1", "AAPL",
-                dte=5,
+                dte=3,
                 strategy_type=StrategyType.SHORT_STRANGLE,
+                unrealized_pnl_pct=-0.2,  # 亏损
             ),
         ],
         expected_count=1,
-        expected_action=ActionType.CLOSE,  # SHORT_STRANGLE -> CLOSE（不展期）
+        expected_action=ActionType.ROLL,  # DTE < 4 且亏损 → ROLL
         expected_urgency=UrgencyLevel.IMMEDIATE,
         expected_position_ids=["pos1"],
     ),

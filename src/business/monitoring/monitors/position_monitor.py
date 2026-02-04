@@ -139,13 +139,8 @@ class PositionMonitor:
             position=pos,
         ))
 
-        # 3. 检查 DTE
-        alerts.extend(self._check_threshold(
-            value=pos.dte,
-            threshold=thresholds.dte,
-            metric_name="dte",
-            position=pos,
-        ))
+        # 3. 检查 DTE（结合 P&L 判断）
+        alerts.extend(self._check_dte_with_pnl(pos, thresholds))
 
         # 4. 检查 P&L%（特殊逻辑：止盈为 GREEN，止损为 RED）
         alerts.extend(self._check_pnl(pos, thresholds))
@@ -364,6 +359,71 @@ class PositionMonitor:
             )
         except (KeyError, ValueError):
             return f"持仓 {position.symbol} {metric_name}: {value}"
+
+    def _check_dte_with_pnl(
+        self,
+        pos: PositionData,
+        thresholds: PositionThresholds,
+    ) -> list[Alert]:
+        """检查 DTE，结合 P&L 决定 Alert 类型
+
+        规则：
+        - DTE < red_below 且 P&L > 0 → DTE_PROFITABLE (平仓止盈)
+        - DTE < red_below 且 P&L ≤ 0 → DTE_WARNING (展期)
+        - 其他情况走原有 DTE 检查逻辑
+
+        Args:
+            pos: 持仓数据
+            thresholds: 策略特定的阈值配置
+
+        Returns:
+            预警列表
+        """
+        if pos.dte is None:
+            return []
+
+        threshold = thresholds.dte
+        pnl_pct = pos.unrealized_pnl_pct or 0
+
+        # 格式化阈值范围
+        threshold_range = self._format_threshold_range(threshold, is_pct=False)
+
+        # DTE 进入红色区域
+        if threshold.red_below is not None and pos.dte < threshold.red_below:
+            if pnl_pct > 0:
+                # 盈利 → DTE_PROFITABLE（应平仓止盈）
+                return [Alert(
+                    alert_type=AlertType.DTE_PROFITABLE,
+                    level=AlertLevel.RED,
+                    message=f"DTE < {threshold.red_below} 天且盈利 ({pnl_pct:.1%})，应平仓止盈",
+                    symbol=pos.symbol,
+                    position_id=pos.position_id,
+                    current_value=float(pos.dte),
+                    threshold_value=threshold.red_below,
+                    threshold_range=threshold_range,
+                    suggested_action="平仓止盈，锁定利润",
+                )]
+            else:
+                # 亏损或持平 → DTE_WARNING（应展期）
+                return [Alert(
+                    alert_type=AlertType.DTE_WARNING,
+                    level=AlertLevel.RED,
+                    message=f"DTE < {threshold.red_below} 天且亏损 ({pnl_pct:.1%})，应展期",
+                    symbol=pos.symbol,
+                    position_id=pos.position_id,
+                    current_value=float(pos.dte),
+                    threshold_value=threshold.red_below,
+                    threshold_range=threshold_range,
+                    suggested_action="强制展期到下月",
+                )]
+
+        # 非红色区域，走原有逻辑
+        return self._check_threshold(
+            value=pos.dte,
+            threshold=threshold,
+            metric_name="dte",
+            position=pos,
+        )
 
     def _check_pnl(self, pos: PositionData, thresholds: PositionThresholds) -> list[Alert]:
         """检查盈亏

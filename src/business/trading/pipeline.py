@@ -213,11 +213,15 @@ class TradingPipeline:
                         )
                         continue
 
-                record = self._execute_single_decision(
+                result = self._execute_single_decision(
                     decision, account_state, dry_run
                 )
-                if record:
-                    results.append(record)
+                if result:
+                    # ROLL 决策返回列表，普通决策返回单个记录
+                    if isinstance(result, list):
+                        results.extend(result)
+                    else:
+                        results.append(result)
 
                     # 更新本批次累计量（订单提交成功后）
                     underlying = decision.underlying or decision.symbol
@@ -275,6 +279,7 @@ class TradingPipeline:
             quantity=check_qty,
             value=check_val,
             nlv=nlv,
+            decision_type=decision.decision_type.value,
         )
 
         return None if allowed else reason
@@ -298,7 +303,7 @@ class TradingPipeline:
         decision: TradingDecision,
         account_state: AccountState | None,
         dry_run: bool,
-    ) -> OrderRecord | None:
+    ) -> OrderRecord | list[OrderRecord] | None:
         """执行单个决策
 
         Args:
@@ -307,8 +312,12 @@ class TradingPipeline:
             dry_run: 是否仅模拟
 
         Returns:
-            订单记录，或 None（如果决策不可执行）
+            订单记录（单个或列表），或 None（如果决策不可执行）
+            - 普通决策返回单个 OrderRecord
+            - ROLL 决策返回 list[OrderRecord]（平仓 + 开仓）
         """
+        from src.business.trading.models.decision import DecisionType
+
         # 过滤不可执行的决策
         if not self._is_executable_decision(decision):
             logger.info(
@@ -316,6 +325,10 @@ class TradingPipeline:
                 f"(symbol={decision.symbol}, type={decision.decision_type.value}, qty={decision.quantity})"
             )
             return None
+
+        # ROLL 决策需要特殊处理（生成两个订单）
+        if decision.decision_type == DecisionType.ROLL:
+            return self._execute_roll_decision(decision, account_state, dry_run)
 
         # 创建订单
         order = self._order_manager.create_order(decision)
@@ -352,6 +365,91 @@ class TradingPipeline:
         # 提交订单
         record = self._order_manager.submit_order(order)
         return record
+
+    def _execute_roll_decision(
+        self,
+        decision: TradingDecision,
+        account_state: AccountState | None,
+        dry_run: bool,
+    ) -> list[OrderRecord]:
+        """执行 ROLL 决策（生成两个订单：平仓 + 开仓）
+
+        Args:
+            decision: ROLL 类型的决策
+            account_state: 账户状态
+            dry_run: 是否仅模拟
+
+        Returns:
+            订单记录列表 [close_record, open_record]
+        """
+        # 1. 创建 ROLL 订单（平仓 + 开仓）
+        orders = self._order_manager.create_roll_orders(decision)
+        close_order, open_order = orders
+
+        logger.info(
+            f"Roll orders created for {decision.symbol}: "
+            f"close={close_order.order_id}, open={open_order.order_id}"
+        )
+
+        # 2. 验证两个订单
+        records: list[OrderRecord] = []
+        all_validated = True
+
+        for order in orders:
+            validation = self._order_manager.validate_order(
+                order,
+                account_state,
+                current_mid_price=decision.limit_price,
+            )
+
+            if not validation.passed:
+                logger.warning(
+                    f"Roll order {order.order_id} failed validation: "
+                    f"{validation.failed_checks}"
+                )
+                record = OrderRecord(order=order)
+                record.add_status_history(
+                    OrderStatus.VALIDATION_FAILED,
+                    f"Validation failed: {validation.failed_checks}",
+                )
+                records.append(record)
+                all_validated = False
+
+        # 如果任一订单验证失败，返回失败记录
+        if not all_validated:
+            # 补充未处理的订单记录
+            for order in orders:
+                if not any(r.order.order_id == order.order_id for r in records):
+                    record = OrderRecord(order=order)
+                    record.add_status_history(
+                        OrderStatus.CANCELLED,
+                        "Cancelled: other order in roll failed validation",
+                    )
+                    records.append(record)
+            return records
+
+        # 3. Dry-run 模式
+        if dry_run:
+            for order in orders:
+                logger.info(f"[DRY-RUN] Would submit roll order: {order.order_id}")
+                record = OrderRecord(order=order)
+                record.add_status_history(
+                    OrderStatus.APPROVED,
+                    "Dry-run: roll order validated but not submitted",
+                )
+                records.append(record)
+            return records
+
+        # 4. 提交 ROLL 订单（先平仓，后开仓）
+        records = self._order_manager.submit_roll_orders(orders)
+
+        logger.info(
+            f"Roll orders submitted for {decision.symbol}: "
+            f"close={records[0].order.status.value}, "
+            f"open={records[1].order.status.value if len(records) > 1 else 'N/A'}"
+        )
+
+        return records
 
     def _is_executable_decision(self, decision: TradingDecision) -> bool:
         """检查决策是否可执行
