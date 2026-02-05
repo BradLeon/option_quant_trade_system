@@ -35,8 +35,11 @@ from src.backtest.data.duckdb_provider import DuckDBProvider
 from src.backtest.data.thetadata_client import ThetaDataClient
 from src.backtest.data.data_downloader import DataDownloader
 from src.backtest.engine.account_simulator import AccountSimulator, SimulatedPosition
-from src.backtest.engine.position_tracker import PositionTracker
+from src.backtest.engine.position_manager import PositionManager
 from src.backtest.engine.trade_simulator import TradeSimulator
+
+# 向后兼容：PositionTracker 是旧名称，现已重命名为 PositionManager
+PositionTracker = PositionManager
 from src.backtest.engine.backtest_executor import BacktestExecutor, BacktestResult, run_backtest
 from src.backtest.analysis.metrics import BacktestMetrics
 from src.backtest.analysis.trade_analyzer import TradeAnalyzer
@@ -56,7 +59,8 @@ __all__ = [
     # Engine
     "AccountSimulator",
     "SimulatedPosition",
-    "PositionTracker",
+    "PositionManager",
+    "PositionTracker",  # 向后兼容别名
     "TradeSimulator",
     "BacktestExecutor",
     "BacktestResult",

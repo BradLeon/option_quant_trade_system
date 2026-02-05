@@ -1,18 +1,36 @@
 """
 Backtest Executor - 回测执行器
 
-执行完整的回测流程，整合:
+执行完整的回测流程，协调三层组件架构:
+
+组件架构 (BacktestExecutor 直接访问所有组件):
+┌─────────────────────────────────────────────────────────────────────┐
+│ BacktestExecutor (协调者)                                            │
+│ - 协调三层组件                                                       │
+│ - 控制回测流程                                                       │
+│ - 可以直接访问任意组件                                                │
+└─────────────────────────────────────────────────────────────────────┘
+        ↓                    ↓                    ↓
+┌─────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│ Trade 层    │    │ Position 层     │    │ Account 层      │
+│ TradeSimu-  │    │ PositionManager │    │ AccountSimulator│
+│ lator       │    │                 │    │                 │
+│             │    │ - 创建持仓      │    │ - 现金管理      │
+│ - 滑点计算  │    │ - 计算 margin   │    │ - 保证金检查    │
+│ - 手续费    │    │ - 计算 PnL      │    │ - 持仓存储      │
+│ - 交易记录  │    │ - 市场数据更新  │    │ - 权益快照      │
+└─────────────┘    └─────────────────┘    └─────────────────┘
+
+整合其他 Pipeline:
 - ScreeningPipeline (寻找开仓机会)
 - MonitoringPipeline (监控现有持仓)
 - DecisionEngine (生成交易决策)
-- PositionTracker (追踪持仓和账户)
-- TradeSimulator (模拟交易执行)
 
 回测流程:
 1. 初始化 DuckDBProvider、各 Pipeline
 2. 逐日迭代交易日
 3. 每日:
-   a. 更新持仓价格
+   a. 更新持仓价格 (Position 层更新，Account 层存储)
    b. 处理到期期权
    c. 运行 Monitoring 检查现有持仓
    d. 运行 Screening 寻找新机会
@@ -35,11 +53,11 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from src.backtest.config.backtest_config import BacktestConfig
+from src.backtest.config.backtest_config import BacktestConfig, PriceMode
 from src.backtest.data.duckdb_provider import DuckDBProvider
-from src.backtest.engine.account_simulator import SimulatedPosition
-from src.backtest.engine.position_tracker import PositionTracker, TradeRecord
-from src.backtest.engine.trade_simulator import TradeSimulator, TradeExecution
+from src.backtest.engine.account_simulator import AccountSimulator, SimulatedPosition
+from src.backtest.engine.position_manager import PositionManager, DataNotFoundError
+from src.backtest.engine.trade_simulator import TradeSimulator, TradeExecution, TradeRecord
 from src.business.config.monitoring_config import MonitoringConfig
 from src.business.config.screening_config import ScreeningConfig
 from src.business.monitoring.models import PositionData
@@ -49,6 +67,7 @@ from src.business.screening.models import ContractOpportunity, MarketType, Scree
 from src.business.screening.pipeline import ScreeningPipeline
 from src.business.trading.decision.engine import DecisionEngine
 from src.business.trading.models.decision import AccountState, DecisionType, TradingDecision
+from src.data.models.option import OptionType
 from src.engine.models.enums import StrategyType
 
 logger = logging.getLogger(__name__)
@@ -185,14 +204,23 @@ class BacktestExecutor:
             as_of_date=config.start_date,
         )
 
-        # 初始化持仓追踪器
-        self._position_tracker = PositionTracker(
+        # ========================================
+        # 三层组件 (平等对待，BacktestExecutor 直接访问)
+        # ========================================
+
+        # Position 层: 持仓管理器 (不包装 Account)
+        self._position_manager = PositionManager(
             data_provider=self._data_provider,
+            price_mode=PriceMode(config.price_mode),
+        )
+
+        # Account 层: 账户模拟器 (直接持有)
+        self._account_simulator = AccountSimulator(
             initial_capital=config.initial_capital,
             max_margin_utilization=config.max_margin_utilization,
         )
 
-        # 初始化交易模拟器 (使用 IBKR 真实费率)
+        # Trade 层: 交易模拟器 (使用 IBKR 真实费率)
         from src.backtest.engine.trade_simulator import CommissionModel
 
         commission_model = CommissionModel(
@@ -312,23 +340,25 @@ class BacktestExecutor:
             current_date: 当前日期
         """
         self._current_date = current_date
-        self._position_tracker.set_date(current_date)
+        self._position_manager.set_date(current_date)
 
         # 更新数据提供者日期
         self._data_provider.set_as_of_date(current_date)
 
         # 记录前一日 NLV (用于计算当日盈亏)
-        prev_nlv = self._position_tracker.nlv
+        prev_nlv = self._account_simulator.nlv
 
-        # 1. 更新持仓价格
-        self._position_tracker.update_positions_from_market()
+        # 1. 更新持仓价格 (Position 层更新，Account 层存储)
+        self._position_manager.update_all_positions_market_data(
+            self._account_simulator.positions
+        )
 
         # 2. 处理到期期权
         self._process_expirations(current_date)
 
         # 3. 运行监控 (如果有持仓)
         suggestions: list[PositionSuggestion] = []
-        if self._position_tracker.position_count > 0 and self._monitoring_pipeline:
+        if self._account_simulator.position_count > 0 and self._monitoring_pipeline:
             suggestions = self._run_monitoring()
 
         # 4. 运行筛选 (寻找新机会)
@@ -341,7 +371,7 @@ class BacktestExecutor:
         trades_closed = 0
 
         if self._decision_engine:
-            account_state = self._position_tracker.get_account_state()
+            account_state = self._account_simulator.get_account_state()
             decisions = self._decision_engine.process_batch(
                 screen_result=screen_result,
                 account_state=account_state,
@@ -357,10 +387,12 @@ class BacktestExecutor:
                     if self._execute_close_decision(decision, current_date):
                         trades_closed += 1
                 elif decision.decision_type == DecisionType.ROLL:
-                    # Roll = Close + Open
-                    if self._execute_close_decision(decision, current_date):
+                    # Roll = Close + Open (参考 OrderGenerator.generate_roll)
+                    closed, opened = self._execute_roll_decision(decision, current_date)
+                    if closed:
                         trades_closed += 1
-                    # TODO: 实现 roll 的开仓部分
+                    if opened:
+                        trades_opened += 1
 
         # 6. 记录每日快照
         snapshot = self._take_daily_snapshot(current_date, prev_nlv)
@@ -379,33 +411,71 @@ class BacktestExecutor:
 
         Args:
             current_date: 当前日期
+
+        Raises:
+            DataNotFoundError: 当无法获取到期时的标的价格时抛出
         """
-        expiring = self._position_tracker.check_expirations()
+        # Position 层: 检查到期 (从 Account 层获取持仓)
+        expiring = self._position_manager.check_expirations(
+            self._account_simulator.positions
+        )
 
         for position in expiring:
-            try:
-                # 获取标的价格
-                quote = self._data_provider.get_stock_quote(position.underlying)
-                if quote:
-                    final_price = quote.close or quote.last or position.strike
-                else:
-                    final_price = position.strike
-
-                # 处理到期
-                pnl = self._position_tracker.expire_position(
-                    position.position_id,
-                    current_date,
-                    final_price,
+            # 获取标的价格 - 数据缺失时抛出异常，不使用 strike 回退
+            quote = self._data_provider.get_stock_quote(position.underlying)
+            if quote is None:
+                raise DataNotFoundError(
+                    f"Stock quote not found for {position.underlying} "
+                    f"on expiration date {current_date}"
                 )
 
-                if pnl is not None:
-                    logger.info(
-                        f"Position {position.position_id} expired on {current_date}, "
-                        f"PnL: ${pnl:.2f}"
-                    )
+            # 根据 price_mode 获取价格
+            price_mode = PriceMode(self._config.price_mode)
+            if price_mode == PriceMode.OPEN:
+                final_price = quote.open
+            elif price_mode == PriceMode.MID:
+                final_price = (quote.open + quote.close) / 2 if quote.open and quote.close else quote.close
+            else:
+                final_price = quote.close
 
-            except Exception as e:
-                logger.error(f"Error processing expiration for {position.position_id}: {e}")
+            if final_price is None or final_price <= 0:
+                raise DataNotFoundError(
+                    f"Invalid price for {position.underlying} on {current_date}: "
+                    f"mode={price_mode.value}, quote={quote}"
+                )
+
+            # 1. Trade 层：执行到期处理
+            execution = self._trade_simulator.execute_expire(
+                symbol=position.symbol,
+                underlying=position.underlying,
+                option_type=position.option_type,
+                strike=position.strike,
+                expiration=position.expiration,
+                quantity=position.quantity,  # 有符号
+                final_underlying_price=final_price,
+                trade_date=current_date,
+                lot_size=position.lot_size,
+            )
+
+            # 2. Position 层：计算已实现盈亏
+            pnl = self._position_manager.calculate_realized_pnl(position, execution)
+
+            # 3. Account 层：移除持仓，更新现金
+            success = self._account_simulator.remove_position(
+                position_id=position.position_id,
+                cash_change=execution.net_amount,
+                realized_pnl=pnl,
+            )
+
+            if success:
+                # 完成持仓关闭 (更新持仓字段)
+                self._position_manager.finalize_close(position, execution, pnl)
+
+            if success:
+                logger.info(
+                    f"Position {position.position_id} expired on {current_date}, "
+                    f"reason={execution.reason}, PnL: ${pnl:.2f}"
+                )
 
     def _run_monitoring(self) -> list[PositionSuggestion]:
         """运行持仓监控
@@ -417,18 +487,19 @@ class BacktestExecutor:
             return []
 
         try:
-            # 获取持仓数据
-            position_data = self._position_tracker.get_position_data_for_monitoring(
-                as_of_date=self._current_date
+            # Position 层: 转换持仓数据 (从 Account 层获取)
+            position_data = self._position_manager.get_position_data_for_monitoring(
+                positions=self._account_simulator.positions,
+                as_of_date=self._current_date,
             )
 
             if not position_data:
                 return []
 
-            # 运行监控
+            # 运行监控 (Account 层提供 NLV)
             result = self._monitoring_pipeline.run(
                 positions=position_data,
-                nlv=self._position_tracker.nlv,
+                nlv=self._account_simulator.nlv,
             )
 
             # 只返回需要行动的建议
@@ -475,12 +546,12 @@ class BacktestExecutor:
         Returns:
             True 如果可以开新仓
         """
-        # 检查持仓数量限制
-        if self._position_tracker.position_count >= self._config.max_positions:
+        # 检查持仓数量限制 (Account 层)
+        if self._account_simulator.position_count >= self._config.max_positions:
             return False
 
-        # 检查保证金使用率
-        account_state = self._position_tracker.get_account_state()
+        # 检查保证金使用率 (Account 层)
+        account_state = self._account_simulator.get_account_state()
         if account_state.margin_utilization >= self._config.max_margin_utilization:
             return False
 
@@ -493,6 +564,11 @@ class BacktestExecutor:
     ) -> bool:
         """执行开仓决策
 
+        使用重构后的流程:
+        1. Trade 层 (TradeSimulator): 计算滑点、手续费、金额 → TradeExecution
+        2. Position 层 (PositionTracker): 创建 Position，计算 margin → SimulatedPosition
+        3. Account 层 (AccountSimulator): 检查保证金，更新现金
+
         Args:
             decision: 交易决策
             trade_date: 交易日期
@@ -503,11 +579,13 @@ class BacktestExecutor:
         try:
             # 解析期权信息
             underlying = decision.underlying
-            option_type = decision.option_type or "put"
+            # 转换 option_type 字符串到 OptionType 枚举
+            option_type_str = decision.option_type or "put"
+            option_type = OptionType(option_type_str.lower())
             strike = decision.strike or 0.0
             expiry = date.fromisoformat(decision.expiry) if decision.expiry else trade_date
 
-            # 模拟交易执行
+            # 1. Trade 层：执行交易，得到 TradeExecution
             mid_price = decision.limit_price or 0.0
             execution = self._trade_simulator.execute_open(
                 symbol=decision.symbol,
@@ -519,27 +597,16 @@ class BacktestExecutor:
                 mid_price=mid_price,
                 trade_date=trade_date,
                 reason="screening_signal",
+                lot_size=decision.contract_multiplier,  # 直接传入，None 时使用默认值
             )
 
-            # 创建模拟持仓
-            self._position_counter += 1
-            position = SimulatedPosition(
-                position_id=f"P{self._position_counter:06d}",
-                symbol=decision.symbol,
-                underlying=underlying,
-                option_type=option_type,
-                strike=strike,
-                expiration=expiry,
-                quantity=decision.quantity,
-                entry_price=execution.fill_price,
-                entry_date=trade_date,
-                lot_size=decision.contract_multiplier or 100,
-            )
+            # 2. Position 层：基于 TradeExecution 创建持仓对象
+            position = self._position_manager.create_position(execution)
 
-            # 添加到持仓追踪器
-            success = self._position_tracker.open_position(
-                position,
-                commission=execution.commission / abs(decision.quantity) if decision.quantity else 0,
+            # 3. Account 层：检查保证金，添加持仓
+            success = self._account_simulator.add_position(
+                position=position,
+                cash_change=execution.net_amount,
             )
 
             return success
@@ -574,7 +641,7 @@ class BacktestExecutor:
             if option_price is None:
                 option_price = position.current_price
 
-            # 模拟交易执行
+            # 1. Trade 层：模拟交易执行
             execution = self._trade_simulator.execute_close(
                 symbol=position.symbol,
                 underlying=position.underlying,
@@ -587,20 +654,258 @@ class BacktestExecutor:
                 reason=decision.reason or "monitor_signal",
             )
 
-            # 平仓
-            pnl = self._position_tracker.close_position(
-                position.position_id,
-                close_price=execution.fill_price,
-                close_date=trade_date,
+            # 2. Position 层：计算已实现盈亏
+            pnl = self._position_manager.calculate_realized_pnl(
+                position=position,
+                execution=execution,
                 close_reason=decision.reason or "monitor_signal",
-                commission=execution.commission / abs(position.quantity) if position.quantity else 0,
             )
 
-            return pnl is not None
+            # 3. Account 层：移除持仓，更新现金
+            success = self._account_simulator.remove_position(
+                position_id=position.position_id,
+                cash_change=execution.net_amount,
+                realized_pnl=pnl,
+            )
+
+            if success:
+                # 完成持仓关闭 (更新持仓字段)
+                self._position_manager.finalize_close(
+                    position, execution, pnl, decision.reason or "monitor_signal"
+                )
+
+            return success
 
         except Exception as e:
             logger.error(f"Failed to execute close decision: {e}")
             return False
+
+    def _execute_roll_decision(
+        self,
+        decision: TradingDecision,
+        trade_date: date,
+    ) -> tuple[bool, bool]:
+        """执行展期决策 (参考 OrderGenerator.generate_roll)
+
+        展期操作 = 平仓当前合约 + 开仓新合约
+
+        Args:
+            decision: ROLL 类型的交易决策
+                - symbol/expiry/strike: 当前合约信息
+                - roll_to_expiry: 新到期日
+                - roll_to_strike: 新行权价 (None 表示保持不变)
+                - quantity: 平仓数量
+            trade_date: 交易日期
+
+        Returns:
+            (close_success, open_success) - 平仓和开仓是否成功
+        """
+        close_success = False
+        open_success = False
+
+        try:
+            # 验证展期参数
+            if not decision.roll_to_expiry:
+                logger.warning(f"ROLL decision missing roll_to_expiry: {decision.decision_id}")
+                return False, False
+
+            # ========================================
+            # 1. 平仓当前合约 (BUY to close)
+            # ========================================
+            position = self._find_position_for_decision(decision)
+            if not position:
+                logger.warning(f"Position not found for roll decision: {decision.symbol}")
+                return False, False
+
+            # 获取当前期权价格
+            close_price = self._get_current_option_price(position)
+            if close_price is None:
+                close_price = position.current_price
+
+            # 1. Trade 层：模拟平仓执行
+            close_execution = self._trade_simulator.execute_close(
+                symbol=position.symbol,
+                underlying=position.underlying,
+                option_type=position.option_type,
+                strike=position.strike,
+                expiration=position.expiration,
+                quantity=-position.quantity,  # BUY to close
+                mid_price=close_price,
+                trade_date=trade_date,
+                reason=f"roll_close: {decision.reason or 'rolling to new expiry'}",
+            )
+
+            # 2. Position 层：计算已实现盈亏
+            pnl = self._position_manager.calculate_realized_pnl(
+                position=position,
+                execution=close_execution,
+                close_reason=f"roll_to_{decision.roll_to_expiry}",
+            )
+
+            # 3. Account 层：移除持仓
+            close_success = self._account_simulator.remove_position(
+                position_id=position.position_id,
+                cash_change=close_execution.net_amount,
+                realized_pnl=pnl,
+            )
+
+            if close_success:
+                self._position_manager.finalize_close(
+                    position, close_execution, pnl, f"roll_to_{decision.roll_to_expiry}"
+                )
+            if not close_success:
+                logger.error(f"Failed to close position for roll: {position.position_id}")
+                return False, False
+
+            logger.info(
+                f"Roll close: {position.symbol} @ {close_execution.fill_price:.2f}, "
+                f"PnL: ${pnl:.2f}"
+            )
+
+            # ========================================
+            # 2. 开仓新合约 (SELL to open)
+            # ========================================
+            new_expiry = date.fromisoformat(decision.roll_to_expiry)
+            new_strike = decision.roll_to_strike or position.strike  # 默认保持行权价不变
+
+            # 构建新合约 symbol
+            new_symbol = self._build_roll_symbol(
+                underlying=position.underlying,
+                expiry=new_expiry,
+                strike=new_strike,
+                option_type=position.option_type,
+            )
+
+            # 获取新合约价格
+            new_option_price = self._get_option_price_by_params(
+                underlying=position.underlying,
+                option_type=position.option_type,
+                strike=new_strike,
+                expiration=new_expiry,
+            )
+
+            if new_option_price is None or new_option_price <= 0:
+                logger.warning(
+                    f"Cannot get price for new contract {new_symbol}, "
+                    f"using roll_credit or estimated price"
+                )
+                # 使用 roll_credit 估算或基于旧合约价格估算
+                new_option_price = decision.roll_credit or close_price * 1.1
+
+            # 模拟开仓执行
+            open_execution = self._trade_simulator.execute_open(
+                symbol=new_symbol,
+                underlying=position.underlying,
+                option_type=position.option_type,
+                strike=new_strike,
+                expiration=new_expiry,
+                quantity=position.quantity,  # 保持相同数量 (负数 = SELL to open)
+                mid_price=new_option_price,
+                trade_date=trade_date,
+                reason=f"roll_open: new expiry {decision.roll_to_expiry}",
+                lot_size=position.lot_size,  # 保持与原持仓相同
+            )
+
+            # Position 层: 创建持仓对象
+            new_position = self._position_manager.create_position(open_execution)
+
+            # Account 层: 添加持仓
+            open_success = self._account_simulator.add_position(
+                position=new_position,
+                cash_change=open_execution.net_amount,
+            )
+            if open_success:
+                logger.info(
+                    f"Roll open: {new_symbol} @ {open_execution.fill_price:.2f}, "
+                    f"qty={new_position.quantity}"
+                )
+            else:
+                logger.error(f"Failed to open new position for roll: {new_symbol}")
+
+            return close_success, open_success
+
+        except Exception as e:
+            logger.error(f"Failed to execute roll decision: {e}")
+            return close_success, open_success
+
+    def _build_roll_symbol(
+        self,
+        underlying: str,
+        expiry: date,
+        strike: float,
+        option_type: OptionType,
+    ) -> str:
+        """构建展期新合约的 symbol
+
+        格式: UNDERLYING YYMMDDCP00STRIKE (OCC 格式)
+        示例: MSFT 250228P00380000
+        """
+        # 转换日期格式: date -> YYMMDD
+        expiry_short = expiry.strftime("%y%m%d")
+
+        # 期权类型: PUT -> P, CALL -> C
+        opt_char = "P" if option_type == OptionType.PUT else "C"
+
+        # 行权价: 填充到 8 位 (整数部分 5 位 + 小数部分 3 位)
+        strike_str = f"{int(strike * 1000):08d}"
+
+        # 获取纯 underlying (去除 .HK 等后缀)
+        pure_underlying = underlying.split(".")[0] if "." in underlying else underlying
+
+        return f"{pure_underlying} {expiry_short}{opt_char}{strike_str}"
+
+    def _get_option_price_by_params(
+        self,
+        underlying: str,
+        option_type: OptionType,
+        strike: float,
+        expiration: date,
+    ) -> float | None:
+        """根据参数获取期权价格
+
+        Args:
+            underlying: 标的代码
+            option_type: 期权类型 (OptionType.PUT/CALL)
+            strike: 行权价
+            expiration: 到期日
+
+        Returns:
+            期权价格或 None
+        """
+        try:
+            chain = self._data_provider.get_option_chain(
+                underlying=underlying,
+                expiry_start=expiration,
+                expiry_end=expiration,
+            )
+
+            if chain is None:
+                return None
+
+            contracts = chain.puts if option_type == OptionType.PUT else chain.calls
+
+            # 根据 price_mode 获取价格
+            price_mode = PriceMode(self._config.price_mode)
+
+            for contract in contracts:
+                if (
+                    contract.contract.strike_price == strike
+                    and contract.contract.expiry_date == expiration
+                ):
+                    if price_mode == PriceMode.OPEN:
+                        return contract.open or contract.last_price
+                    elif price_mode == PriceMode.MID:
+                        if contract.bid and contract.ask:
+                            return (contract.bid + contract.ask) / 2
+                        return contract.last_price
+                    else:  # CLOSE
+                        return contract.close or contract.last_price
+
+            return None
+
+        except Exception as e:
+            logger.warning(f"Failed to get option price: {e}")
+            return None
 
     def _find_position_for_decision(
         self,
@@ -614,8 +919,8 @@ class BacktestExecutor:
         Returns:
             SimulatedPosition 或 None
         """
-        # 尝试按 underlying + strike + expiry 匹配
-        for position in self._position_tracker.positions.values():
+        # 尝试按 underlying + strike + expiry 匹配 (从 Account 层获取持仓)
+        for position in self._account_simulator.positions.values():
             if (
                 position.underlying == decision.underlying
                 and position.strike == decision.strike
@@ -624,7 +929,7 @@ class BacktestExecutor:
                 return position
 
         # 尝试按 symbol 匹配
-        for position in self._position_tracker.positions.values():
+        for position in self._account_simulator.positions.values():
             if decision.underlying in position.symbol:
                 return position
 
@@ -652,7 +957,7 @@ class BacktestExecutor:
             if chain is None:
                 return None
 
-            contracts = chain.puts if position.option_type == "put" else chain.calls
+            contracts = chain.puts if position.option_type == OptionType.PUT else chain.calls
 
             for contract in contracts:
                 if (
@@ -680,7 +985,8 @@ class BacktestExecutor:
         Returns:
             DailySnapshot
         """
-        equity_snapshot = self._position_tracker.take_snapshot(current_date)
+        # Account 层: 记录快照
+        equity_snapshot = self._account_simulator.take_snapshot(current_date)
 
         return DailySnapshot(
             date=current_date,
@@ -708,29 +1014,37 @@ class BacktestExecutor:
         Returns:
             BacktestResult
         """
-        # 交易统计
-        trade_summary = self._position_tracker.get_trade_summary()
+        # 从 AccountSimulator 的已平仓持仓计算交易统计
+        closed_positions = self._account_simulator.closed_positions
 
-        # 计算盈亏相关指标
-        winning_trades = trade_summary["winning_trades"]
-        losing_trades = trade_summary["losing_trades"]
+        winning_trades = sum(
+            1 for p in closed_positions
+            if p.realized_pnl is not None and p.realized_pnl > 0
+        )
+        losing_trades = sum(
+            1 for p in closed_positions
+            if p.realized_pnl is not None and p.realized_pnl <= 0
+        )
         total_trades = winning_trades + losing_trades
 
         # 计算 profit factor
         gross_profit = sum(
-            t.pnl for t in self._position_tracker.trade_records
-            if t.pnl and t.pnl > 0
+            p.realized_pnl for p in closed_positions
+            if p.realized_pnl is not None and p.realized_pnl > 0
         )
         gross_loss = abs(sum(
-            t.pnl for t in self._position_tracker.trade_records
-            if t.pnl and t.pnl < 0
+            p.realized_pnl for p in closed_positions
+            if p.realized_pnl is not None and p.realized_pnl < 0
         ))
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
 
-        # 总回报
-        final_nlv = self._position_tracker.nlv
+        # 总回报 (Account 层)
+        final_nlv = self._account_simulator.nlv
         total_return = final_nlv - self._config.initial_capital
         total_return_pct = total_return / self._config.initial_capital
+
+        # 生成 TradeRecord (从已平仓持仓)
+        trade_records = self._generate_trade_records(closed_positions)
 
         return BacktestResult(
             config_name=self._config.name,
@@ -750,7 +1064,7 @@ class BacktestExecutor:
             total_commission=self._trade_simulator.get_total_commission(),
             total_slippage=self._trade_simulator.get_total_slippage(),
             daily_snapshots=self._daily_snapshots,
-            trade_records=self._position_tracker.trade_records,
+            trade_records=trade_records,
             executions=self._trade_simulator.executions,
             execution_time_seconds=execution_time,
             trading_days=len(trading_days),
@@ -817,9 +1131,54 @@ class BacktestExecutor:
 
         return drawdowns
 
+    def _generate_trade_records(
+        self,
+        closed_positions: list[SimulatedPosition],
+    ) -> list[TradeRecord]:
+        """从已平仓持仓生成 TradeRecord
+
+        Args:
+            closed_positions: 已平仓持仓列表
+
+        Returns:
+            TradeRecord 列表
+        """
+        trade_records = []
+        for pos in closed_positions:
+            if pos.close_date is None or pos.close_price is None:
+                continue
+
+            # 计算平仓的金额
+            close_gross = pos.close_price * abs(pos.quantity) * pos.lot_size
+            # 平仓时买回，所以是负的现金流
+            if pos.is_short:
+                close_gross = -close_gross
+
+            trade_record = TradeRecord(
+                trade_id=f"TR-{pos.position_id}",
+                execution_id=f"EX-{pos.position_id}",
+                symbol=pos.symbol,
+                underlying=pos.underlying,
+                option_type=pos.option_type,
+                strike=pos.strike,
+                expiration=pos.expiration,
+                trade_date=pos.close_date,
+                action="close",
+                quantity=-pos.quantity,  # 平仓方向相反
+                price=pos.close_price,
+                commission=pos.commission_paid,  # 总手续费
+                gross_amount=close_gross,
+                net_amount=close_gross,  # 简化，忽略手续费分摊
+                pnl=pos.realized_pnl,
+            )
+            trade_records.append(trade_record)
+
+        return trade_records
+
     def reset(self) -> None:
         """重置执行器状态"""
-        self._position_tracker.reset()
+        self._position_manager.reset()
+        self._account_simulator.reset()
         self._trade_simulator.reset()
         self._daily_snapshots.clear()
         self._errors.clear()

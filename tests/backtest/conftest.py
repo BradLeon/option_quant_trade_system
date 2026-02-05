@@ -16,8 +16,9 @@ from src.backtest.config.backtest_config import BacktestConfig
 from src.backtest.data.duckdb_provider import DuckDBProvider
 from src.backtest.data.schema import get_parquet_path
 from src.backtest.engine.account_simulator import AccountSimulator, SimulatedPosition
-from src.backtest.engine.position_tracker import PositionTracker
+from src.backtest.engine.position_manager import PositionManager
 from src.backtest.engine.trade_simulator import TradeSimulator
+from src.data.models.option import OptionType
 from src.engine.models.enums import StrategyType
 
 
@@ -92,7 +93,7 @@ def generate_option_daily_data(
     """Generate sample option daily data.
 
     Column names match DuckDBProvider expectations:
-    - 'right' instead of 'option_type' (P/C)
+    - 'option_type' with values 'call' or 'put'
     - 'implied_vol' instead of 'iv'
     - 'count' for trade count
 
@@ -161,7 +162,7 @@ def generate_option_daily_data(
                     "symbol": symbol,
                     "expiration": expiration,
                     "strike": strike,
-                    "right": "P",  # DuckDBProvider expects 'right' not 'option_type'
+                    "option_type": "put",  # Renamed from 'right'
                     "open": round(max(0.01, put_price * 0.98), 2),
                     "high": round(max(0.01, put_price * 1.05), 2),
                     "low": round(max(0.01, put_price * 0.95), 2),
@@ -186,7 +187,7 @@ def generate_option_daily_data(
                     "symbol": symbol,
                     "expiration": expiration,
                     "strike": strike,
-                    "right": "C",
+                    "option_type": "call",
                     "open": round(max(0.01, call_price * 0.98), 2),
                     "high": round(max(0.01, call_price * 1.05), 2),
                     "low": round(max(0.01, call_price * 0.95), 2),
@@ -317,13 +318,91 @@ def account_simulator() -> AccountSimulator:
 
 
 @pytest.fixture
-def position_tracker(duckdb_provider: DuckDBProvider) -> PositionTracker:
-    """Create PositionTracker for testing."""
-    return PositionTracker(
+def position_manager(duckdb_provider: DuckDBProvider) -> PositionManager:
+    """Create PositionManager for testing."""
+    return PositionManager(
         data_provider=duckdb_provider,
-        initial_capital=100_000.0,
-        max_margin_utilization=0.70,
     )
+
+
+class PositionTrackerCompat:
+    """测试用兼容性包装器
+
+    提供旧的 PositionTracker API，内部使用新的 PositionManager + AccountSimulator 架构。
+    仅用于测试迁移期间保持测试可运行。
+    """
+
+    def __init__(self, position_manager: PositionManager, account_simulator: AccountSimulator):
+        self._position_manager = position_manager
+        self._account = account_simulator
+
+    @property
+    def account(self) -> AccountSimulator:
+        """访问 AccountSimulator"""
+        return self._account
+
+    @property
+    def positions(self) -> dict[str, SimulatedPosition]:
+        """当前持仓"""
+        return self._account.positions
+
+    @property
+    def position_count(self) -> int:
+        """持仓数量"""
+        return self._account.position_count
+
+    @property
+    def nlv(self) -> float:
+        """净清算价值"""
+        return self._account.nlv
+
+    def set_date(self, d: date) -> None:
+        """设置当前日期"""
+        self._position_manager.set_date(d)
+
+    def open_position_from_execution(self, execution) -> SimulatedPosition | None:
+        """基于执行创建并添加持仓"""
+        position = self._position_manager.create_position(execution)
+        success = self._account.add_position(position, execution.net_amount)
+        return position if success else None
+
+    def close_position_from_execution(
+        self,
+        position_id: str,
+        execution,
+        close_reason: str | None = None,
+    ) -> float | None:
+        """基于执行平仓"""
+        position = self._account.positions.get(position_id)
+        if not position:
+            return None
+
+        pnl = self._position_manager.calculate_realized_pnl(position, execution, close_reason)
+        success = self._account.remove_position(position_id, execution.net_amount, pnl)
+        if success:
+            self._position_manager.finalize_close(position, execution, pnl, close_reason)
+            return pnl
+        return None
+
+    def get_position_data_for_monitoring(self, as_of_date: date | None = None):
+        """获取监控用持仓数据"""
+        return self._position_manager.get_position_data_for_monitoring(
+            self._account.positions, as_of_date
+        )
+
+    def get_account_state(self):
+        """获取账户状态"""
+        return self._account.get_account_state()
+
+
+@pytest.fixture
+def position_tracker(
+    duckdb_provider: DuckDBProvider,
+    account_simulator: AccountSimulator,
+) -> PositionTrackerCompat:
+    """Create PositionTracker compatibility wrapper for testing."""
+    position_manager = PositionManager(data_provider=duckdb_provider)
+    return PositionTrackerCompat(position_manager, account_simulator)
 
 
 @pytest.fixture
@@ -366,7 +445,7 @@ def sample_position() -> SimulatedPosition:
         position_id="P000001",
         symbol="AAPL 20240315 150P",
         underlying="AAPL",
-        option_type="put",
+        option_type=OptionType.PUT,
         strike=150.0,
         expiration=date(2024, 3, 15),
         quantity=-1,  # Short 1 put
@@ -385,7 +464,7 @@ def sample_positions() -> list[SimulatedPosition]:
             position_id="P000001",
             symbol="AAPL 20240315 150P",
             underlying="AAPL",
-            option_type="put",
+            option_type=OptionType.PUT,
             strike=150.0,
             expiration=date(2024, 3, 15),
             quantity=-1,
@@ -398,7 +477,7 @@ def sample_positions() -> list[SimulatedPosition]:
             position_id="P000002",
             symbol="MSFT 20240322 400P",
             underlying="MSFT",
-            option_type="put",
+            option_type=OptionType.PUT,
             strike=400.0,
             expiration=date(2024, 3, 22),
             quantity=-2,
@@ -411,7 +490,7 @@ def sample_positions() -> list[SimulatedPosition]:
             position_id="P000003",
             symbol="GOOGL 20240329 140P",
             underlying="GOOGL",
-            option_type="put",
+            option_type=OptionType.PUT,
             strike=140.0,
             expiration=date(2024, 3, 29),
             quantity=-1,
