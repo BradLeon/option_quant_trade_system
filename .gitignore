@@ -216,3 +216,4 @@ openspec/
 
 # Local data directory (root level only)
 /data/
+creds.txt
