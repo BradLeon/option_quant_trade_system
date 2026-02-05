@@ -574,6 +574,11 @@ class DuckDBProvider(DataProvider):
                     iv=implied_vol,
                     greeks=greeks,
                     source="duckdb",
+                    # OHLC 价格 (用于回测 price_mode)
+                    open=open_price,
+                    high=high,
+                    low=low,
+                    close=close,
                 )
 
                 if opt_type == "call":
@@ -1274,6 +1279,11 @@ class DuckDBProvider(DataProvider):
                         iv=implied_vol,
                         greeks=greeks,
                         source="duckdb",
+                        # OHLC 价格 (用于回测 price_mode)
+                        open=open_price,
+                        high=high,
+                        low=low,
+                        close=close,
                     )
                     results.append(quote)
 

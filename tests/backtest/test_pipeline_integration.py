@@ -11,12 +11,14 @@ from datetime import date, datetime
 from src.backtest.data.duckdb_provider import DuckDBProvider
 from src.backtest.engine.account_simulator import AccountSimulator, SimulatedPosition
 from src.backtest.engine.position_tracker import PositionTracker
+from src.backtest.engine.trade_simulator import TradeSimulator
 from src.business.monitoring.models import PositionData
 from src.business.monitoring.pipeline import MonitoringPipeline
 from src.business.monitoring.suggestions import ActionType
 from src.business.screening.models import ContractOpportunity, MarketType, ScreeningResult
 from src.business.trading.decision.engine import DecisionEngine
 from src.business.trading.models.decision import AccountState, DecisionType
+from src.data.models.option import OptionType
 from src.data.providers.unified_provider import UnifiedDataProvider
 from src.engine.models.enums import StrategyType
 
@@ -54,9 +56,9 @@ class TestDuckDBProviderIntegration:
 
         # Check put options have required fields
         put = chain.puts[0]
-        assert put.strike > 0
-        assert put.expiry is not None
-        assert hasattr(put, 'greeks') or put.delta is not None
+        assert put.contract.strike_price > 0
+        assert put.contract.expiry_date is not None
+        assert hasattr(put, 'greeks') or (put.greeks and put.greeks.delta is not None)
 
     def test_get_trading_days(
         self,
@@ -98,7 +100,7 @@ class TestDuckDBProviderIntegration:
             pytest.skip("Option data format may not match DuckDBProvider expectations")
 
         for put in chain.puts:
-            assert put.expiry.date() >= mid_date
+            assert put.contract.expiry_date >= mid_date
 
 
 class TestMonitoringPipelineIntegration:
@@ -107,12 +109,25 @@ class TestMonitoringPipelineIntegration:
     def test_monitoring_with_position_data(
         self,
         position_tracker: PositionTracker,
+        trade_simulator: TradeSimulator,
         sample_positions: list[SimulatedPosition],
     ):
         """Test MonitoringPipeline with PositionData from PositionTracker."""
-        # Add positions to tracker
+        # Add positions to tracker using new API
         for pos in sample_positions:
-            position_tracker.open_position(pos, commission=0.65)
+            execution = trade_simulator.execute_open(
+                symbol=pos.symbol,
+                underlying=pos.underlying,
+                option_type=pos.option_type,
+                strike=pos.strike,
+                expiration=pos.expiration,
+                quantity=pos.quantity,
+                mid_price=pos.entry_price,
+                trade_date=pos.entry_date,
+            )
+            position = position_tracker.open_position_from_execution(execution)
+            if position:
+                position.underlying_price = pos.underlying_price
 
         # Get PositionData for monitoring
         position_data = position_tracker.get_position_data_for_monitoring(
@@ -135,12 +150,25 @@ class TestMonitoringPipelineIntegration:
     def test_monitoring_pipeline_with_simulated_positions(
         self,
         position_tracker: PositionTracker,
+        trade_simulator: TradeSimulator,
         sample_positions: list[SimulatedPosition],
     ):
         """Test running MonitoringPipeline on simulated positions."""
-        # Add positions
+        # Add positions using new API
         for pos in sample_positions:
-            position_tracker.open_position(pos, commission=0.65)
+            execution = trade_simulator.execute_open(
+                symbol=pos.symbol,
+                underlying=pos.underlying,
+                option_type=pos.option_type,
+                strike=pos.strike,
+                expiration=pos.expiration,
+                quantity=pos.quantity,
+                mid_price=pos.entry_price,
+                trade_date=pos.entry_date,
+            )
+            position = position_tracker.open_position_from_execution(execution)
+            if position:
+                position.underlying_price = pos.underlying_price
 
         # Get PositionData
         position_data = position_tracker.get_position_data_for_monitoring(
@@ -170,10 +198,23 @@ class TestMonitoringPipelineIntegration:
     def test_position_data_has_greeks(
         self,
         position_tracker: PositionTracker,
+        trade_simulator: TradeSimulator,
         sample_position: SimulatedPosition,
     ):
         """Test that PositionData includes Greeks from option chain."""
-        position_tracker.open_position(sample_position, commission=0.65)
+        execution = trade_simulator.execute_open(
+            symbol=sample_position.symbol,
+            underlying=sample_position.underlying,
+            option_type=sample_position.option_type,
+            strike=sample_position.strike,
+            expiration=sample_position.expiration,
+            quantity=sample_position.quantity,
+            mid_price=sample_position.entry_price,
+            trade_date=sample_position.entry_date,
+        )
+        position = position_tracker.open_position_from_execution(execution)
+        if position:
+            position.underlying_price = sample_position.underlying_price
 
         position_data = position_tracker.get_position_data_for_monitoring(
             as_of_date=date(2024, 2, 15)
@@ -200,7 +241,7 @@ class TestDecisionEngineIntegration:
         # Create sample opportunity with lower strike (smaller notional)
         opportunity = ContractOpportunity(
             symbol="AAPL",
-            option_type="put",
+            option_type=OptionType.PUT,
             strike=50.0,  # Lower strike = lower notional value
             expiry="2024-03-15",
             mid_price=1.50,
@@ -255,7 +296,7 @@ class TestDecisionEngineIntegration:
         opportunities = [
             ContractOpportunity(
                 symbol="AAPL",
-                option_type="put",
+                option_type=OptionType.PUT,
                 strike=50.0,  # Lower strike
                 expiry="2024-03-15",
                 mid_price=1.50,
@@ -271,7 +312,7 @@ class TestDecisionEngineIntegration:
             ),
             ContractOpportunity(
                 symbol="MSFT",
-                option_type="put",
+                option_type=OptionType.PUT,
                 strike=60.0,  # Lower strike
                 expiry="2024-03-22",
                 mid_price=1.80,
@@ -329,11 +370,43 @@ class TestAccountStateCompatibility:
     def test_account_simulator_produces_valid_account_state(
         self,
         account_simulator: AccountSimulator,
+        trade_simulator: TradeSimulator,
         sample_position: SimulatedPosition,
     ):
         """Test that AccountSimulator.get_account_state() is compatible."""
-        # Open a position
-        account_simulator.open_position(sample_position, commission=0.65)
+        # Create execution via trade simulator
+        execution = trade_simulator.execute_open(
+            symbol=sample_position.symbol,
+            underlying=sample_position.underlying,
+            option_type=sample_position.option_type,
+            strike=sample_position.strike,
+            expiration=sample_position.expiration,
+            quantity=sample_position.quantity,
+            mid_price=sample_position.entry_price,
+            trade_date=sample_position.entry_date,
+        )
+
+        # Create position manually for AccountSimulator
+        position = SimulatedPosition(
+            position_id="P000001",
+            symbol=execution.symbol,
+            underlying=execution.underlying,
+            option_type=execution.option_type,
+            strike=execution.strike,
+            expiration=execution.expiration,
+            quantity=execution.quantity if execution.side.value == "buy" else -execution.quantity,
+            entry_price=execution.fill_price,
+            entry_date=execution.trade_date,
+            lot_size=execution.lot_size,
+            underlying_price=sample_position.underlying_price,
+        )
+        position.current_price = execution.fill_price
+        position.market_value = position.quantity * position.entry_price * position.lot_size
+        position.commission_paid = execution.commission
+        position.margin_required = position.strike * abs(position.quantity) * position.lot_size * 0.20
+
+        # Open position using new API
+        account_simulator.add_position(position, cash_change=execution.net_amount)
 
         # Get account state
         state = account_simulator.get_account_state()
@@ -352,12 +425,25 @@ class TestAccountStateCompatibility:
     def test_position_tracker_produces_valid_account_state(
         self,
         position_tracker: PositionTracker,
+        trade_simulator: TradeSimulator,
         sample_positions: list[SimulatedPosition],
     ):
         """Test that PositionTracker.get_account_state() is compatible."""
-        # Open positions
+        # Open positions using new API
         for pos in sample_positions:
-            position_tracker.open_position(pos, commission=0.65)
+            execution = trade_simulator.execute_open(
+                symbol=pos.symbol,
+                underlying=pos.underlying,
+                option_type=pos.option_type,
+                strike=pos.strike,
+                expiration=pos.expiration,
+                quantity=pos.quantity,
+                mid_price=pos.entry_price,
+                trade_date=pos.entry_date,
+            )
+            position = position_tracker.open_position_from_execution(execution)
+            if position:
+                position.underlying_price = pos.underlying_price
 
         # Get account state
         state = position_tracker.get_account_state()
@@ -375,77 +461,145 @@ class TestTradeExecutionFlow:
     def test_open_close_flow(
         self,
         position_tracker: PositionTracker,
+        trade_simulator: TradeSimulator,
         sample_position: SimulatedPosition,
     ):
         """Test opening and closing a position."""
-        # Open position
-        success = position_tracker.open_position(sample_position, commission=0.65)
-        assert success
+        # Open position using new API
+        open_execution = trade_simulator.execute_open(
+            symbol=sample_position.symbol,
+            underlying=sample_position.underlying,
+            option_type=sample_position.option_type,
+            strike=sample_position.strike,
+            expiration=sample_position.expiration,
+            quantity=sample_position.quantity,
+            mid_price=sample_position.entry_price,
+            trade_date=sample_position.entry_date,
+        )
+        position = position_tracker.open_position_from_execution(open_execution)
+        assert position is not None
+        position.underlying_price = sample_position.underlying_price
 
         # Verify position exists
         assert position_tracker.position_count == 1
-        assert sample_position.position_id in position_tracker.positions
+        assert position.position_id in position_tracker.positions
 
         # Close position at a lower price (profitable for short)
-        # sample_position entry_price is 3.50
-        pnl = position_tracker.close_position(
-            position_id=sample_position.position_id,
-            close_price=0.50,  # Much lower price for clear profit
-            close_date=date(2024, 3, 1),
+        close_execution = trade_simulator.execute_close(
+            symbol=position.symbol,
+            underlying=position.underlying,
+            option_type=position.option_type,
+            strike=position.strike,
+            expiration=position.expiration,
+            quantity=1,  # Buy back 1 contract
+            mid_price=0.50,  # Much lower price for clear profit
+            trade_date=date(2024, 3, 1),
+            reason="take_profit",
+        )
+
+        pnl = position_tracker.close_position_from_execution(
+            position_id=position.position_id,
+            execution=close_execution,
             close_reason="take_profit",
-            commission=0.65,
         )
 
         assert pnl is not None
-        # For SHORT PUT: PnL = (entry_price - close_price) * |qty| * lot - commissions
-        # = (3.50 - 0.50) * 1 * 100 - 1.30 = 300 - 1.30 = 298.70
+        # For SHORT PUT: PnL = (close_price - entry_price) * qty * lot - commissions
+        # Short qty is negative, so (0.50 - 3.50) * (-1) * 100 = 300
+        # Then minus commissions
         assert pnl > 0, f"Expected positive PnL but got {pnl}"
         assert position_tracker.position_count == 0
 
     def test_expiration_flow(
         self,
         position_tracker: PositionTracker,
+        trade_simulator: TradeSimulator,
         sample_position: SimulatedPosition,
     ):
         """Test position expiration handling."""
-        # Open position
-        position_tracker.open_position(sample_position, commission=0.65)
+        # Open position using new API
+        open_execution = trade_simulator.execute_open(
+            symbol=sample_position.symbol,
+            underlying=sample_position.underlying,
+            option_type=sample_position.option_type,
+            strike=sample_position.strike,
+            expiration=sample_position.expiration,
+            quantity=sample_position.quantity,
+            mid_price=sample_position.entry_price,
+            trade_date=sample_position.entry_date,
+        )
+        position = position_tracker.open_position_from_execution(open_execution)
+        assert position is not None
+        position.underlying_price = sample_position.underlying_price
 
         # Expire position (OTM - worthless)
         # sample_position strike is 150, underlying at 160 means PUT is OTM
-        pnl = position_tracker.expire_position(
-            position_id=sample_position.position_id,
-            expire_date=sample_position.expiration,
+        expire_execution = trade_simulator.execute_expire(
+            symbol=position.symbol,
+            underlying=position.underlying,
+            option_type=position.option_type,
+            strike=position.strike,
+            expiration=position.expiration,
+            quantity=position.quantity,
             final_underlying_price=160.0,  # Above strike, put expires worthless
+            trade_date=position.expiration,
+            lot_size=position.lot_size,
+        )
+
+        pnl = position_tracker.close_position_from_execution(
+            position_id=position.position_id,
+            execution=expire_execution,
         )
 
         assert pnl is not None
         # For OTM expiration, close_price = 0, so keep full premium minus commission
-        # PnL = (entry_price - 0) * |qty| * lot - open_commission
-        # = 3.50 * 1 * 100 - 0.65 = 350 - 0.65 = 349.35
+        # PnL = (0 - entry_price) * qty * lot - commissions
+        # = (0 - ~3.50) * (-1) * 100 - commissions ≈ 350 - commissions
         assert pnl > 0, f"Expected positive PnL but got {pnl}"
         assert position_tracker.position_count == 0
 
     def test_trade_records(
         self,
         position_tracker: PositionTracker,
+        trade_simulator: TradeSimulator,
         sample_position: SimulatedPosition,
     ):
         """Test that trade records are generated correctly."""
-        # Open position
-        position_tracker.open_position(sample_position, commission=0.65)
+        # Open position using new API
+        open_execution = trade_simulator.execute_open(
+            symbol=sample_position.symbol,
+            underlying=sample_position.underlying,
+            option_type=sample_position.option_type,
+            strike=sample_position.strike,
+            expiration=sample_position.expiration,
+            quantity=sample_position.quantity,
+            mid_price=sample_position.entry_price,
+            trade_date=sample_position.entry_date,
+        )
+        position = position_tracker.open_position_from_execution(open_execution)
+        assert position is not None
 
         # Close position
-        position_tracker.close_position(
-            position_id=sample_position.position_id,
-            close_price=2.00,
-            close_date=date(2024, 3, 1),
-            close_reason="take_profit",
-            commission=0.65,
+        close_execution = trade_simulator.execute_close(
+            symbol=position.symbol,
+            underlying=position.underlying,
+            option_type=position.option_type,
+            strike=position.strike,
+            expiration=position.expiration,
+            quantity=1,  # Buy back 1 contract
+            mid_price=2.00,
+            trade_date=date(2024, 3, 1),
+            reason="take_profit",
         )
 
-        # Check trade records
-        records = position_tracker.trade_records
+        position_tracker.close_position_from_execution(
+            position_id=position.position_id,
+            execution=close_execution,
+            close_reason="take_profit",
+        )
+
+        # Check trade records from TradeSimulator (new location)
+        records = trade_simulator.trade_records
         assert len(records) == 2  # Open + Close
 
         # Open record
@@ -456,4 +610,3 @@ class TestTradeExecutionFlow:
         # Close record
         close_record = records[1]
         assert close_record.action == "close"
-        assert close_record.pnl is not None

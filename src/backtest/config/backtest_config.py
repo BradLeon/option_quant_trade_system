@@ -20,10 +20,26 @@ Usage:
 import os
 from dataclasses import dataclass, field
 from datetime import date
+from enum import Enum
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
+
+
+class PriceMode(str, Enum):
+    """回测价格模式
+
+    决定回测中使用哪个价格进行交易执行和持仓估值。
+
+    - OPEN: 使用开盘价（推荐，更贴近实盘执行）
+    - CLOSE: 使用收盘价（传统回测方式）
+    - MID: 使用中间价 (bid+ask)/2 或 (open+close)/2
+    """
+
+    OPEN = "open"
+    CLOSE = "close"
+    MID = "mid"
 
 
 @dataclass
@@ -76,6 +92,13 @@ class BacktestConfig:
 
     # ========== 数据配置 ==========
     data_dir: str = "data/backtest"  # Parquet 数据目录
+
+    # ========== 价格模式 ==========
+    # 决定交易执行和持仓估值使用的价格
+    # - "open": 开盘价（推荐，更贴近实盘执行）
+    # - "close": 收盘价（传统回测方式）
+    # - "mid": 中间价
+    price_mode: str = "close"
 
     # ========== 其他选项 ==========
     random_seed: int | None = None  # 随机种子 (用于可重复性)
@@ -181,6 +204,7 @@ class BacktestConfig:
             "stock_commission_per_share": self.stock_commission_per_share,
             "stock_commission_min_per_order": self.stock_commission_min_per_order,
             "data_dir": self.data_dir,
+            "price_mode": self.price_mode,
             "random_seed": self.random_seed,
             "verbose": self.verbose,
         }

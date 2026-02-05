@@ -124,6 +124,12 @@ class OptionQuote:
     source: str = "unknown"
     margin: MarginRequirement | None = None  # Margin requirement for short position
 
+    # 用于回测的 OHLC 价格字段 (从 EOD 数据填充)
+    open: float | None = None  # 开盘价
+    high: float | None = None  # 最高价
+    low: float | None = None  # 最低价
+    close: float | None = None  # 收盘价 (通常等于 last_price)
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for database storage."""
         result = {

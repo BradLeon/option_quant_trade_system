@@ -34,6 +34,12 @@ dependencies = [
     # Database & Cache
     "supabase>=2.0.0",
     "redis>=5.0.0",
+    "duckdb>=1.0.0",
+    "pyarrow>=15.0.0",
+    # Backtest Data
+    "thetadata==0.9.11",
+    # Visualization
+    "plotly>=5.0.0",
     # Configuration & Utilities
     "pyyaml>=6.0",
     "python-dotenv>=1.0.0",
@@ -41,6 +47,7 @@ dependencies = [
     "click>=8.1.0",
     # Async Support
     "nest-asyncio>=1.5.0",
+    "httpx>=0.28.1",
 ]
 
 [project.scripts]

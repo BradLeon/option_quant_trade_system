@@ -58,15 +58,18 @@ class DailyLimitsConfig:
     支持通过环境变量覆盖默认值 (前缀: DAILY_LIMITS_)
 
     示例:
-        export DAILY_LIMITS_MAX_QUANTITY_PER_UNDERLYING=3
-        export DAILY_LIMITS_MAX_VALUE_PCT_PER_UNDERLYING=5.0
+        export DAILY_LIMITS_MAX_OPEN_QUANTITY_PER_UNDERLYING=5
+        export DAILY_LIMITS_MAX_CLOSE_QUANTITY_PER_UNDERLYING=5
+        export DAILY_LIMITS_MAX_ROLL_QUANTITY_PER_UNDERLYING=5
     """
 
     # 是否启用每日限额
     enabled: bool = True
 
-    # 每个 underlying 每天最多开仓数量（绝对值）
-    max_quantity_per_underlying: int = 5
+    # 按类型的每日数量限额（各 5 张）
+    max_open_quantity_per_underlying: int = 5   # 每日 OPEN 限额
+    max_close_quantity_per_underlying: int = 5  # 每日 CLOSE 限额
+    max_roll_quantity_per_underlying: int = 5   # 每日 ROLL 限额（注：1 ROLL = 2 张）
 
     # 每个 underlying 每天开仓市值不超过 NLV 的 X%
     max_value_pct_per_underlying: float = 5.0
@@ -85,8 +88,14 @@ class DailyLimitsConfig:
         """
         return cls(
             enabled=_env_bool("DAILY_LIMITS_ENABLED", True),
-            max_quantity_per_underlying=_env_int(
-                "DAILY_LIMITS_MAX_QUANTITY_PER_UNDERLYING", 5
+            max_open_quantity_per_underlying=_env_int(
+                "DAILY_LIMITS_MAX_OPEN_QUANTITY_PER_UNDERLYING", 5
+            ),
+            max_close_quantity_per_underlying=_env_int(
+                "DAILY_LIMITS_MAX_CLOSE_QUANTITY_PER_UNDERLYING", 5
+            ),
+            max_roll_quantity_per_underlying=_env_int(
+                "DAILY_LIMITS_MAX_ROLL_QUANTITY_PER_UNDERLYING", 5
             ),
             max_value_pct_per_underlying=_env_float(
                 "DAILY_LIMITS_MAX_VALUE_PCT_PER_UNDERLYING", 5.0
@@ -102,7 +111,15 @@ class DailyLimitsConfig:
         """从字典创建配置"""
         return cls(
             enabled=data.get("enabled", True),
-            max_quantity_per_underlying=data.get("max_quantity_per_underlying", 5),
+            max_open_quantity_per_underlying=data.get(
+                "max_open_quantity_per_underlying", 5
+            ),
+            max_close_quantity_per_underlying=data.get(
+                "max_close_quantity_per_underlying", 5
+            ),
+            max_roll_quantity_per_underlying=data.get(
+                "max_roll_quantity_per_underlying", 5
+            ),
             max_value_pct_per_underlying=data.get("max_value_pct_per_underlying", 5.0),
             max_total_value_pct=data.get("max_total_value_pct", 25.0),
             include_pending_orders=data.get("include_pending_orders", True),
@@ -112,7 +129,9 @@ class DailyLimitsConfig:
         """转换为字典"""
         return {
             "enabled": self.enabled,
-            "max_quantity_per_underlying": self.max_quantity_per_underlying,
+            "max_open_quantity_per_underlying": self.max_open_quantity_per_underlying,
+            "max_close_quantity_per_underlying": self.max_close_quantity_per_underlying,
+            "max_roll_quantity_per_underlying": self.max_roll_quantity_per_underlying,
             "max_value_pct_per_underlying": self.max_value_pct_per_underlying,
             "max_total_value_pct": self.max_total_value_pct,
             "include_pending_orders": self.include_pending_orders,
@@ -132,6 +151,11 @@ class DailyStats:
     total_quantity: int  # 绝对值累加
     total_value: float  # 绝对值累加
     order_count: int
+
+    # 按类型统计
+    open_quantity: int = 0   # OPEN 类型订单数量
+    close_quantity: int = 0  # CLOSE 类型订单数量
+    roll_quantity: int = 0   # ROLL 类型订单数量
 
 
 class DailyTradeTracker:
@@ -207,12 +231,25 @@ class DailyTradeTracker:
         # 计算统计（使用绝对值！）
         total_quantity = 0
         total_value = 0.0
+        open_qty = 0
+        close_qty = 0
+        roll_qty = 0
 
         for record in orders:
             order = record.order
             # 使用绝对值
             qty = abs(order.quantity)
             total_quantity += qty
+
+            # 按类型统计
+            dtype = order.decision_type or ""
+            if dtype == "open":
+                open_qty += qty
+            elif dtype == "close":
+                close_qty += qty
+            elif dtype == "roll":
+                roll_qty += qty
+            # adjust/hedge 等计入 total，不单独限制
 
             # 计算订单市值 = |quantity| * price * multiplier
             price = order.limit_price or 0.0
@@ -226,6 +263,9 @@ class DailyTradeTracker:
             total_quantity=total_quantity,
             total_value=total_value,
             order_count=len(orders),
+            open_quantity=open_qty,
+            close_quantity=close_qty,
+            roll_quantity=roll_qty,
         )
 
         # 缓存结果
@@ -279,6 +319,7 @@ class DailyTradeTracker:
         quantity: int,
         value: float,
         nlv: float,
+        decision_type: str | None = None,
     ) -> tuple[bool, str]:
         """检查是否允许新开仓
 
@@ -287,6 +328,7 @@ class DailyTradeTracker:
             quantity: 开仓数量（可正可负，内部用 abs()）
             value: 订单市值（可正可负，内部用 abs()）
             nlv: 账户净值
+            decision_type: 决策类型 ("open"/"close"/"roll" 等)
 
         Returns:
             (allowed, reason) - 是否允许，拒绝原因
@@ -305,16 +347,42 @@ class DailyTradeTracker:
         abs_quantity = abs(quantity)
         abs_value = abs(value)
 
-        # 检查数量限额
-        new_total_qty = daily_stats.total_quantity + abs_quantity
-        if new_total_qty > self._config.max_quantity_per_underlying:
-            reason = (
-                f"{underlying} 已达当日数量限额: "
-                f"{daily_stats.total_quantity}/{self._config.max_quantity_per_underlying} 张, "
-                f"新增 {abs_quantity} 张将超限"
-            )
-            logger.info(f"Daily limit exceeded: {reason}")
-            return False, reason
+        # 按类型检查数量限额
+        if decision_type == "open":
+            new_total = daily_stats.open_quantity + abs_quantity
+            limit = self._config.max_open_quantity_per_underlying
+            if new_total > limit:
+                reason = (
+                    f"{underlying} 已达当日 OPEN 数量限额: "
+                    f"{daily_stats.open_quantity}/{limit} 张, "
+                    f"新增 {abs_quantity} 张将超限"
+                )
+                logger.info(f"Daily limit exceeded: {reason}")
+                return False, reason
+        elif decision_type == "close":
+            new_total = daily_stats.close_quantity + abs_quantity
+            limit = self._config.max_close_quantity_per_underlying
+            if new_total > limit:
+                reason = (
+                    f"{underlying} 已达当日 CLOSE 数量限额: "
+                    f"{daily_stats.close_quantity}/{limit} 张, "
+                    f"新增 {abs_quantity} 张将超限"
+                )
+                logger.info(f"Daily limit exceeded: {reason}")
+                return False, reason
+        elif decision_type == "roll":
+            # ROLL 会产生 2 个订单，1 个 ROLL decision 计为 2 张
+            roll_count = abs_quantity * 2
+            new_total = daily_stats.roll_quantity + roll_count
+            limit = self._config.max_roll_quantity_per_underlying
+            if new_total > limit:
+                reason = (
+                    f"{underlying} 已达当日 ROLL 数量限额: "
+                    f"{daily_stats.roll_quantity}/{limit} 张, "
+                    f"新增 {roll_count} 张将超限"
+                )
+                logger.info(f"Daily limit exceeded: {reason}")
+                return False, reason
 
         # 检查单标的市值占比限额
         existing_value_pct = (daily_stats.total_value / nlv) * 100

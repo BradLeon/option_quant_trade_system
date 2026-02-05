@@ -7,29 +7,34 @@ Account Simulator - 账户模拟器
 - NLV (净清算价值) 计算
 - 每日权益快照
 
+注意: 手续费由 TradeSimulator 计算，AccountSimulator 仅接收并记录总手续费。
+
 Usage:
     simulator = AccountSimulator(initial_capital=100_000)
 
-    # 开仓
-    simulator.open_position(position)
+    # 开仓 (手续费由 TradeSimulator 计算后传入)
+    simulator.open_position(position, total_commission=1.30)
 
     # 更新持仓市值
     simulator.update_position_value(position_id, new_market_value, new_margin)
 
-    # 平仓
-    pnl = simulator.close_position(position_id, close_price, close_date)
+    # 平仓 (手续费由 TradeSimulator 计算后传入)
+    pnl = simulator.close_position(position_id, close_price, close_date, total_commission=1.30)
 
     # 获取账户状态
     state = simulator.get_account_state()
 """
 
+from __future__ import annotations
+
 import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Any, Literal
+from typing import Any
 
 from src.business.trading.models.decision import AccountState
 from src.data.models.margin import calc_reg_t_margin_short_put, calc_reg_t_margin_short_call
+from src.data.models.option import OptionType
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +49,7 @@ class SimulatedPosition:
     position_id: str
     symbol: str  # 期权合约标识
     underlying: str  # 标的代码
-    option_type: Literal["call", "put"]
+    option_type: OptionType  # 期权类型 (CALL/PUT)
     strike: float
     expiration: date
     quantity: int  # 正数=多头, 负数=空头
@@ -109,7 +114,7 @@ class SimulatedPosition:
 
     def _calculate_margin(self, underlying_price: float) -> None:
         """计算保证金需求 (Reg T)"""
-        if self.option_type == "put":
+        if self.option_type == OptionType.PUT:
             margin_per_share = calc_reg_t_margin_short_put(
                 underlying_price=underlying_price,
                 strike=self.strike,
@@ -175,20 +180,20 @@ class AccountSimulator:
         pos = SimulatedPosition(
             position_id="001",
             underlying="AAPL",
-            option_type="put",
+            option_type=OptionType.PUT,
             strike=150,
             expiration=date(2024, 3, 15),
             quantity=-1,  # 负数=卖出
             entry_price=3.50,
             entry_date=date(2024, 2, 1),
         )
-        simulator.open_position(pos, commission=0.65)
+        simulator.open_position(pos, total_commission=1.00)  # 1 张合约，手续费由 TradeSimulator 计算
 
         # 每日更新
         simulator.update_position_value("001", current_price=2.00, underlying_price=155)
 
         # 平仓
-        pnl = simulator.close_position("001", close_price=1.00, close_date=date(2024, 3, 1))
+        pnl = simulator.close_position("001", close_price=1.00, close_date=date(2024, 3, 1), total_commission=1.00)
     """
 
     def __init__(
@@ -237,106 +242,78 @@ class AccountSimulator:
         """持仓数量"""
         return len(self._positions)
 
-    def open_position(
+    def add_position(
         self,
         position: SimulatedPosition,
-        commission: float = 0.65,
+        cash_change: float,
     ) -> bool:
-        """开仓
+        """添加持仓 (简化版本，Position 字段已由 PositionTracker 设置)
+
+        这是 open_position 的新版本，供重构后的 PositionTracker 使用。
+        Position 层负责计算 position 的字段，Account 层只负责：
+        1. 检查保证金
+        2. 更新现金 (直接使用传入的 cash_change，不重新计算)
+        3. 存储持仓
 
         Args:
-            position: 持仓信息
-            commission: 手续费
+            position: 持仓信息 (字段已由 PositionTracker 填充)
+            cash_change: 现金变动 (已由 Trade 层计算，即 TradeExecution.net_amount)
 
         Returns:
-            是否成功开仓
+            是否成功添加持仓
         """
         # 检查是否有足够的保证金
-        required_margin = self._estimate_margin(position)
-
-        if required_margin > self.available_margin:
+        if position.margin_required > self.available_margin:
             logger.warning(
                 f"Insufficient margin for {position.symbol}: "
-                f"required={required_margin:.2f}, available={self.available_margin:.2f}"
+                f"required={position.margin_required:.2f}, available={self.available_margin:.2f}"
             )
             return False
 
-        # 计算开仓现金流
-        # 卖出期权: 收取权利金
-        # 买入期权: 支付权利金
-        premium_flow = -position.quantity * position.entry_price * position.lot_size
-        total_commission = commission * abs(position.quantity)
-
-        self._cash += premium_flow - total_commission
-
-        # 记录手续费
-        position.commission_paid = total_commission
-
-        # 初始化市值
-        position.current_price = position.entry_price
-        position.market_value = position.quantity * position.entry_price * position.lot_size
-        position.margin_required = required_margin
+        # 直接使用传入的 cash_change，不重新计算
+        self._cash += cash_change
 
         # 添加到持仓
         self._positions[position.position_id] = position
 
         logger.debug(
-            f"Opened position {position.position_id}: "
+            f"Added position {position.position_id}: "
             f"{position.quantity} {position.symbol} @ {position.entry_price:.2f}, "
-            f"cash_flow={premium_flow:.2f}, commission={total_commission:.2f}"
+            f"cash_change={cash_change:.2f}"
         )
 
         return True
 
-    def close_position(
+    def remove_position(
         self,
         position_id: str,
-        close_price: float,
-        close_date: date,
-        close_reason: str = "manual",
-        commission: float = 0.65,
-    ) -> float | None:
-        """平仓
+        cash_change: float,
+        realized_pnl: float,
+    ) -> bool:
+        """移除持仓 (简化版本，Position 字段已由 PositionTracker 设置)
+
+        这是 close_position 的新版本，供重构后的 PositionTracker 使用。
+        Position 层负责计算 realized_pnl 和更新 position 字段，Account 层只负责：
+        1. 更新现金 (直接使用传入的 cash_change，不重新计算)
+        2. 更新累计已实现盈亏
+        3. 移动持仓到 closed_positions
 
         Args:
             position_id: 持仓 ID
-            close_price: 平仓价格 (per share)
-            close_date: 平仓日期
-            close_reason: 平仓原因
-            commission: 手续费
+            cash_change: 现金变动 (已由 Trade 层计算)
+            realized_pnl: 已实现盈亏 (已由 Position 层计算)
 
         Returns:
-            已实现盈亏，失败返回 None
+            是否成功移除持仓
         """
         if position_id not in self._positions:
             logger.warning(f"Position not found: {position_id}")
-            return None
+            return False
 
         position = self._positions[position_id]
 
-        # 计算平仓现金流
-        # SHORT 平仓 (买回): 支付权利金 → cash 减少
-        # LONG 平仓 (卖出): 收取权利金 → cash 增加
-        # 使用 -quantity 使得: SHORT (qty<0) → 支付, LONG (qty>0) → 收取
-        close_flow = -position.quantity * close_price * position.lot_size
-        total_commission = commission * abs(position.quantity)
-
-        self._cash += close_flow - total_commission
-
-        # 计算已实现盈亏
-        # PnL = (close_price - entry_price) * quantity * lot_size - commissions
-        # SHORT (qty<0): 当 close < entry 时盈利 (负*负=正)
-        # LONG (qty>0): 当 close > entry 时盈利 (正*正=正)
-        realized_pnl = (close_price - position.entry_price) * position.quantity * position.lot_size
-        realized_pnl -= (position.commission_paid + total_commission)
-
-        # 更新持仓信息
-        position.is_closed = True
-        position.close_date = close_date
-        position.close_price = close_price
-        position.close_reason = close_reason
-        position.realized_pnl = realized_pnl
-        position.commission_paid += total_commission
+        # 直接使用传入的 cash_change，不重新计算
+        self._cash += cash_change
 
         # 更新累计已实现盈亏
         self._realized_pnl_cumulative += realized_pnl
@@ -346,99 +323,11 @@ class AccountSimulator:
         del self._positions[position_id]
 
         logger.debug(
-            f"Closed position {position_id}: "
-            f"close_price={close_price:.2f}, realized_pnl={realized_pnl:.2f}"
+            f"Removed position {position_id}: "
+            f"cash_change={cash_change:.2f}, realized_pnl={realized_pnl:.2f}"
         )
 
-        return realized_pnl
-
-    def expire_position(
-        self,
-        position_id: str,
-        expire_date: date,
-        final_underlying_price: float,
-    ) -> float | None:
-        """期权到期处理
-
-        Args:
-            position_id: 持仓 ID
-            expire_date: 到期日
-            final_underlying_price: 到期时标的价格
-
-        Returns:
-            已实现盈亏
-        """
-        if position_id not in self._positions:
-            return None
-
-        position = self._positions[position_id]
-
-        # 判断是否 ITM
-        if position.option_type == "put":
-            is_itm = final_underlying_price < position.strike
-        else:  # call
-            is_itm = final_underlying_price > position.strike
-
-        if is_itm:
-            # ITM: 被行权
-            return self._handle_assignment(position, expire_date, final_underlying_price)
-        else:
-            # OTM: 到期无价值
-            return self.close_position(
-                position_id,
-                close_price=0.0,
-                close_date=expire_date,
-                close_reason="expired_worthless",
-                commission=0.0,  # 到期不收手续费
-            )
-
-    def _handle_assignment(
-        self,
-        position: SimulatedPosition,
-        expire_date: date,
-        final_underlying_price: float,
-    ) -> float:
-        """处理期权被行权
-
-        SHORT PUT 被行权: 以 strike 价格买入股票
-        SHORT CALL 被行权: 以 strike 价格卖出股票
-
-        简化处理: 假设立即以市价平仓股票
-        """
-        # 计算行权损益
-        if position.option_type == "put" and position.is_short:
-            # 被迫买入股票，然后立即卖出
-            # 损失 = (Strike - Market) * Quantity * LotSize
-            assignment_loss = (position.strike - final_underlying_price) * abs(position.quantity) * position.lot_size
-        elif position.option_type == "call" and position.is_short:
-            # 被迫卖出股票 (假设有现金覆盖)
-            assignment_loss = (final_underlying_price - position.strike) * abs(position.quantity) * position.lot_size
-        else:
-            assignment_loss = 0.0
-
-        # 关闭期权持仓
-        # 期权价值 = 内在价值
-        if position.option_type == "put":
-            intrinsic_value = max(0, position.strike - final_underlying_price)
-        else:
-            intrinsic_value = max(0, final_underlying_price - position.strike)
-
-        realized_pnl = self.close_position(
-            position.position_id,
-            close_price=intrinsic_value,
-            close_date=expire_date,
-            close_reason="assigned",
-            commission=0.0,
-        )
-
-        if realized_pnl is not None:
-            # 减去行权损失 (已包含在平仓计算中)
-            logger.debug(
-                f"Position {position.position_id} assigned: "
-                f"assignment_loss={assignment_loss:.2f}, realized_pnl={realized_pnl:.2f}"
-            )
-
-        return realized_pnl or 0.0
+        return True
 
     def update_position_value(
         self,
@@ -601,7 +490,7 @@ class AccountSimulator:
         # 使用开仓价格和当前标的价格估算
         underlying_price = position.underlying_price or position.strike
 
-        if position.option_type == "put":
+        if position.option_type == OptionType.PUT:
             margin_per_share = calc_reg_t_margin_short_put(
                 underlying_price=underlying_price,
                 strike=position.strike,

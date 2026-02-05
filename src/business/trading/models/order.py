@@ -89,6 +89,9 @@ class OrderRequest:
     contract_multiplier: int = 100  # 合约乘数 (US=100, HK 视标的而定)
     currency: str = "USD"  # 交易币种
 
+    # 决策类型
+    decision_type: str | None = None  # "open"/"close"/"roll" etc
+
     # 券商信息
     broker: str = ""  # "ibkr" or "futu"
     account_type: str = "paper"  # MUST be "paper"
@@ -151,6 +154,7 @@ class OrderRequest:
             "time_in_force": self.time_in_force,
             "contract_multiplier": self.contract_multiplier,
             "currency": self.currency,
+            "decision_type": self.decision_type,
             "broker": self.broker,
             "account_type": self.account_type,
             "status": self.status.value,
@@ -181,6 +185,7 @@ class OrderRequest:
             time_in_force=data.get("time_in_force", "DAY"),
             contract_multiplier=data.get("contract_multiplier", 100),
             currency=data.get("currency", "USD"),
+            decision_type=data.get("decision_type"),
             broker=data.get("broker", ""),
             account_type=data.get("account_type", "paper"),
             status=OrderStatus(data["status"]),

@@ -16,7 +16,7 @@ Usage:
     execution = simulator.execute_open(
         symbol="AAPL 20240315 150P",
         underlying="AAPL",
-        option_type="put",
+        option_type=OptionType.PUT,
         strike=150.0,
         expiration=date(2024, 3, 15),
         quantity=-1,  # 卖出
@@ -31,8 +31,9 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import Enum
-from typing import Literal
 from uuid import uuid4
+
+from src.data.models.option import OptionType
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,32 @@ class ExecutionStatus(str, Enum):
 
 
 @dataclass
+class TradeRecord:
+    """交易记录
+
+    记录每笔交易的关键信息，在 Trade 层创建。
+    """
+
+    trade_id: str
+    execution_id: str  # 关联到 TradeExecution
+    symbol: str
+    underlying: str
+    option_type: OptionType
+    strike: float
+    expiration: date
+    trade_date: date
+    action: str  # "open", "close", "expire"
+    quantity: int  # 有符号数量
+    price: float  # 成交价
+    commission: float
+    gross_amount: float  # 成交金额（不含费用）
+    net_amount: float  # 净金额（含费用）
+    pnl: float | None = None  # 已实现盈亏（仅平仓/到期时）
+    reason: str | None = None
+    position_id: str | None = None  # 可选，由 Position 层填充
+
+
+@dataclass
 class TradeExecution:
     """交易执行记录
 
@@ -67,13 +94,13 @@ class TradeExecution:
     # 合约信息
     symbol: str = ""
     underlying: str = ""
-    option_type: Literal["call", "put"] = "put"
+    option_type: OptionType = OptionType.PUT  # 期权类型 (CALL/PUT)
     strike: float = 0.0
     expiration: date = field(default_factory=date.today)
 
     # 订单信息
-    side: OrderSide = OrderSide.SELL
-    quantity: int = 0  # 正数
+    side: OrderSide = OrderSide.SELL  # 仅用于显示/日志
+    quantity: int = 0  # 有符号: 负数=卖出, 正数=买入
 
     # 价格信息
     order_price: float = 0.0  # 下单价格 (mid price)
@@ -103,7 +130,7 @@ class TradeExecution:
             "timestamp": self.timestamp.isoformat(),
             "symbol": self.symbol,
             "underlying": self.underlying,
-            "option_type": self.option_type,
+            "option_type": self.option_type.value,  # OptionType enum -> str
             "strike": self.strike,
             "expiration": self.expiration.isoformat(),
             "side": self.side.value,
@@ -209,18 +236,6 @@ class CommissionModel:
     # 最高手续费 (0 = 无上限)
     max_commission: float = 0.0
 
-    # 兼容旧配置 (deprecated, 请使用 option_per_contract)
-    per_contract: float = 0.0  # 如果设置，覆盖 option_per_contract
-    min_commission: float = 0.0  # 如果设置，覆盖 option_min_per_order
-
-    def __post_init__(self) -> None:
-        """兼容旧配置"""
-        # 如果使用旧配置字段，映射到新字段
-        if self.per_contract > 0:
-            self.option_per_contract = self.per_contract
-        if self.min_commission > 0:
-            self.option_min_per_order = self.min_commission
-
     def calculate_option(self, contracts: int) -> float:
         """计算期权手续费
 
@@ -269,18 +284,6 @@ class CommissionModel:
 
         return commission
 
-    def calculate(self, quantity: int, trade_value: float = 0.0) -> float:
-        """计算手续费 (兼容旧接口，默认期权)
-
-        Args:
-            quantity: 合约数量 (绝对值)
-            trade_value: 交易金额 (未使用，保留兼容性)
-
-        Returns:
-            手续费金额
-        """
-        return self.calculate_option(quantity)
-
     @classmethod
     def ibkr_tiered(cls) -> "CommissionModel":
         """创建 IBKR Tiered 定价模型
@@ -322,7 +325,7 @@ class TradeSimulator:
         execution = simulator.execute_open(
             symbol="AAPL 20240315 150P",
             underlying="AAPL",
-            option_type="put",
+            option_type=OptionType.PUT,
             strike=150.0,
             expiration=date(2024, 3, 15),
             quantity=-1,
@@ -334,7 +337,7 @@ class TradeSimulator:
         close_execution = simulator.execute_close(
             symbol="AAPL 20240315 150P",
             underlying="AAPL",
-            option_type="put",
+            option_type=OptionType.PUT,
             strike=150.0,
             expiration=date(2024, 3, 15),
             quantity=1,  # 买回
@@ -361,17 +364,26 @@ class TradeSimulator:
             lot_size: 每张合约对应股数 (默认 100)
         """
         self._slippage_model = slippage_model or SlippageModel(base_pct=slippage_pct)
-        self._commission_model = commission_model or CommissionModel(per_contract=commission_per_contract)
+        self._commission_model = commission_model or CommissionModel(option_per_contract=commission_per_contract)
         self._lot_size = lot_size
 
         # 执行记录
         self._executions: list[TradeExecution] = []
         self._execution_counter = 0
 
+        # 交易记录 (Trade 层职责)
+        self._trade_records: list[TradeRecord] = []
+        self._trade_counter = 0
+
     @property
     def executions(self) -> list[TradeExecution]:
         """所有执行记录"""
         return self._executions
+
+    @property
+    def trade_records(self) -> list[TradeRecord]:
+        """所有交易记录"""
+        return self._trade_records
 
     @property
     def slippage_model(self) -> SlippageModel:
@@ -387,45 +399,51 @@ class TradeSimulator:
         self,
         symbol: str,
         underlying: str,
-        option_type: Literal["call", "put"],
+        option_type: OptionType,
         strike: float,
         expiration: date,
         quantity: int,
         mid_price: float,
         trade_date: date,
         reason: str = "screening_signal",
+        action: str = "open",  # 交易类型: open, close
+        lot_size: int | None = None,  # 每张合约对应股数，None 则使用默认值
     ) -> TradeExecution:
         """执行开仓
 
         Args:
             symbol: 期权合约代码
             underlying: 标的代码
-            option_type: 期权类型
+            option_type: 期权类型 (OptionType.PUT/CALL)
             strike: 行权价
             expiration: 到期日
             quantity: 数量 (正数=买入, 负数=卖出)
             mid_price: 中间价
             trade_date: 交易日期
             reason: 交易原因
+            action: 交易类型 (open/close)
+            lot_size: 每张合约对应股数 (可选，默认使用模拟器配置)
 
         Returns:
             TradeExecution
         """
         side = OrderSide.BUY if quantity > 0 else OrderSide.SELL
-        abs_qty = abs(quantity)
+
+        # 使用传入的 lot_size 或默认值
+        effective_lot_size = lot_size if lot_size is not None else self._lot_size
 
         # 计算滑点
         fill_price, slippage = self._slippage_model.calculate(mid_price, side)
         slippage_pct = slippage / mid_price if mid_price > 0 else 0.0
 
-        # 计算手续费
-        commission = self._commission_model.calculate(abs_qty)
+        # 计算手续费 (按合约张数，取绝对值)
+        commission = self._commission_model.calculate_option(abs(quantity))
 
         # 计算金额
-        # 成交金额 = 数量 * 成交价 * lot_size
-        # 卖出: 收取权利金 (正值)
-        # 买入: 支付权利金 (负值)
-        gross_amount = -quantity * fill_price * self._lot_size
+        # gross_amount = -quantity * fill_price * lot_size
+        # 卖出 (qty<0): -(-1) * price * 100 = +price*100 (收取权利金)
+        # 买入 (qty>0): -(+1) * price * 100 = -price*100 (支付权利金)
+        gross_amount = -quantity * fill_price * effective_lot_size
 
         # 净金额 = 成交金额 - 手续费
         net_amount = gross_amount - commission
@@ -441,7 +459,7 @@ class TradeSimulator:
             strike=strike,
             expiration=expiration,
             side=side,
-            quantity=abs_qty,
+            quantity=quantity,  # 有符号: 负数=卖出, 正数=买入
             order_price=mid_price,
             fill_price=fill_price,
             slippage=slippage,
@@ -450,14 +468,35 @@ class TradeSimulator:
             gross_amount=gross_amount,
             net_amount=net_amount,
             status=ExecutionStatus.FILLED,
-            lot_size=self._lot_size,
+            lot_size=effective_lot_size,
             reason=reason,
         )
 
         self._executions.append(execution)
 
+        # 创建交易记录 (Trade 层职责)
+        self._trade_counter += 1
+        trade_record = TradeRecord(
+            trade_id=f"T{self._trade_counter:06d}",
+            execution_id=execution.execution_id,
+            symbol=symbol,
+            underlying=underlying,
+            option_type=option_type,
+            strike=strike,
+            expiration=expiration,
+            trade_date=trade_date,
+            action=action,
+            quantity=quantity,  # 有符号
+            price=fill_price,
+            commission=commission,
+            gross_amount=gross_amount,
+            net_amount=net_amount,
+            reason=reason,
+        )
+        self._trade_records.append(trade_record)
+
         logger.debug(
-            f"Executed OPEN: {side.value} {abs_qty} {symbol} "
+            f"Executed {action.upper()}: {side.value} {abs(quantity)} {symbol} "
             f"@ {fill_price:.4f} (mid={mid_price:.4f}, slip={slippage:.4f}), "
             f"commission={commission:.2f}"
         )
@@ -468,31 +507,33 @@ class TradeSimulator:
         self,
         symbol: str,
         underlying: str,
-        option_type: Literal["call", "put"],
+        option_type: OptionType,
         strike: float,
         expiration: date,
         quantity: int,
         mid_price: float,
         trade_date: date,
         reason: str = "take_profit",
+        lot_size: int | None = None,
     ) -> TradeExecution:
         """执行平仓
 
         Args:
             symbol: 期权合约代码
             underlying: 标的代码
-            option_type: 期权类型
+            option_type: 期权类型 (OptionType.PUT/CALL)
             strike: 行权价
             expiration: 到期日
             quantity: 数量 (与开仓相反方向)
             mid_price: 中间价
             trade_date: 交易日期
             reason: 平仓原因
+            lot_size: 每张合约对应股数 (可选，默认使用模拟器配置)
 
         Returns:
             TradeExecution
         """
-        # 平仓与开仓使用相同逻辑
+        # 平仓与开仓使用相同逻辑，但 action 为 "close"
         return self.execute_open(
             symbol=symbol,
             underlying=underlying,
@@ -503,18 +544,21 @@ class TradeSimulator:
             mid_price=mid_price,
             trade_date=trade_date,
             reason=reason,
+            action="close",
+            lot_size=lot_size,
         )
 
     def execute_expire(
         self,
         symbol: str,
         underlying: str,
-        option_type: Literal["call", "put"],
+        option_type: OptionType,
         strike: float,
         expiration: date,
         quantity: int,
         final_underlying_price: float,
         trade_date: date,
+        lot_size: int | None = None,
     ) -> TradeExecution:
         """执行到期
 
@@ -523,18 +567,22 @@ class TradeSimulator:
         Args:
             symbol: 期权合约代码
             underlying: 标的代码
-            option_type: 期权类型
+            option_type: 期权类型 (OptionType.PUT/CALL)
             strike: 行权价
             expiration: 到期日
             quantity: 数量
             final_underlying_price: 到期时标的价格
             trade_date: 到期日期
+            lot_size: 每张合约对应股数 (可选，默认使用模拟器配置)
 
         Returns:
             TradeExecution
         """
+        # 使用传入的 lot_size 或默认值
+        effective_lot_size = lot_size if lot_size is not None else self._lot_size
+
         # 判断是否 ITM
-        if option_type == "put":
+        if option_type == OptionType.PUT:
             is_itm = final_underlying_price < strike
             intrinsic_value = max(0, strike - final_underlying_price)
         else:
@@ -542,24 +590,25 @@ class TradeSimulator:
             intrinsic_value = max(0, final_underlying_price - strike)
 
         side = OrderSide.BUY if quantity > 0 else OrderSide.SELL
-        abs_qty = abs(quantity)
 
         # 到期时的"价格"是内在价值
         fill_price = intrinsic_value
 
-        # 计算金额 (与开仓相反)
-        # 如果是空头到期 (quantity < 0 时开仓, 现在 quantity > 0 买回)
-        gross_amount = -quantity * fill_price * self._lot_size
+        # 计算金额
+        gross_amount = -quantity * fill_price * effective_lot_size
 
-        # 到期无手续费
-        commission = 0.0
-        net_amount = gross_amount
-
-        # 确定到期原因
+        # 计算手续费 (根据 ITM/OTM 不同)
         if is_itm:
+            # ITM: 行权涉及股票交易 (买入/卖出 lot_size 股)
+            shares = abs(quantity) * effective_lot_size
+            commission = self._commission_model.calculate_stock(shares)
             reason = "assigned"
         else:
+            # OTM: 价值归零，无交易
+            commission = 0.0
             reason = "expired_worthless"
+
+        net_amount = gross_amount - commission
 
         # 生成执行记录
         self._execution_counter += 1
@@ -572,20 +621,41 @@ class TradeSimulator:
             strike=strike,
             expiration=expiration,
             side=side,
-            quantity=abs_qty,
+            quantity=quantity,  # 有符号
             order_price=fill_price,
             fill_price=fill_price,
             slippage=0.0,
             slippage_pct=0.0,
-            commission=0.0,
+            commission=commission,
             gross_amount=gross_amount,
             net_amount=net_amount,
             status=ExecutionStatus.FILLED,
-            lot_size=self._lot_size,
+            lot_size=effective_lot_size,
             reason=reason,
         )
 
         self._executions.append(execution)
+
+        # 创建交易记录 (Trade 层职责)
+        self._trade_counter += 1
+        trade_record = TradeRecord(
+            trade_id=f"T{self._trade_counter:06d}",
+            execution_id=execution.execution_id,
+            symbol=symbol,
+            underlying=underlying,
+            option_type=option_type,
+            strike=strike,
+            expiration=expiration,
+            trade_date=trade_date,
+            action="expire",
+            quantity=quantity,  # 保持原始符号
+            price=fill_price,
+            commission=commission,  # ITM: stock commission, OTM: 0
+            gross_amount=gross_amount,
+            net_amount=net_amount,
+            reason=reason,
+        )
+        self._trade_records.append(trade_record)
 
         logger.debug(
             f"Executed EXPIRE: {symbol} {reason}, "
@@ -596,7 +666,7 @@ class TradeSimulator:
 
     def get_total_slippage(self) -> float:
         """获取总滑点损失"""
-        return sum(e.slippage * e.quantity * e.lot_size for e in self._executions)
+        return sum(e.slippage * abs(e.quantity) * e.lot_size for e in self._executions)
 
     def get_total_commission(self) -> float:
         """获取总手续费"""
@@ -625,6 +695,12 @@ class TradeSimulator:
         self._executions.clear()
         self._execution_counter = 0
 
+    def clear_trade_records(self) -> None:
+        """清空交易记录"""
+        self._trade_records.clear()
+        self._trade_counter = 0
+
     def reset(self) -> None:
         """重置模拟器"""
         self.clear_executions()
+        self.clear_trade_records()

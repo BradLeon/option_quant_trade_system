@@ -66,7 +66,7 @@ class RiskConfig:
 
     max_contracts_per_underlying: int = 10  # 单标的最大合约数
     max_notional_pct_per_underlying: float = 0.10  # 5% of NLV - 单标的最大名义价值占比
-    max_total_option_positions: int = 20  # 期权持仓总数上限
+    max_total_option_positions: int = 100  # 期权持仓总数上限
     max_concentration_pct: float = 0.20  # 20% - 单标的最大集中度
 
     # =========================================================================
@@ -171,7 +171,7 @@ class RiskConfig:
                 "max_notional_pct_per_underlying", 0.05
             ),
             max_total_option_positions=risk_limits.get(
-                "max_total_option_positions", 20
+                "max_total_option_positions", 100
             ),
             max_concentration_pct=risk_limits.get("max_concentration_pct", 0.20),
             max_projected_margin_utilization=risk_limits.get(

@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
-    from src.backtest.engine.position_tracker import TradeRecord
+    from src.backtest.engine.trade_simulator import TradeRecord
 
 
 @dataclass

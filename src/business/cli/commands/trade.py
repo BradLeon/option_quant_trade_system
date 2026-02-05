@@ -1418,3 +1418,151 @@ def backtest_report(result_json: str, output: str) -> None:
 
     except Exception as e:
         raise click.ClickException(f"报告生成失败: {e}")
+
+
+@backtest.command("download-macro")
+@click.option(
+    "--data-dir",
+    "-d",
+    type=click.Path(),
+    required=True,
+    help="数据存储目录",
+)
+@click.option(
+    "--start-date",
+    "-s",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    required=True,
+    help="开始日期 (YYYY-MM-DD)",
+)
+@click.option(
+    "--end-date",
+    "-e",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    required=True,
+    help="结束日期 (YYYY-MM-DD)",
+)
+@click.option(
+    "--indicators",
+    "-i",
+    multiple=True,
+    help="指定指标 (可多次使用，默认下载所有)",
+)
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    help="显示详细日志",
+)
+def backtest_download_macro(
+    data_dir: str,
+    start_date,
+    end_date,
+    indicators: tuple[str, ...],
+    verbose: bool,
+) -> None:
+    """下载宏观数据 (VIX/TNX 等)
+
+    从 yfinance 下载宏观指数历史数据，保存为 Parquet 供回测使用。
+
+    \b
+    默认下载指标:
+      ^VIX      CBOE 波动率指数
+      ^VIX3M    CBOE 3个月波动率指数
+      ^TNX      10年期美国国债收益率
+      ^TYX      30年期美国国债收益率
+      ^IRX      13周美国国债利率
+      ^GSPC     S&P 500 指数
+      SPY       S&P 500 ETF
+      QQQ       NASDAQ-100 ETF
+
+    \b
+    示例:
+      # 下载所有默认指标
+      optrade trade backtest download-macro -d data/backtest -s 2015-01-01 -e 2024-12-31
+
+      # 只下载 VIX 和 TNX
+      optrade trade backtest download-macro -d data/backtest -s 2015-01-01 -e 2024-12-31 -i ^VIX -i ^TNX
+    """
+    from pathlib import Path
+
+    # 配置日志
+    log_level = logging.DEBUG if verbose else logging.WARNING
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+
+    try:
+        from src.backtest.data.macro_downloader import MacroDownloader, DEFAULT_MACRO_INDICATORS
+    except ImportError as e:
+        raise click.ClickException(f"MacroDownloader not available: {e}")
+
+    click.echo("\n" + "=" * 60)
+    click.echo("📥 Download Macro Data")
+    click.echo("=" * 60)
+
+    data_path = Path(data_dir)
+    data_path.mkdir(parents=True, exist_ok=True)
+
+    # 确定要下载的指标
+    if indicators:
+        indicator_list = list(indicators)
+    else:
+        indicator_list = DEFAULT_MACRO_INDICATORS
+
+    click.echo(f"\n📁 数据目录: {data_path}")
+    click.echo(f"📅 日期范围: {start_date.date()} ~ {end_date.date()}")
+    click.echo(f"📊 指标列表: {len(indicator_list)} 个")
+    for ind in indicator_list[:5]:
+        click.echo(f"   - {ind}")
+    if len(indicator_list) > 5:
+        click.echo(f"   - ... ({len(indicator_list) - 5} more)")
+
+    # 创建下载器
+    downloader = MacroDownloader(data_dir=data_path)
+
+    # 进度回调
+    def on_progress(indicator: str, current: int, total: int):
+        click.echo(f"   [{current}/{total}] Downloading {indicator}...")
+
+    click.echo(f"\n🚀 开始下载...")
+
+    try:
+        results = downloader.download_indicators(
+            indicators=indicator_list,
+            start_date=start_date.date(),
+            end_date=end_date.date(),
+            on_progress=on_progress,
+        )
+    except Exception as e:
+        raise click.ClickException(f"下载失败: {e}")
+
+    # 显示结果
+    click.echo(f"\n" + "=" * 60)
+    click.echo("📊 下载结果")
+    click.echo("=" * 60)
+
+    total_records = 0
+    success_count = 0
+    for indicator, count in results.items():
+        if count > 0:
+            click.echo(f"   ✅ {indicator}: {count} records")
+            total_records += count
+            success_count += 1
+        else:
+            click.echo(f"   ❌ {indicator}: failed")
+
+    click.echo(f"\n   总计: {total_records} records ({success_count}/{len(indicator_list)} 成功)")
+
+    # 显示数据范围
+    date_range = downloader.get_date_range()
+    if date_range:
+        click.echo(f"   数据范围: {date_range[0]} ~ {date_range[1]}")
+
+    parquet_path = data_path / "macro_daily.parquet"
+    click.echo(f"\n   📁 保存位置: {parquet_path}")
+
+    click.echo(f"\n" + "=" * 60)
+    click.echo("✅ 宏观数据下载完成")
+    click.echo("=" * 60 + "\n")

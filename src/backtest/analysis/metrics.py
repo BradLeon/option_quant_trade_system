@@ -42,7 +42,7 @@ from src.engine.portfolio.returns import (
 
 if TYPE_CHECKING:
     from src.backtest.engine.backtest_executor import BacktestResult, DailySnapshot
-    from src.backtest.engine.position_tracker import TradeRecord
+    from src.backtest.engine.trade_simulator import TradeRecord
 
 
 @dataclass

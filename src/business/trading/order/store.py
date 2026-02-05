@@ -100,6 +100,7 @@ class OrderStore:
             "decision_id": record.order.decision_id,
             "symbol": record.order.symbol,
             "status": record.order.status.value,
+            "decision_type": record.order.decision_type,
             "created_at": record.order.created_at.isoformat(),
             "is_complete": record.is_complete,
         }

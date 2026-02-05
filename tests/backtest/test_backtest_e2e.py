@@ -14,6 +14,7 @@ from src.backtest.engine.account_simulator import AccountSimulator, SimulatedPos
 from src.backtest.engine.backtest_executor import BacktestExecutor, BacktestResult
 from src.backtest.engine.position_tracker import PositionTracker
 from src.backtest.engine.trade_simulator import TradeSimulator
+from src.data.models.option import OptionType
 from src.engine.models.enums import StrategyType
 
 
@@ -295,7 +296,7 @@ class TestBacktestWithManualTrades:
         open_execution = trade_simulator.execute_open(
             symbol="AAPL 20240315 150P",
             underlying="AAPL",
-            option_type="put",
+            option_type=OptionType.PUT,
             strike=150.0,
             expiration=date(2024, 3, 15),
             quantity=-1,  # Short 1 put
@@ -309,32 +310,20 @@ class TestBacktestWithManualTrades:
         assert open_execution.fill_price < 3.50  # Slippage for sell
         assert open_execution.commission > 0
 
-        # Create position using the fill price from trade simulator
-        position = SimulatedPosition(
-            position_id="TEST001",
-            symbol="AAPL 20240315 150P",
-            underlying="AAPL",
-            option_type="put",
-            strike=150.0,
-            expiration=date(2024, 3, 15),
-            quantity=-1,
-            entry_price=open_execution.fill_price,
-            entry_date=date(2024, 2, 1),
-            underlying_price=155.0,  # Need this for margin calc
-        )
-
-        # Open in position tracker (use per-contract commission)
-        position_tracker.open_position(position, commission=0.65)
+        # Open position using new API
+        position = position_tracker.open_position_from_execution(open_execution)
+        assert position is not None
+        position.underlying_price = 155.0  # Need this for margin calc
 
         assert position_tracker.position_count == 1
 
         # Simulate closing at a significantly lower price for clear profit
         close_execution = trade_simulator.execute_close(
-            symbol="AAPL 20240315 150P",
-            underlying="AAPL",
-            option_type="put",
-            strike=150.0,
-            expiration=date(2024, 3, 15),
+            symbol=position.symbol,
+            underlying=position.underlying,
+            option_type=position.option_type,
+            strike=position.strike,
+            expiration=position.expiration,
             quantity=1,  # Buy back
             mid_price=0.50,  # Much lower price for clear profit
             trade_date=date(2024, 3, 1),
@@ -344,18 +333,16 @@ class TestBacktestWithManualTrades:
         assert close_execution is not None
         assert close_execution.side.value == "buy"
 
-        # Close position
-        pnl = position_tracker.close_position(
-            position_id="TEST001",
-            close_price=close_execution.fill_price,
-            close_date=date(2024, 3, 1),
+        # Close position using new API
+        pnl = position_tracker.close_position_from_execution(
+            position.position_id,
+            close_execution,
             close_reason="take_profit",
-            commission=0.65,
         )
 
         assert pnl is not None
-        # PnL should be positive: (entry_price - close_price) * |qty| * lot - commissions
-        # Approximate: (3.50 - 0.50) * 1 * 100 - 1.30 = 300 - 1.30 = ~298.70
+        # PnL should be positive: (close - entry) * qty * lot - commissions
+        # Short put: (0.50 - 3.50) * (-1) * 100 - 2.00 = 300 - 2.00 = ~298.00
         assert pnl > 0, f"Expected positive PnL but got {pnl}"
         assert position_tracker.position_count == 0
 
@@ -369,7 +356,7 @@ class TestBacktestWithManualTrades:
             trade_simulator.execute_open(
                 symbol=f"TEST{i} 20240315 100P",
                 underlying=f"TEST{i}",
-                option_type="put",
+                option_type=OptionType.PUT,
                 strike=100.0,
                 expiration=date(2024, 3, 15),
                 quantity=-1,
