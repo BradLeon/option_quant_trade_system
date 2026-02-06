@@ -1,4 +1,4 @@
-"""
+r"""
 Monitoring Configuration - 监控配置管理
 
 加载和管理持仓监控系统的配置参数。
