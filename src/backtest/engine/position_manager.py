@@ -361,32 +361,32 @@ class PositionManager:
 
             contracts = chain.puts if option_type == OptionType.PUT else chain.calls
 
-            for contract in contracts:
+            for quote in contracts:
                 if (
-                    contract.strike == strike
-                    and contract.expiry.date() == expiration
+                    quote.contract.strike_price == strike
+                    and quote.contract.expiry_date == expiration
                 ):
                     if self._price_mode == PriceMode.OPEN:
-                        open_price = getattr(contract, "open", None)
+                        open_price = getattr(quote, "open", None)
                         if open_price is not None and open_price > 0:
                             return open_price
-                        return contract.last_price
+                        return quote.last_price
 
                     elif self._price_mode == PriceMode.MID:
                         if (
-                            contract.bid
-                            and contract.ask
-                            and contract.bid > 0
-                            and contract.ask > 0
+                            quote.bid
+                            and quote.ask
+                            and quote.bid > 0
+                            and quote.ask > 0
                         ):
-                            return (contract.bid + contract.ask) / 2
-                        return contract.last_price
+                            return (quote.bid + quote.ask) / 2
+                        return quote.last_price
 
                     else:  # CLOSE
-                        close_price = getattr(contract, "close", None)
+                        close_price = getattr(quote, "close", None)
                         if close_price is not None and close_price > 0:
                             return close_price
-                        return contract.last_price
+                        return quote.last_price
 
             return None
 
@@ -523,12 +523,12 @@ class PositionManager:
                 chain.puts if position.option_type == OptionType.PUT else chain.calls
             )
 
-            for contract in contracts:
+            for quote in contracts:
                 if (
-                    contract.strike == position.strike
-                    and contract.expiry.date() == position.expiration
+                    quote.contract.strike_price == position.strike
+                    and quote.contract.expiry_date == position.expiration
                 ):
-                    greeks = contract.greeks if hasattr(contract, "greeks") else None
+                    greeks = quote.greeks if hasattr(quote, "greeks") else None
                     if greeks:
                         raw_delta = greeks.delta if greeks.delta is not None else None
                         position_delta = (

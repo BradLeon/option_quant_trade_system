@@ -27,6 +27,7 @@ from typing import Any, Literal
 import yaml
 
 from src.business.config.config_mode import ConfigMode
+from src.engine.models.enums import StrategyType
 
 
 class PriceMode(str, Enum):
@@ -69,10 +70,15 @@ class BacktestConfig:
     market: Literal["US", "HK"] = "US"
 
     # ========== 策略配置 (复用现有配置) ==========
-    # 指向现有的筛选/监控配置文件
-    screening_config: str = "config/screening/short_put.yaml"
+    # 支持多策略组合 (在同一账户下同时运行多个策略)
+    # 例如: [StrategyType.SHORT_PUT, StrategyType.COVERED_CALL]
+    strategy_types: list[StrategyType] = field(
+        default_factory=lambda: [StrategyType.SHORT_PUT]
+    )
+    # 指向监控配置文件
     monitoring_config: str = "config/monitoring/thresholds.yaml"
-    strategy_type: Literal["SHORT_PUT", "COVERED_CALL"] = "SHORT_PUT"
+    # 已废弃: 使用 strategy_types 代替
+    strategy_type: StrategyType | None = None  # 向后兼容
 
     # ========== 资金配置 ==========
     initial_capital: float = 100_000.0  # 初始资金
@@ -139,6 +145,22 @@ class BacktestConfig:
         # 标准化 symbols
         self.symbols = [s.upper() for s in self.symbols]
 
+        # 向后兼容: 如果使用了旧的 strategy_type，转换为 strategy_types
+        if self.strategy_type is not None:
+            if isinstance(self.strategy_type, str):
+                self.strategy_type = StrategyType(self.strategy_type.lower())
+            self.strategy_types = [self.strategy_type]
+            self.strategy_type = None  # 清除旧字段
+
+        # 确保 strategy_types 是 StrategyType 枚举列表
+        normalized_types = []
+        for st in self.strategy_types:
+            if isinstance(st, str):
+                normalized_types.append(StrategyType(st.lower()))
+            else:
+                normalized_types.append(st)
+        self.strategy_types = normalized_types
+
     @classmethod
     def from_yaml(cls, path: str | Path) -> "BacktestConfig":
         """从 YAML 文件加载配置
@@ -204,9 +226,8 @@ class BacktestConfig:
             "end_date": self.end_date.isoformat(),
             "symbols": self.symbols,
             "market": self.market,
-            "screening_config": self.screening_config,
+            "strategy_types": [st.value for st in self.strategy_types],
             "monitoring_config": self.monitoring_config,
-            "strategy_type": self.strategy_type,
             "initial_capital": self.initial_capital,
             "max_margin_utilization": self.max_margin_utilization,
             "max_position_pct": self.max_position_pct,
@@ -326,11 +347,11 @@ class BacktestConfig:
         if self.stock_commission_min_per_order < 0:
             errors.append("stock_commission_min_per_order must be non-negative")
 
-        # 配置文件存在性 (警告级别)
-        screening_path = Path(self.screening_config)
-        if not screening_path.exists():
-            errors.append(f"screening_config not found: {self.screening_config}")
+        # 策略类型
+        if not self.strategy_types:
+            errors.append("strategy_types must not be empty")
 
+        # 配置文件存在性 (警告级别)
         monitoring_path = Path(self.monitoring_config)
         if not monitoring_path.exists():
             errors.append(f"monitoring_config not found: {self.monitoring_config}")
@@ -345,15 +366,14 @@ def create_sample_config(path: str | Path) -> None:
         path: 输出路径
     """
     sample = BacktestConfig(
-        name="SHORT_PUT_SAMPLE",
-        description="Sample backtest configuration for SHORT_PUT strategy",
+        name="MULTI_STRATEGY_SAMPLE",
+        description="Sample backtest configuration with multiple strategies",
         start_date=date(2020, 1, 1),
         end_date=date(2024, 12, 31),
         symbols=["AAPL", "MSFT", "NVDA", "GOOG", "AMZN"],
         market="US",
-        screening_config="config/screening/short_put.yaml",
+        strategy_types=[StrategyType.SHORT_PUT, StrategyType.COVERED_CALL],
         monitoring_config="config/monitoring/thresholds.yaml",
-        strategy_type="SHORT_PUT",
         initial_capital=100_000.0,
         max_margin_utilization=0.70,
         max_position_pct=0.10,

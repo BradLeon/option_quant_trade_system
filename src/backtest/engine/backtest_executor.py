@@ -120,7 +120,7 @@ class BacktestResult:
     config_name: str
     start_date: date
     end_date: date
-    strategy_type: StrategyType
+    strategy_types: list[StrategyType]  # 支持多策略组合
     symbols: list[str]
 
     # 账户信息
@@ -155,7 +155,7 @@ class BacktestResult:
             "config_name": self.config_name,
             "start_date": self.start_date.isoformat(),
             "end_date": self.end_date.isoformat(),
-            "strategy_type": self.strategy_type.value,
+            "strategy_types": [st.value for st in self.strategy_types],
             "symbols": self.symbols,
             "initial_capital": self.initial_capital,
             "final_nlv": self.final_nlv,
@@ -237,8 +237,8 @@ class BacktestExecutor:
             commission_model=commission_model,
         )
 
-        # 初始化 Pipelines
-        self._screening_pipeline: ScreeningPipeline | None = None
+        # 初始化 Pipelines (每个策略类型一个 ScreeningPipeline)
+        self._screening_pipelines: dict[StrategyType, ScreeningPipeline] = {}
         self._monitoring_pipeline: MonitoringPipeline | None = None
         self._decision_engine: DecisionEngine | None = None
 
@@ -252,29 +252,31 @@ class BacktestExecutor:
         """初始化 Pipeline 组件
 
         使用 BACKTEST 模式加载所有配置，并应用 BacktestConfig 中的覆盖。
+        为每个策略类型创建独立的 ScreeningPipeline。
         """
-        # Screening Pipeline
+        # Screening Pipelines (每个策略类型一个)
         # DuckDBProvider 实现了完整的 DataProvider 接口，可直接使用
-        try:
-            # 使用 BACKTEST 模式加载配置
-            screening_config = ScreeningConfig.load(
-                strategy=self._config.strategy_type.value,
-                mode=ConfigMode.BACKTEST,
-            )
-            # 应用 BacktestConfig 中的自定义覆盖
-            if self._config.screening_overrides:
-                screening_config = ScreeningConfig.from_dict(
-                    self._config.screening_overrides,
+        for strategy_type in self._config.strategy_types:
+            try:
+                # 使用 BACKTEST 模式加载配置
+                screening_config = ScreeningConfig.load(
+                    strategy=strategy_type.value,
                     mode=ConfigMode.BACKTEST,
                 )
-            self._screening_pipeline = ScreeningPipeline(
-                config=screening_config,
-                provider=self._data_provider,  # DuckDBProvider 直接作为 DataProvider
-            )
-            logger.info("ScreeningPipeline initialized with BACKTEST mode")
-        except Exception as e:
-            logger.warning(f"Failed to initialize ScreeningPipeline: {e}")
-            self._screening_pipeline = None
+                # 应用 BacktestConfig 中的自定义覆盖
+                if self._config.screening_overrides:
+                    screening_config = ScreeningConfig.from_dict(
+                        self._config.screening_overrides,
+                        mode=ConfigMode.BACKTEST,
+                    )
+                pipeline = ScreeningPipeline(
+                    config=screening_config,
+                    provider=self._data_provider,  # DuckDBProvider 直接作为 DataProvider
+                )
+                self._screening_pipelines[strategy_type] = pipeline
+                logger.info(f"ScreeningPipeline for {strategy_type.value} initialized with BACKTEST mode")
+            except Exception as e:
+                logger.warning(f"Failed to initialize ScreeningPipeline for {strategy_type.value}: {e}")
 
         # Monitoring Pipeline
         try:
@@ -338,7 +340,8 @@ class BacktestExecutor:
         logger.info(f"Starting backtest: {self._config.name}")
         logger.info(f"  Period: {self._config.start_date} to {self._config.end_date}")
         logger.info(f"  Symbols: {', '.join(self._config.symbols)}")
-        logger.info(f"  Strategy: {self._config.strategy_type.value}")
+        strategies_str = ", ".join(st.value for st in self._config.strategy_types)
+        logger.info(f"  Strategies: {strategies_str}")
         logger.info(f"  Initial Capital: ${self._config.initial_capital:,.0f}")
 
         # 初始化 Pipelines
@@ -413,7 +416,7 @@ class BacktestExecutor:
 
         # 4. 运行筛选 (寻找新机会)
         screen_result: ScreeningResult | None = None
-        if self._can_open_new_positions() and self._screening_pipeline:
+        if self._can_open_new_positions() and self._screening_pipelines:
             screen_result = self._run_screening(current_date)
 
         # 5. 生成并执行决策
@@ -565,30 +568,56 @@ class BacktestExecutor:
             return []
 
     def _run_screening(self, current_date: date) -> ScreeningResult | None:
-        """运行筛选寻找新机会
+        """运行所有策略的筛选，寻找新机会
+
+        为每个策略类型运行对应的 ScreeningPipeline，
+        然后合并所有结果到一个 ScreeningResult。
 
         Args:
             current_date: 当前日期
 
         Returns:
-            筛选结果
+            合并后的筛选结果 (包含所有策略的机会)
         """
-        if not self._screening_pipeline:
+        if not self._screening_pipelines:
             return None
 
-        try:
-            result = self._screening_pipeline.run(
-                symbols=self._config.symbols,
-                market_type=MarketType.US,  # TODO: 支持 HK
-                strategy_type=self._config.strategy_type,
-                skip_market_check=True,  # 回测中跳过市场环境检查
-            )
+        all_opportunities: list[ContractOpportunity] = []
 
-            return result
+        # 为每个策略类型运行筛选
+        for strategy_type, pipeline in self._screening_pipelines.items():
+            try:
+                result = pipeline.run(
+                    symbols=self._config.symbols,
+                    market_type=MarketType.US,  # TODO: 支持 HK
+                    strategy_type=strategy_type,
+                    skip_market_check=True,  # 回测中跳过市场环境检查
+                )
 
-        except Exception as e:
-            logger.warning(f"Screening failed: {e}")
+                if result and result.opportunities:
+                    all_opportunities.extend(result.opportunities)
+                    logger.debug(
+                        f"[{strategy_type.value}] Found {len(result.opportunities)} opportunities"
+                    )
+
+            except Exception as e:
+                logger.warning(f"Screening failed for {strategy_type.value}: {e}")
+
+        # 如果没有机会，返回 None
+        if not all_opportunities:
             return None
+
+        # 创建合并后的 ScreeningResult
+        # 使用第一个策略类型作为代表 (仅用于满足 dataclass 要求)
+        primary_strategy = self._config.strategy_types[0]
+        return ScreeningResult(
+            passed=True,
+            strategy_type=primary_strategy,
+            opportunities=all_opportunities,
+            confirmed=all_opportunities,  # DecisionEngine 使用 confirmed 字段
+            scanned_underlyings=len(self._config.symbols),
+            qualified_contracts=len(all_opportunities),
+        )
 
     def _can_open_new_positions(self) -> bool:
         """检查是否可以开新仓
@@ -1111,7 +1140,7 @@ class BacktestExecutor:
             config_name=self._config.name,
             start_date=self._config.start_date,
             end_date=self._config.end_date,
-            strategy_type=self._config.strategy_type,
+            strategy_types=self._config.strategy_types,
             symbols=self._config.symbols,
             initial_capital=self._config.initial_capital,
             final_nlv=final_nlv,
@@ -1147,7 +1176,7 @@ class BacktestExecutor:
             config_name=self._config.name,
             start_date=self._config.start_date,
             end_date=self._config.end_date,
-            strategy_type=self._config.strategy_type,
+            strategy_types=self._config.strategy_types,
             symbols=self._config.symbols,
             initial_capital=self._config.initial_capital,
             final_nlv=self._config.initial_capital,
