@@ -513,6 +513,9 @@ class BacktestExecutor:
             # 2. Position 层：计算已实现盈亏
             pnl = self._position_manager.calculate_realized_pnl(position, execution)
 
+            # 2.5. Trade 层：回填 PnL 到交易记录
+            self._trade_simulator.update_last_trade_pnl(pnl)
+
             # 3. Account 层：移除持仓，更新现金
             success = self._account_simulator.remove_position(
                 position_id=position.position_id,
@@ -740,6 +743,9 @@ class BacktestExecutor:
                 close_reason=decision.reason or "monitor_signal",
             )
 
+            # 2.5. Trade 层：回填 PnL 到交易记录
+            self._trade_simulator.update_last_trade_pnl(pnl)
+
             # 3. Account 层：移除持仓，更新现金
             success = self._account_simulator.remove_position(
                 position_id=position.position_id,
@@ -827,6 +833,9 @@ class BacktestExecutor:
                 execution=close_execution,
                 close_reason=f"roll_to_{decision.roll_to_expiry}",
             )
+
+            # 2.5. Trade 层：回填 PnL 到交易记录
+            self._trade_simulator.update_last_trade_pnl(pnl)
 
             # 3. Account 层：移除持仓
             close_success = self._account_simulator.remove_position(

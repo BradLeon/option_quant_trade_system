@@ -704,3 +704,14 @@ class TradeSimulator:
         """重置模拟器"""
         self.clear_executions()
         self.clear_trade_records()
+
+    def update_last_trade_pnl(self, pnl: float) -> None:
+        """更新最后一条交易记录的 PnL
+
+        用于在平仓时回填已实现盈亏。
+
+        Args:
+            pnl: 已实现盈亏
+        """
+        if self._trade_records:
+            self._trade_records[-1].pnl = pnl
