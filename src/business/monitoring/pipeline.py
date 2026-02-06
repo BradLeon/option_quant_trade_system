@@ -151,6 +151,16 @@ class MonitoringPipeline:
             all_alerts.extend(portfolio_alerts)
             logger.info(f"组合级预警: {len(portfolio_alerts)} 个")
 
+            # 打印组合级预警详情
+            for alert in portfolio_alerts:
+                level_icon = {"red": "🔴", "yellow": "🟡", "green": "🟢"}.get(alert.level.value, "⚪")
+                value_str = f"{alert.current_value:.4f}" if alert.current_value is not None else "N/A"
+                threshold_str = alert.threshold_range or (f"{alert.threshold_value:.4f}" if alert.threshold_value else "N/A")
+                logger.info(
+                    f"  {level_icon} [Portfolio] {alert.alert_type.value}: "
+                    f"{alert.message} (当前={value_str}, 阈值={threshold_str})"
+                )
+
         # 2. Position 级监控
         if positions:
             logger.info("Step 2: 执行持仓级监控...")
@@ -158,12 +168,33 @@ class MonitoringPipeline:
             all_alerts.extend(position_alerts)
             logger.info(f"持仓级预警: {len(position_alerts)} 个")
 
+            # 打印持仓级预警详情
+            for alert in position_alerts:
+                level_icon = {"red": "🔴", "yellow": "🟡", "green": "🟢"}.get(alert.level.value, "⚪")
+                symbol_str = alert.symbol or "N/A"
+                value_str = f"{alert.current_value:.4f}" if alert.current_value is not None else "N/A"
+                threshold_str = alert.threshold_range or (f"{alert.threshold_value:.4f}" if alert.threshold_value else "N/A")
+                logger.info(
+                    f"  {level_icon} [{symbol_str}] {alert.alert_type.value}: "
+                    f"{alert.message} (当前={value_str}, 阈值={threshold_str})"
+                )
+
         # 3. Capital 级监控
         if capital_metrics:
             logger.info("Step 3: 执行资金级监控...")
             capital_alerts = self.capital_monitor.evaluate(capital_metrics)
             all_alerts.extend(capital_alerts)
             logger.info(f"资金级预警: {len(capital_alerts)} 个")
+
+            # 打印资金级预警详情
+            for alert in capital_alerts:
+                level_icon = {"red": "🔴", "yellow": "🟡", "green": "🟢"}.get(alert.level.value, "⚪")
+                value_str = f"{alert.current_value:.4f}" if alert.current_value is not None else "N/A"
+                threshold_str = alert.threshold_range or (f"{alert.threshold_value:.4f}" if alert.threshold_value else "N/A")
+                logger.info(
+                    f"  {level_icon} [Capital] {alert.alert_type.value}: "
+                    f"{alert.message} (当前={value_str}, 阈值={threshold_str})"
+                )
 
         # 确定整体状态
         overall_status = self._determine_overall_status(all_alerts)
@@ -180,6 +211,21 @@ class MonitoringPipeline:
             vix=vix,
         )
         logger.info(f"生成建议: {len(suggestions)} 个")
+
+        # 打印建议详情
+        for suggestion in suggestions:
+            urgency_icon = {
+                "immediate": "🚨",
+                "soon": "⚡",
+                "monitor": "👀",
+            }.get(suggestion.urgency.value, "📋")
+            action_str = suggestion.action.value.upper()
+            logger.info(
+                f"  {urgency_icon} [{suggestion.symbol}] {action_str}: "
+                f"{suggestion.reason}"
+            )
+            if suggestion.details:
+                logger.info(f"      └─ {suggestion.details}")
 
         # 统计
         positions_at_risk = len(set(
