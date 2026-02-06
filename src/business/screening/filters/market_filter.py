@@ -85,6 +85,16 @@ class MarketFilter:
         self.config = config
         self.provider: DataProvider = provider or UnifiedDataProvider()
 
+    def _get_reference_date(self) -> date:
+        """获取参考日期（回测兼容）
+
+        在回测模式下，provider 会有 as_of_date 属性，表示当前模拟的日期。
+        实盘模式下，使用 date.today()。
+        """
+        if hasattr(self.provider, "as_of_date"):
+            return self.provider.as_of_date
+        return date.today()
+
     def evaluate(self, market_type: MarketType) -> MarketStatus:
         """评估市场环境
 
@@ -271,7 +281,7 @@ class MarketFilter:
         指标计算：engine.sentiment.vix 模块
         """
         try:
-            end_date = date.today()
+            end_date = self._get_reference_date()
             start_date = end_date - timedelta(days=365)
 
             # 从 data_layer 获取 VIX 历史数据
@@ -343,7 +353,7 @@ class MarketFilter:
         类似 VIX，通过 get_macro_data() 获取历史数据并计算百分位
         """
         try:
-            end_date = date.today()
+            end_date = self._get_reference_date()
             start_date = end_date - timedelta(days=365)
 
             # 从 Yahoo Finance 获取 VHSI 历史数据
@@ -439,7 +449,7 @@ class MarketFilter:
         index_statuses: list[IndexStatus] = []
         weighted_scores: list[tuple[float, float]] = []  # (score, weight)
 
-        end_date = date.today()
+        end_date = self._get_reference_date()
         start_date = end_date - timedelta(days=300)  # 足够计算 SMA200
 
         for symbol, weight in indices:
@@ -536,7 +546,7 @@ class MarketFilter:
         指标计算：engine.sentiment.term_structure 模块
         """
         try:
-            end_date = date.today()
+            end_date = self._get_reference_date()
             start_date = end_date - timedelta(days=5)
 
             # 从 data_layer 获取 VIX 和 VIX3M 数据
@@ -612,7 +622,7 @@ class MarketFilter:
         try:
             # 调用 data_layer 检查黑名单期
             is_in_blackout, events = self.provider.check_macro_blackout(
-                target_date=date.today(),
+                target_date=self._get_reference_date(),
                 blackout_days=config.blackout_days,
                 blackout_events=config.blackout_events,
             )

@@ -58,8 +58,11 @@ from src.backtest.data.duckdb_provider import DuckDBProvider
 from src.backtest.engine.account_simulator import AccountSimulator, SimulatedPosition
 from src.backtest.engine.position_manager import PositionManager, DataNotFoundError
 from src.backtest.engine.trade_simulator import TradeSimulator, TradeExecution, TradeRecord
+from src.business.config.config_mode import ConfigMode
 from src.business.config.monitoring_config import MonitoringConfig
 from src.business.config.screening_config import ScreeningConfig
+from src.business.trading.config.decision_config import DecisionConfig
+from src.business.trading.config.risk_config import RiskConfig
 from src.business.monitoring.models import PositionData
 from src.business.monitoring.pipeline import MonitoringPipeline
 from src.business.monitoring.suggestions import ActionType, PositionSuggestion
@@ -246,33 +249,80 @@ class BacktestExecutor:
         self._errors: list[str] = []
 
     def _init_pipelines(self) -> None:
-        """初始化 Pipeline 组件"""
+        """初始化 Pipeline 组件
+
+        使用 BACKTEST 模式加载所有配置，并应用 BacktestConfig 中的覆盖。
+        """
         # Screening Pipeline
         # DuckDBProvider 实现了完整的 DataProvider 接口，可直接使用
         try:
+            # 使用 BACKTEST 模式加载配置
             screening_config = ScreeningConfig.load(
-                self._config.strategy_type.value
+                strategy=self._config.strategy_type.value,
+                mode=ConfigMode.BACKTEST,
             )
+            # 应用 BacktestConfig 中的自定义覆盖
+            if self._config.screening_overrides:
+                screening_config = ScreeningConfig.from_dict(
+                    self._config.screening_overrides,
+                    mode=ConfigMode.BACKTEST,
+                )
             self._screening_pipeline = ScreeningPipeline(
                 config=screening_config,
                 provider=self._data_provider,  # DuckDBProvider 直接作为 DataProvider
             )
-            logger.info("ScreeningPipeline initialized with DuckDBProvider")
+            logger.info("ScreeningPipeline initialized with BACKTEST mode")
         except Exception as e:
             logger.warning(f"Failed to initialize ScreeningPipeline: {e}")
             self._screening_pipeline = None
 
         # Monitoring Pipeline
         try:
-            monitoring_config = MonitoringConfig.load()
+            # 使用 BACKTEST 模式加载配置
+            monitoring_config = MonitoringConfig.load(mode=ConfigMode.BACKTEST)
+            # 应用 BacktestConfig 中的自定义覆盖
+            if self._config.monitoring_overrides:
+                monitoring_config = MonitoringConfig.from_dict(
+                    self._config.monitoring_overrides,
+                    mode=ConfigMode.BACKTEST,
+                )
             self._monitoring_pipeline = MonitoringPipeline(config=monitoring_config)
+            logger.info("MonitoringPipeline initialized with BACKTEST mode")
         except Exception as e:
             logger.warning(f"Failed to initialize MonitoringPipeline: {e}")
             self._monitoring_pipeline = None
 
+        # Risk Config (用于 DecisionEngine)
+        try:
+            # 使用 BACKTEST 模式加载 RiskConfig
+            risk_config = RiskConfig.load(mode=ConfigMode.BACKTEST)
+            # 应用 BacktestConfig 中的自定义覆盖
+            if self._config.risk_overrides:
+                risk_config = RiskConfig.from_dict(
+                    self._config.risk_overrides,
+                    mode=ConfigMode.BACKTEST,
+                )
+            self._risk_config = risk_config
+            logger.info(
+                f"RiskConfig loaded with BACKTEST mode: "
+                f"max_notional_pct={risk_config.max_notional_pct_per_underlying:.0%}"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to load RiskConfig: {e}")
+            self._risk_config = RiskConfig()  # 使用默认值
+
         # Decision Engine
         try:
-            self._decision_engine = DecisionEngine()
+            # 使用 BACKTEST 模式创建 DecisionConfig，传入已加载的 RiskConfig
+            decision_config = DecisionConfig.load(
+                mode=ConfigMode.BACKTEST,
+                risk_config=self._risk_config,
+            )
+            self._decision_engine = DecisionEngine(config=decision_config)
+            logger.info(
+                f"DecisionEngine initialized with BACKTEST mode: "
+                f"max_notional_pct={decision_config.max_notional_pct_per_underlying:.0%}"
+            )
         except Exception as e:
             logger.warning(f"Failed to initialize DecisionEngine: {e}")
             self._decision_engine = None
@@ -471,9 +521,9 @@ class BacktestExecutor:
                 # 完成持仓关闭 (更新持仓字段)
                 self._position_manager.finalize_close(position, execution, pnl)
 
-            if success:
                 logger.info(
-                    f"Position {position.position_id} expired on {current_date}, "
+                    f"Position {position.position_id} expired on {current_date}: "
+                    f"entry_price=${position.entry_price:.4f} -> close_price=${position.close_price:.4f}, "
                     f"reason={execution.reason}, PnL: ${pnl:.2f}"
                 )
 
@@ -721,6 +771,13 @@ class BacktestExecutor:
             close_price = self._get_current_option_price(position)
             if close_price is None:
                 close_price = position.current_price
+            if close_price is None or close_price <= 0:
+                # 使用 entry_price 作为最后的回退（保守估计）
+                logger.warning(
+                    f"No valid close price found for {position.symbol}, "
+                    f"using entry_price={position.entry_price} as fallback"
+                )
+                close_price = position.entry_price
 
             # 1. Trade 层：模拟平仓执行
             close_execution = self._trade_simulator.execute_close(
@@ -959,12 +1016,15 @@ class BacktestExecutor:
 
             contracts = chain.puts if position.option_type == OptionType.PUT else chain.calls
 
-            for contract in contracts:
+            for quote in contracts:
+                # OptionQuote.contract 包含合约信息
+                contract = quote.contract
                 if (
-                    contract.strike == position.strike
-                    and contract.expiry.date() == position.expiration
+                    contract.strike_price == position.strike
+                    and contract.expiry_date == position.expiration
                 ):
-                    return contract.close if hasattr(contract, 'close') else contract.last
+                    # 优先使用 close 价格，否则使用 last_price
+                    return quote.close if quote.close is not None else quote.last_price
 
             return None
 
@@ -1043,8 +1103,9 @@ class BacktestExecutor:
         total_return = final_nlv - self._config.initial_capital
         total_return_pct = total_return / self._config.initial_capital
 
-        # 生成 TradeRecord (从已平仓持仓)
-        trade_records = self._generate_trade_records(closed_positions)
+        # 使用 TradeSimulator 记录的所有交易 (包括未平仓的开仓记录)
+        # TradeSimulator 在每次 execute_open/execute_close/execute_expire 时都会创建记录
+        trade_records = self._trade_simulator.trade_records
 
         return BacktestResult(
             config_name=self._config.name,
@@ -1137,42 +1198,87 @@ class BacktestExecutor:
     ) -> list[TradeRecord]:
         """从已平仓持仓生成 TradeRecord
 
+        为每个已平仓持仓生成开仓和平仓两条记录。
+
         Args:
             closed_positions: 已平仓持仓列表
 
         Returns:
-            TradeRecord 列表
+            TradeRecord 列表 (按日期排序)
         """
         trade_records = []
         for pos in closed_positions:
+            # === 1. 生成开仓记录 ===
+            # 计算开仓金额
+            # 空头卖出: 收取权利金 (正现金流)
+            # 多头买入: 支付权利金 (负现金流)
+            entry_gross = pos.entry_price * abs(pos.quantity) * pos.lot_size
+            if pos.is_short:
+                entry_gross = entry_gross  # 卖出收取权利金
+            else:
+                entry_gross = -entry_gross  # 买入支付权利金
+
+            open_record = TradeRecord(
+                trade_id=f"TR-{pos.position_id}-OPEN",
+                execution_id=f"EX-{pos.position_id}-OPEN",
+                symbol=pos.symbol,
+                underlying=pos.underlying,
+                option_type=pos.option_type,
+                strike=pos.strike,
+                expiration=pos.expiration,
+                trade_date=pos.entry_date,
+                action="open",
+                quantity=pos.quantity,  # 原始数量 (负=卖出, 正=买入)
+                price=pos.entry_price,
+                commission=pos.commission_paid / 2,  # 开平仓手续费平分
+                gross_amount=entry_gross,
+                net_amount=entry_gross - pos.commission_paid / 2,
+                pnl=None,  # 开仓无盈亏
+                position_id=pos.position_id,
+            )
+            trade_records.append(open_record)
+
+            # === 2. 生成平仓记录 ===
             if pos.close_date is None or pos.close_price is None:
                 continue
 
-            # 计算平仓的金额
+            # 计算平仓金额
+            # 空头买回: 支付权利金 (负现金流)
+            # 多头卖出: 收取权利金 (正现金流)
             close_gross = pos.close_price * abs(pos.quantity) * pos.lot_size
-            # 平仓时买回，所以是负的现金流
             if pos.is_short:
-                close_gross = -close_gross
+                close_gross = -close_gross  # 买回支付权利金
+            else:
+                close_gross = close_gross  # 卖出收取权利金
 
-            trade_record = TradeRecord(
-                trade_id=f"TR-{pos.position_id}",
-                execution_id=f"EX-{pos.position_id}",
+            # 判断平仓类型
+            close_action = "close"
+            if pos.close_reason and "expire" in pos.close_reason.lower():
+                close_action = "expire"
+
+            close_record = TradeRecord(
+                trade_id=f"TR-{pos.position_id}-CLOSE",
+                execution_id=f"EX-{pos.position_id}-CLOSE",
                 symbol=pos.symbol,
                 underlying=pos.underlying,
                 option_type=pos.option_type,
                 strike=pos.strike,
                 expiration=pos.expiration,
                 trade_date=pos.close_date,
-                action="close",
+                action=close_action,
                 quantity=-pos.quantity,  # 平仓方向相反
                 price=pos.close_price,
-                commission=pos.commission_paid,  # 总手续费
+                commission=pos.commission_paid / 2,  # 开平仓手续费平分
                 gross_amount=close_gross,
-                net_amount=close_gross,  # 简化，忽略手续费分摊
+                net_amount=close_gross - pos.commission_paid / 2,
                 pnl=pos.realized_pnl,
+                reason=pos.close_reason,
+                position_id=pos.position_id,
             )
-            trade_records.append(trade_record)
+            trade_records.append(close_record)
 
+        # 按日期排序
+        trade_records.sort(key=lambda r: r.trade_date)
         return trade_records
 
     def reset(self) -> None:

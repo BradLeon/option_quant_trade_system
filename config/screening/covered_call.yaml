@@ -1,5 +1,9 @@
 # Covered Call 策略筛选配置
 # 持股卖出看涨期权策略
+#
+# 配置模式:
+# - LIVE: 使用下方主配置 (严格的生产环境值)
+# - BACKTEST: 自动合并 backtest_overrides (放宽参数)
 
 market_filter:
   # 美股市场指标
@@ -48,3 +52,18 @@ underlying_filter:
     min_recommendation: "hold"
 
 # contract_filter 和 output 使用 screening_config.py 默认值
+
+# ============================================================
+# 回测模式覆盖 (仅在 BACKTEST 模式下生效)
+# 这些值会覆盖上面的主配置
+# ============================================================
+backtest_overrides:
+  underlying_filter:
+    max_iv_hv_ratio: 3.0          # 放宽 IV/HV 上限 (回测数据可能有偏差)
+  contract_filter:
+    liquidity:
+      min_open_interest: 0        # 回测数据可能无 OI
+      max_bid_ask_spread: 0.30    # 放宽 spread 限制
+    metrics:
+      min_expected_roc: -0.50     # 允许负值 (测试极端情况)
+      min_tgr: 0.20               # 放宽 TGR 阈值

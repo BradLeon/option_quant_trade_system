@@ -26,6 +26,8 @@ from typing import Any, Literal
 
 import yaml
 
+from src.business.config.config_mode import ConfigMode
+
 
 class PriceMode(str, Enum):
     """回测价格模式
@@ -103,6 +105,18 @@ class BacktestConfig:
     # ========== 其他选项 ==========
     random_seed: int | None = None  # 随机种子 (用于可重复性)
     verbose: bool = False  # 详细日志
+
+    # ========== 配置模式 (始终为 BACKTEST) ==========
+    # BacktestConfig 始终使用 BACKTEST 模式
+    # 该字段不可在初始化时修改
+    config_mode: ConfigMode = field(default=ConfigMode.BACKTEST, init=False)
+
+    # ========== 配置覆盖 (优先级最高) ==========
+    # 这些覆盖会应用在 BACKTEST 模式默认值之上
+    # 用于进一步自定义回测参数
+    risk_overrides: dict[str, Any] = field(default_factory=dict)
+    screening_overrides: dict[str, Any] = field(default_factory=dict)
+    monitoring_overrides: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """初始化后验证"""
@@ -207,6 +221,10 @@ class BacktestConfig:
             "price_mode": self.price_mode,
             "random_seed": self.random_seed,
             "verbose": self.verbose,
+            # 配置覆盖
+            "risk_overrides": self.risk_overrides,
+            "screening_overrides": self.screening_overrides,
+            "monitoring_overrides": self.monitoring_overrides,
         }
 
     def to_yaml(self, path: str | Path) -> None:

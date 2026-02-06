@@ -142,6 +142,7 @@ from typing import Any
 
 import yaml
 
+from src.business.config.config_mode import ConfigMode
 from src.engine.models.enums import StrategyType
 
 
@@ -767,11 +768,23 @@ class MonitoringConfig:
         return merged
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "MonitoringConfig":
-        """从 YAML 文件加载配置"""
+    def from_yaml(
+        cls,
+        path: str | Path,
+        mode: ConfigMode = ConfigMode.LIVE,
+    ) -> "MonitoringConfig":
+        """从 YAML 文件加载配置
+
+        Args:
+            path: YAML 文件路径
+            mode: 配置模式 (LIVE 或 BACKTEST)
+
+        Returns:
+            MonitoringConfig 实例
+        """
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
-        return cls.from_dict(data)
+        return cls.from_dict(data, mode=mode)
 
     @staticmethod
     def _parse_threshold_range(data: dict[str, Any], default: ThresholdRange) -> ThresholdRange:
@@ -814,8 +827,35 @@ class MonitoringConfig:
         )
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "MonitoringConfig":
-        """从字典创建配置"""
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+        mode: ConfigMode = ConfigMode.LIVE,
+    ) -> "MonitoringConfig":
+        """从字典创建配置
+
+        Args:
+            data: 配置字典
+            mode: 配置模式 (LIVE 或 BACKTEST)
+
+        Returns:
+            MonitoringConfig 实例
+
+        YAML 结构示例:
+            portfolio_level:
+              ...
+            position_level:
+              ...
+            # 可选: 回测覆盖
+            backtest_overrides:
+              position_level:
+                delta:
+                  red_above: 0.70
+        """
+        # 如果是 BACKTEST 模式，合并 backtest_overrides
+        if mode == ConfigMode.BACKTEST and "backtest_overrides" in data:
+            data = cls._merge_backtest_overrides(data, data["backtest_overrides"])
+
         config = cls()
 
         if "portfolio_level" in data:
@@ -866,12 +906,45 @@ class MonitoringConfig:
         return config
 
     @classmethod
-    def load(cls) -> "MonitoringConfig":
-        """加载默认配置"""
+    def load(cls, mode: ConfigMode = ConfigMode.LIVE) -> "MonitoringConfig":
+        """加载默认配置
+
+        Args:
+            mode: 配置模式 (LIVE 或 BACKTEST)
+
+        Returns:
+            MonitoringConfig 实例
+        """
         config_dir = (
             Path(__file__).parent.parent.parent.parent / "config" / "monitoring"
         )
         config_file = config_dir / "thresholds.yaml"
         if config_file.exists():
-            return cls.from_yaml(config_file)
+            return cls.from_yaml(config_file, mode=mode)
         return cls()
+
+    @staticmethod
+    def _merge_backtest_overrides(
+        base: dict[str, Any],
+        overrides: dict[str, Any],
+    ) -> dict[str, Any]:
+        """递归合并 backtest_overrides 到基础配置
+
+        Args:
+            base: 基础配置字典
+            overrides: 覆盖字典
+
+        Returns:
+            合并后的配置字典
+        """
+        result = base.copy()
+        for key, value in overrides.items():
+            if key == "backtest_overrides":
+                continue  # 跳过 backtest_overrides 本身
+            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                # 递归合并嵌套字典
+                result[key] = MonitoringConfig._merge_backtest_overrides(result[key], value)
+            else:
+                # 直接覆盖
+                result[key] = value
+        return result

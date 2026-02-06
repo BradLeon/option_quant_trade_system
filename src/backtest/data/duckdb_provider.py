@@ -428,6 +428,10 @@ class DuckDBProvider(DataProvider):
         underlying: str,
         expiry_start: date | None = None,
         expiry_end: date | None = None,
+        # 兼容 UnifiedDataProvider/IBKRProvider 的参数
+        expiry_min_days: int | None = None,
+        expiry_max_days: int | None = None,
+        **kwargs,  # 忽略其他参数
     ) -> OptionChain | None:
         """获取期权链
 
@@ -437,11 +441,20 @@ class DuckDBProvider(DataProvider):
             underlying: 标的代码
             expiry_start: 到期日开始筛选
             expiry_end: 到期日结束筛选
+            expiry_min_days: 最小到期天数 (相对于 as_of_date)
+            expiry_max_days: 最大到期天数 (相对于 as_of_date)
+            **kwargs: 忽略其他参数 (兼容性)
 
         Returns:
             OptionChain 或 None
         """
         underlying = underlying.upper()
+
+        # 将 expiry_min_days/expiry_max_days 转换为 expiry_start/expiry_end
+        if expiry_min_days is not None and expiry_start is None:
+            expiry_start = self._as_of_date + timedelta(days=expiry_min_days)
+        if expiry_max_days is not None and expiry_end is None:
+            expiry_end = self._as_of_date + timedelta(days=expiry_max_days)
 
         # 检查缓存
         cache_key = (underlying, self._as_of_date, expiry_start, expiry_end)
@@ -1155,6 +1168,9 @@ class DuckDBProvider(DataProvider):
         self,
         contracts: list[OptionContract],
         min_volume: int | None = None,
+        fetch_margin: bool = False,  # 兼容 UnifiedDataProvider (回测忽略)
+        underlying_price: float | None = None,  # 兼容 UnifiedDataProvider
+        **kwargs,  # 忽略其他参数
     ) -> list[OptionQuote]:
         """获取批量期权合约报价
 
@@ -1163,6 +1179,9 @@ class DuckDBProvider(DataProvider):
         Args:
             contracts: 要查询的期权合约列表
             min_volume: 可选的最小成交量过滤
+            fetch_margin: 是否获取保证金 (回测模式忽略)
+            underlying_price: 标的价格 (回测模式忽略)
+            **kwargs: 忽略其他参数 (兼容性)
 
         Returns:
             OptionQuote 列表

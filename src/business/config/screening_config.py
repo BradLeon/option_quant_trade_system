@@ -76,6 +76,8 @@ from typing import Any
 
 import yaml
 
+from src.business.config.config_mode import ConfigMode
+
 
 @dataclass
 class TrendIndexConfig:
@@ -215,7 +217,7 @@ class LiquidityConfig:
     # P1: 目标合约 Bid-Ask Spread
     max_bid_ask_spread: float = 0.10
     # P1: Open Interest
-    min_open_interest: int = 100
+    min_open_interest: int = 0
     # P3: Volume Today
     min_volume: int = 10
 
@@ -296,15 +298,56 @@ class ScreeningConfig:
     output: OutputConfig = field(default_factory=OutputConfig)
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "ScreeningConfig":
-        """从 YAML 文件加载配置"""
+    def from_yaml(
+        cls,
+        path: str | Path,
+        mode: ConfigMode = ConfigMode.LIVE,
+    ) -> "ScreeningConfig":
+        """从 YAML 文件加载配置
+
+        Args:
+            path: YAML 文件路径
+            mode: 配置模式 (LIVE 或 BACKTEST)
+
+        Returns:
+            ScreeningConfig 实例
+        """
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
-        return cls.from_dict(data)
+        return cls.from_dict(data, mode=mode)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ScreeningConfig":
-        """从字典创建配置"""
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+        mode: ConfigMode = ConfigMode.LIVE,
+    ) -> "ScreeningConfig":
+        """从字典创建配置
+
+        Args:
+            data: 配置字典
+            mode: 配置模式 (LIVE 或 BACKTEST)
+
+        Returns:
+            ScreeningConfig 实例
+
+        YAML 结构示例:
+            market_filter:
+              ...
+            underlying_filter:
+              ...
+            contract_filter:
+              ...
+            # 可选: 回测覆盖
+            backtest_overrides:
+              contract_filter:
+                liquidity:
+                  min_open_interest: 0
+        """
+        # 如果是 BACKTEST 模式，合并 backtest_overrides
+        if mode == ConfigMode.BACKTEST and "backtest_overrides" in data:
+            data = cls._merge_backtest_overrides(data, data["backtest_overrides"])
+
         config = cls()
 
         if "market_filter" in data:
@@ -373,11 +416,16 @@ class ScreeningConfig:
                     min_volume=liq.get("min_volume", 10),
                 ),
                 metrics=MetricsConfig(
-                    min_sharpe_ratio=met.get("min_sharpe_ratio", 1.0),
+                    min_sharpe_ratio=met.get("min_sharpe_ratio", 0.5),
                     min_sas=met.get("min_sas", 50),
                     max_prei=met.get("max_prei", 75),
-                    min_tgr=met.get("min_tgr", 1.0),
+                    min_tgr=met.get("min_tgr", 0.5),
                     max_kelly_fraction=met.get("max_kelly_fraction", 0.25),
+                    min_expected_roc=met.get("min_expected_roc", 0.10),
+                    min_annual_roc=met.get("min_annual_roc", 0.15),
+                    min_win_probability=met.get("min_win_probability", 0.65),
+                    min_theta_premium_ratio=met.get("min_theta_premium_ratio", 0.01),
+                    min_premium_rate=met.get("min_premium_rate", 0.01),
                 ),
             )
 
@@ -392,10 +440,48 @@ class ScreeningConfig:
         return config
 
     @classmethod
-    def load(cls, strategy: str = "short_put") -> "ScreeningConfig":
-        """加载指定策略的配置"""
+    def load(
+        cls,
+        strategy: str = "short_put",
+        mode: ConfigMode = ConfigMode.LIVE,
+    ) -> "ScreeningConfig":
+        """加载指定策略的配置
+
+        Args:
+            strategy: 策略名称 (short_put, covered_call, etc.)
+            mode: 配置模式 (LIVE 或 BACKTEST)
+
+        Returns:
+            ScreeningConfig 实例
+        """
         config_dir = Path(__file__).parent.parent.parent.parent / "config" / "screening"
         config_file = config_dir / f"{strategy}.yaml"
         if config_file.exists():
-            return cls.from_yaml(config_file)
+            return cls.from_yaml(config_file, mode=mode)
         return cls()
+
+    @staticmethod
+    def _merge_backtest_overrides(
+        base: dict[str, Any],
+        overrides: dict[str, Any],
+    ) -> dict[str, Any]:
+        """递归合并 backtest_overrides 到基础配置
+
+        Args:
+            base: 基础配置字典
+            overrides: 覆盖字典
+
+        Returns:
+            合并后的配置字典
+        """
+        result = base.copy()
+        for key, value in overrides.items():
+            if key == "backtest_overrides":
+                continue  # 跳过 backtest_overrides 本身
+            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                # 递归合并嵌套字典
+                result[key] = ScreeningConfig._merge_backtest_overrides(result[key], value)
+            else:
+                # 直接覆盖
+                result[key] = value
+        return result
