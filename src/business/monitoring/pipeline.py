@@ -12,8 +12,11 @@ Monitoring Pipeline - 监控管道
 """
 
 import logging
-from datetime import datetime
-from typing import Optional
+from datetime import date, datetime
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from src.data.providers.base import DataProvider
 
 from src.business.config.monitoring_config import MonitoringConfig
 from src.business.monitoring.models import (
@@ -75,6 +78,8 @@ class MonitoringPipeline:
         vix: Optional[float] = None,
         market_sentiment: Optional[dict] = None,
         nlv: Optional[float] = None,
+        data_provider: "Optional[DataProvider]" = None,
+        as_of_date: Optional[date] = None,
     ) -> MonitorResult:
         """执行完整监控流程
 
@@ -85,6 +90,8 @@ class MonitoringPipeline:
             market_sentiment: 市场情绪数据（可选）
             nlv: 账户净值，用于计算 NLV 归一化百分比指标（可选）
                 如果未提供，尝试从 capital_metrics.total_equity 获取
+            data_provider: 数据提供者（回测模式使用）
+            as_of_date: 查询日期，用于获取滚动 Beta（回测模式使用）
 
         Returns:
             MonitorResult: 监控结果
@@ -128,6 +135,8 @@ class MonitoringPipeline:
                 positions,  # type: ignore[arg-type]
                 nlv=effective_nlv,
                 position_iv_hv_ratios=position_iv_hv_ratios if position_iv_hv_ratios else None,
+                data_provider=data_provider,
+                as_of_date=as_of_date,
             )
 
             # DEBUG: 打印计算结果
@@ -209,6 +218,8 @@ class MonitoringPipeline:
             monitor_result=temp_result,
             positions=positions,
             vix=vix,
+            as_of_date=as_of_date,
+            data_provider=data_provider,
         )
         logger.info(f"生成建议: {len(suggestions)} 个")
 
@@ -270,12 +281,16 @@ class MonitoringPipeline:
         self,
         positions: list[PositionData],
         nlv: Optional[float] = None,
+        data_provider: "Optional[DataProvider]" = None,
+        as_of_date: Optional[date] = None,
     ) -> tuple[list[Alert], PortfolioMetrics]:
         """仅执行组合级监控
 
         Args:
             positions: 持仓数据列表
             nlv: 账户净值，用于计算 NLV 归一化百分比指标（可选）
+            data_provider: 数据提供者（回测模式使用）
+            as_of_date: 查询日期，用于获取滚动 Beta（回测模式使用）
 
         Returns:
             (预警列表, 组合指标)
@@ -290,6 +305,8 @@ class MonitoringPipeline:
             positions,  # type: ignore[arg-type]
             nlv=nlv,
             position_iv_hv_ratios=position_iv_hv_ratios if position_iv_hv_ratios else None,
+            data_provider=data_provider,
+            as_of_date=as_of_date,
         )
         alerts = self.portfolio_monitor.evaluate(portfolio_metrics)
         return alerts, portfolio_metrics

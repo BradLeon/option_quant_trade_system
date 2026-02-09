@@ -143,9 +143,13 @@ class RollTargetCalculator:
         )
 
         # 4. 从可用 Strike 中选择最接近的
-        if raw_strike is not None and available_strikes:
+        # 如果 raw_strike 为 None（无需调整），使用当前 strike
+        effective_strike = raw_strike if raw_strike is not None else position.strike
+
+        if available_strikes and effective_strike is not None:
+            # 验证 strike 是否在可用范围内，如果不在则选择最接近的
             target_strike = self._find_nearest_strike(
-                raw_strike, available_strikes, position.option_type
+                effective_strike, available_strikes, position.option_type
             )
         else:
             target_strike = raw_strike
