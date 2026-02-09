@@ -70,6 +70,7 @@ class AccountAggregator:
         account_type: AccountType = AccountType.PAPER,
         base_currency: str = "USD",
         refresh_rates: bool = True,
+        fetch_greeks: bool = True,
     ) -> ConsolidatedPortfolio:
         """Get consolidated portfolio from all brokers.
 
@@ -80,6 +81,8 @@ class AccountAggregator:
             account_type: Real or paper account.
             base_currency: Target currency for aggregation.
             refresh_rates: Whether to refresh exchange rates before conversion.
+            fetch_greeks: Whether to fetch Greeks for option positions.
+                Set to False when only account-level metrics (NLV, cash, margin) are needed.
 
         Returns:
             ConsolidatedPortfolio with all positions and summaries.
@@ -92,11 +95,11 @@ class AccountAggregator:
         by_broker: dict[str, AccountSummary] = {}
         futu_option_positions: list[AccountPosition] = []
 
-        # Collect from IBKR - always fetch Greeks directly (IBKR's get_positions works well)
+        # Collect from IBKR
         if self._ibkr and self._ibkr.is_available:
             try:
                 ibkr_positions = self._ibkr.get_positions(
-                    account_type, fetch_greeks=True
+                    account_type, fetch_greeks=fetch_greeks
                 )
                 ibkr_cash = self._ibkr.get_cash_balances(account_type)
                 ibkr_summary = self._ibkr.get_account_summary(account_type)
@@ -145,7 +148,7 @@ class AccountAggregator:
 
         # Fetch Greeks for Futu option positions via IBKR
         # Futu doesn't provide Greeks without extra subscription, so we use IBKR
-        if futu_option_positions and self._ibkr and self._ibkr.is_available:
+        if fetch_greeks and futu_option_positions and self._ibkr and self._ibkr.is_available:
             self._fetch_greeks_for_futu_options(futu_option_positions)
 
         # Merge positions and convert to base currency

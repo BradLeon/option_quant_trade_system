@@ -281,31 +281,7 @@ def trade_screen(
 
         click.echo(f"  ✅ 连接成功")
 
-        # 2. 获取真实账户状态
-        from src.business.trading.account_bridge import portfolio_to_account_state
-
-        aggregator = conn.get_aggregator()
-        portfolio = aggregator.get_consolidated_portfolio(account_type=AccType.PAPER)
-        account_state = portfolio_to_account_state(portfolio, broker="ibkr")
-
-        click.echo(f"\n💰 账户状态:")
-        click.echo(f"   NLV: ${account_state.total_equity:,.2f}")
-        click.echo(f"   Cash: ${account_state.cash_balance:,.2f}")
-        click.echo(f"   Available Margin: ${account_state.available_margin:,.2f}")
-        click.echo(f"   Used Margin: ${account_state.used_margin:,.2f}")
-        click.echo(f"   Margin Utilization: {account_state.margin_utilization:.1%}")
-        click.echo(f"   Cash Ratio: {account_state.cash_ratio:.1%}")
-        click.echo(f"   Positions: {account_state.total_position_count}")
-
-        # Debug: Show raw broker summary data
-        if verbose and "ibkr" in portfolio.by_broker:
-            summary = portfolio.by_broker["ibkr"]
-            click.echo(f"\n   [DEBUG] Raw IBKR Summary:")
-            click.echo(f"     margin_available: {summary.margin_available}")
-            click.echo(f"     buying_power: {summary.buying_power}")
-            click.echo(f"     margin_used: {summary.margin_used}")
-
-        # 3. 运行三层筛选
+        # 2. 运行三层筛选 (先筛选，再获取账户状态，避免无机会时浪费时间获取持仓)
         from src.business.config.screening_config import ScreeningConfig
         from src.business.screening.models import MarketType
         from src.business.screening.pipeline import ScreeningPipeline
@@ -326,7 +302,7 @@ def trade_screen(
                 # 确定标的列表
                 if symbol:
                     # 用户指定了标的，按市场过滤
-                    symbol_list = [s for s in symbol if _is_market_symbol(s, mkt)]
+                    symbol_list = [s.upper() for s in symbol if _is_market_symbol(s, mkt)]
                     if not symbol_list:
                         continue
                     pool_name = f"自定义 ({len(symbol_list)} 只)"
@@ -365,13 +341,39 @@ def trade_screen(
                     else:
                         click.echo(f"      ❌ 无符合条件的合约")
 
-        # 检查是否有任何机会
+        # 检查是否有任何机会 (无机会则直接退出，无需获取持仓)
         if not all_confirmed:
             click.echo("\n📋 无符合条件的开仓机会")
             _cleanup_connection(conn)
             return
 
         click.echo(f"\n📊 共发现 {len(all_confirmed)} 个开仓机会")
+
+        # 3. 获取账户状态 (跳过 Greeks 计算，仅需 NLV/cash/margin 等汇总指标)
+        from src.business.trading.account_bridge import portfolio_to_account_state
+
+        aggregator = conn.get_aggregator()
+        portfolio = aggregator.get_consolidated_portfolio(
+            account_type=AccType.PAPER, fetch_greeks=False
+        )
+        account_state = portfolio_to_account_state(portfolio, broker="ibkr")
+
+        click.echo(f"\n💰 账户状态:")
+        click.echo(f"   NLV: ${account_state.total_equity:,.2f}")
+        click.echo(f"   Cash: ${account_state.cash_balance:,.2f}")
+        click.echo(f"   Available Margin: ${account_state.available_margin:,.2f}")
+        click.echo(f"   Used Margin: ${account_state.used_margin:,.2f}")
+        click.echo(f"   Margin Utilization: {account_state.margin_utilization:.1%}")
+        click.echo(f"   Cash Ratio: {account_state.cash_ratio:.1%}")
+        click.echo(f"   Positions: {account_state.total_position_count}")
+
+        # Debug: Show raw broker summary data
+        if verbose and "ibkr" in portfolio.by_broker:
+            summary = portfolio.by_broker["ibkr"]
+            click.echo(f"\n   [DEBUG] Raw IBKR Summary:")
+            click.echo(f"     margin_available: {summary.margin_available}")
+            click.echo(f"     buying_power: {summary.buying_power}")
+            click.echo(f"     margin_used: {summary.margin_used}")
 
         # 显示筛选结果详情
         _print_screen_summary(all_confirmed)
@@ -486,10 +488,11 @@ def _cleanup_connection(conn) -> None:
 
 def _is_market_symbol(symbol: str, market: str) -> bool:
     """判断标的是否属于指定市场"""
+    s = symbol.upper()
     if market == "hk":
-        return symbol.endswith(".HK")
+        return s.endswith(".HK")
     else:  # us
-        return not symbol.endswith(".HK")
+        return not s.endswith(".HK")
 
 
 def _push_trade_decisions(
