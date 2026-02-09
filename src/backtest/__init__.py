@@ -48,6 +48,8 @@ from src.backtest.optimization.parallel_runner import ParallelBacktestRunner
 from src.backtest.optimization.parameter_sweep import ParameterSweep, SweepResult
 from src.backtest.optimization.benchmark import BenchmarkComparison, BenchmarkResult
 from src.backtest.optimization.walk_forward import WalkForwardValidator, WalkForwardResult
+from src.backtest.pipeline import BacktestPipeline, PipelineResult, DataStatus
+from src.backtest.data.data_checker import DataChecker, DataGap
 
 __all__ = [
     # Config
@@ -78,4 +80,10 @@ __all__ = [
     "BenchmarkResult",
     "WalkForwardValidator",
     "WalkForwardResult",
+    # Pipeline
+    "BacktestPipeline",
+    "PipelineResult",
+    "DataStatus",
+    "DataChecker",
+    "DataGap",
 ]

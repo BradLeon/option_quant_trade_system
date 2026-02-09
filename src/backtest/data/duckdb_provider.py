@@ -251,6 +251,13 @@ class DuckDBProvider(DataProvider):
             logger.warning(f"❌ Error downloading fundamental data for {symbol}: {e}")
             return False
 
+    # 常见 ETF 列表 (ETF 没有传统的 EPS/Revenue 数据)
+    _ETF_SYMBOLS = frozenset({
+        "SPY", "QQQ", "IWM", "DIA", "VOO", "VTI", "EEM", "XLF", "XLE", "XLK",
+        "GLD", "SLV", "TLT", "HYG", "LQD", "VXX", "UVXY", "SQQQ", "TQQQ",
+        "ARKK", "XBI", "IBB", "SMH", "SOXX", "XOP", "OIH", "GDX", "GDXJ",
+    })
+
     def _ensure_fundamental_data(self, symbol: str) -> bool:
         """确保有该 symbol 的基本面数据，没有则自动下载
 
@@ -264,6 +271,10 @@ class DuckDBProvider(DataProvider):
             return True
 
         if not self._auto_download_fundamental:
+            return False
+
+        # ETF 没有传统的 EPS/Revenue 数据，跳过下载
+        if symbol.upper() in self._ETF_SYMBOLS:
             return False
 
         return self._download_fundamental_data(symbol)
@@ -1366,6 +1377,67 @@ class DuckDBProvider(DataProvider):
         except Exception as e:
             logger.warning(f"Error checking macro blackout: {e}")
             return False, []
+
+    def get_stock_beta(self, symbol: str, as_of_date: date | None = None) -> float | None:
+        """获取股票 Beta 值
+
+        优先从 stock_beta_daily.parquet 读取动态滚动 Beta，
+        如果不存在则回退到 stock_beta.parquet 静态 Beta。
+
+        Args:
+            symbol: 股票代码
+            as_of_date: 查询日期 (如果为 None，返回最新值)
+
+        Returns:
+            Beta 值或 None
+        """
+        conn = self._get_conn()
+
+        # 优先使用动态滚动 Beta (stock_beta_daily.parquet)
+        rolling_beta_path = self._data_dir / "stock_beta_daily.parquet"
+        if rolling_beta_path.exists():
+            try:
+                if as_of_date:
+                    # 查询指定日期或之前最近的 Beta
+                    result = conn.execute(
+                        f"""
+                        SELECT beta FROM read_parquet('{rolling_beta_path}')
+                        WHERE symbol = ? AND date <= ?
+                        ORDER BY date DESC LIMIT 1
+                        """,
+                        [symbol.upper(), as_of_date],
+                    ).fetchone()
+                else:
+                    # 查询最新 Beta
+                    result = conn.execute(
+                        f"""
+                        SELECT beta FROM read_parquet('{rolling_beta_path}')
+                        WHERE symbol = ?
+                        ORDER BY date DESC LIMIT 1
+                        """,
+                        [symbol.upper()],
+                    ).fetchone()
+
+                if result:
+                    return float(result[0])
+            except Exception as e:
+                logger.warning(f"Failed to get rolling beta for {symbol}: {e}")
+
+        # 回退到静态 Beta (stock_beta.parquet)
+        static_beta_path = self._data_dir / "stock_beta.parquet"
+        if static_beta_path.exists():
+            try:
+                result = conn.execute(
+                    f"SELECT beta FROM read_parquet('{static_beta_path}') WHERE symbol = ?",
+                    [symbol.upper()],
+                ).fetchone()
+                if result:
+                    return float(result[0])
+            except Exception as e:
+                logger.warning(f"Failed to get static beta for {symbol}: {e}")
+
+        logger.debug(f"Beta data not found for {symbol}")
+        return None
 
     def get_stock_volatility(self, symbol: str) -> StockVolatility | None:
         """获取股票波动率指标

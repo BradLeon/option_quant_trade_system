@@ -118,7 +118,7 @@ class BenchmarkResult:
             f"  Benchmark Max DD:  {self.benchmark_max_drawdown:.2%}" if self.benchmark_max_drawdown else "  Benchmark Max DD:  N/A",
             "",
             "--- Relative Performance ---",
-            f"  Alpha:             {self.alpha:.2%}" if self.alpha else "  Alpha:             N/A",
+            f"  Alpha:             {self.alpha:.4f}" if self.alpha else "  Alpha:             N/A",
             f"  Beta:              {self.beta:.2f}" if self.beta else "  Beta:              N/A",
             f"  Information Ratio: {self.information_ratio:.2f}" if self.information_ratio else "  Information Ratio: N/A",
             f"  Correlation:       {self.correlation:.2f}" if self.correlation else "  Correlation:       N/A",
@@ -413,7 +413,16 @@ class BenchmarkComparison:
             # 计算 Beta
             covariance = np.cov(sr, br)[0, 1]
             variance = np.var(br, ddof=1)
-            beta = covariance / variance if variance > 0 else 0
+
+            # 防止除零和异常值: 方差太小时返回 None
+            if variance < 1e-10:
+                return None, None, None
+
+            beta = covariance / variance
+
+            # 防止 Beta 异常值 (合理范围: -10 ~ 10)
+            if abs(beta) > 10:
+                return None, None, None
 
             # 计算 Alpha (年化)
             mean_sr = np.mean(sr) * 252
@@ -423,7 +432,11 @@ class BenchmarkComparison:
             # 计算相关性
             correlation = np.corrcoef(sr, br)[0, 1]
 
-            return alpha, beta, float(correlation)
+            # 检查 NaN
+            if np.isnan(correlation):
+                correlation = None
+
+            return alpha, beta, float(correlation) if correlation is not None else None
 
         except Exception:
             return None, None, None

@@ -5,6 +5,7 @@
 ## 目录
 
 - [快速开始](#快速开始)
+- [Pipeline CLI 工具](#pipeline-cli-工具)
 - [数据源配置](#数据源配置)
 - [为什么自己计算 IV 和 Greeks](#为什么自己计算-iv-和-greeks)
 - [模块结构](#模块结构)
@@ -68,6 +69,165 @@ enriched = calc.enrich_options_batch(options, stock_prices, rate=0.045)
 # 使用 DuckDB 提供者 (支持自动下载)
 provider = DuckDBProvider(data_dir="data/backtest")
 fundamentals = provider.get_fundamental("GOOG", as_of_date=date(2024, 6, 1))
+```
+
+---
+
+## Pipeline CLI 工具
+
+Pipeline CLI 提供从数据收集到可视化的完整回测流程。
+
+### 特性
+
+- **智能增量下载**: 只下载缺失的数据，支持按标的和日期范围增量
+- **完整数据覆盖**: Stock, Option, Macro, Fundamental, Rolling Beta
+- **一键回测**: 自动协调 BacktestExecutor → Metrics → Benchmark → Dashboard
+
+### 快速开始
+
+```bash
+# 查看帮助
+uv run backtest --help
+uv run backtest run --help
+
+# 运行完整回测 (自动下载 + 回测 + 报告)
+uv run backtest run \
+  --name "SHORT_PUT_TEST" \
+  --start 2025-12-01 \
+  --end 2026-02-01 \
+  --symbols GOOG --symbols SPY \
+  --capital 1000000
+
+# 仅检查数据状态 (不下载不回测)
+uv run backtest run \
+  --name "TEST" \
+  --start 2025-12-01 \
+  --end 2026-02-01 \
+  --symbols GOOG \
+  --check-only
+
+# 跳过数据检查 (假设数据已存在)
+uv run backtest run \
+  --name "QUICK_TEST" \
+  --start 2025-12-01 \
+  --end 2026-02-01 \
+  --symbols GOOG \
+  --skip-download
+
+# 不生成 HTML 报告
+uv run backtest run ... --no-report
+```
+
+### CLI 选项
+
+| 选项 | 简写 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `--name` | `-n` | ✅ | - | 回测名称 |
+| `--start` | `-s` | ✅ | - | 开始日期 (YYYY-MM-DD) |
+| `--end` | `-e` | ✅ | - | 结束日期 (YYYY-MM-DD) |
+| `--symbols` | `-S` | ✅ | - | 标的列表 (可多次指定) |
+| `--data-dir` | `-d` | - | `/Volumes/ORICO/option_quant` | 数据目录 |
+| `--capital` | `-c` | - | 1,000,000 | 初始资金 |
+| `--skip-download` | - | - | False | 跳过数据下载检查 |
+| `--no-report` | - | - | False | 不生成 HTML 报告 |
+| `--report-dir` | - | - | `reports` | 报告输出目录 |
+| `--check-only` | - | - | False | 仅检查数据状态 |
+| `--verbose` | `-v` | - | False | 详细输出 |
+
+### 增量下载机制
+
+Pipeline 支持智能增量下载，避免重复下载已有数据：
+
+**按标的增量**:
+```
+需要: ["GOOG", "AAPL"]
+已有: ["GOOG"]
+下载: ["AAPL"]  # 只下载缺失标的
+```
+
+**按日期范围增量**:
+```
+需要: 2024-01-01 ~ 2026-01-01
+已有: 2025-01-01 ~ 2026-01-01
+下载: 2024-01-01 ~ 2024-12-31  # 只下载缺失日期范围
+```
+
+### 数据下载顺序
+
+Pipeline 按依赖顺序下载数据：
+
+```
+1. Stock Data (ThetaData)
+   ↓
+2. Option Data (ThetaData)
+   ↓
+3. Macro Data (yfinance: VIX, TNX)
+   ↓
+4. Fundamental Data (IBKR: EPS, Revenue) [可选]
+   ↓
+5. Rolling Beta (依赖 stock_daily.parquet)
+```
+
+### Python API 方式
+
+```python
+from datetime import date
+from src.backtest import BacktestConfig, BacktestPipeline
+
+# 创建配置
+config = BacktestConfig(
+    name="MY_BACKTEST",
+    start_date=date(2025, 12, 1),
+    end_date=date(2026, 2, 1),
+    symbols=["GOOG", "SPY"],
+    initial_capital=1_000_000,
+)
+
+# 创建 Pipeline
+pipeline = BacktestPipeline(config)
+
+# 检查数据状态
+pipeline.print_data_status()
+
+# 运行完整 Pipeline
+result = pipeline.run(
+    skip_data_check=False,
+    generate_report=True,
+    report_dir="reports",
+)
+
+# 访问结果
+print(f"总收益率: {result.metrics.total_return_pct:.2%}")
+print(f"夏普比率: {result.metrics.sharpe_ratio:.2f}")
+print(f"最大回撤: {result.metrics.max_drawdown_pct:.2%}")
+print(f"报告路径: {result.report_path}")
+```
+
+### 输出示例
+
+```
+=== 回测配置 ===
+名称: SHORT_PUT_TEST
+日期: 2025-12-01 ~ 2026-02-01
+标的: GOOG, SPY
+资金: $1,000,000
+
+=== 数据状态 ===
+Stock:       ✅ ready (2 symbols)
+Option:      ✅ ready (2 symbols)
+Macro:       ✅ ready (VIX, TNX)
+Fundamental: ⚠️ skipped (IBKR 未连接)
+Beta:        ✅ ready (2 symbols)
+
+=== 回测结果 ===
+Total Return:    12.34%
+Sharpe Ratio:    1.85
+Max Drawdown:    -5.67%
+Win Rate:        78.5%
+Total Trades:    42
+
+=== 报告生成 ===
+HTML 报告: reports/SHORT_PUT_TEST_20260209_123456.html
 ```
 
 ---

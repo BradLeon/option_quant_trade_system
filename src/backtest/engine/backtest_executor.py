@@ -558,9 +558,13 @@ class BacktestExecutor:
                 return []
 
             # 运行监控 (Account 层提供 NLV)
+            # 传入 data_provider 以支持从 DuckDB 读取离线数据 (如 Beta, SPY 价格)
+            # 传入 as_of_date 以支持动态滚动 Beta
             result = self._monitoring_pipeline.run(
                 positions=position_data,
                 nlv=self._account_simulator.nlv,
+                data_provider=self._data_provider,
+                as_of_date=self._current_date,
             )
 
             # 只返回需要行动的建议

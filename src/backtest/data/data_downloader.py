@@ -298,7 +298,7 @@ class DataDownloader:
         symbols: list[str],
         start_date: date,
         end_date: date,
-        max_dte: int = 60,
+        max_dte: int = 90,
         strike_range: int = 30,
         chunk_days: int = 7,
         on_progress: Callable[[str, date, int, int], None] | None = None,
@@ -796,3 +796,175 @@ class DataDownloader:
                     print(f"   {sym}: {info['start_date']} ~ {info['end_date']} ({info['records']} records)")
 
         print("\n" + "=" * 60)
+
+    # ========== Incremental Download Methods ==========
+
+    def download_stocks_incremental(
+        self,
+        gaps: list,  # list[DataGap] from data_checker
+        on_progress: Callable[[str, int, int], None] | None = None,
+    ) -> dict[str, int]:
+        """根据数据缺口增量下载股票数据
+
+        Args:
+            gaps: DataChecker.check_stock_gaps() 返回的缺口列表
+            on_progress: 进度回调 (symbol, current, total)
+
+        Returns:
+            {symbol: downloaded_records}
+        """
+        if not gaps:
+            logger.info("No stock data gaps to download")
+            return {}
+
+        results: dict[str, int] = {}
+        total = len(gaps)
+
+        for i, gap in enumerate(gaps):
+            if on_progress:
+                on_progress(gap.symbol, i, total)
+
+            logger.info(
+                f"Downloading stock {gap.symbol} "
+                f"{gap.missing_start} ~ {gap.missing_end} ({gap.reason})"
+            )
+
+            try:
+                # 直接调用底层下载方法（不走进度检查）
+                records = self._client.get_stock_eod(
+                    gap.symbol,
+                    gap.missing_start,
+                    gap.missing_end,
+                )
+
+                if records:
+                    self._save_stock_parquet(gap.symbol, records)
+                    count = len(records)
+                    results[gap.symbol] = results.get(gap.symbol, 0) + count
+                    logger.info(f"Downloaded {count} stock records for {gap.symbol}")
+
+                    # 更新进度（扩展现有范围）
+                    self._update_progress_range(
+                        gap.symbol,
+                        "stock",
+                        gap.missing_start,
+                        gap.missing_end,
+                        count,
+                    )
+
+            except Exception as e:
+                logger.error(f"Failed to download stock {gap.symbol}: {e}")
+
+        # 更新数据目录
+        if results:
+            self.update_catalog()
+
+        return results
+
+    def download_options_incremental(
+        self,
+        gaps: list,  # list[DataGap] from data_checker
+        max_dte: int = 90,
+        strike_range: int = 30,
+        chunk_days: int = 7,
+        on_progress: Callable[[str, date, int, int], None] | None = None,
+    ) -> dict[str, int]:
+        """根据数据缺口增量下载期权数据
+
+        Args:
+            gaps: DataChecker.check_option_gaps() 返回的缺口列表
+            max_dte: 最大 DTE
+            strike_range: ATM 上下各 N 个 strikes
+            chunk_days: 每次请求的天数
+            on_progress: 进度回调
+
+        Returns:
+            {symbol: downloaded_records}
+        """
+        if not gaps:
+            logger.info("No option data gaps to download")
+            return {}
+
+        results: dict[str, int] = {}
+
+        for gap in gaps:
+            logger.info(
+                f"Downloading option {gap.symbol} "
+                f"{gap.missing_start} ~ {gap.missing_end} ({gap.reason})"
+            )
+
+            try:
+                count = self._download_option(
+                    gap.symbol,
+                    gap.missing_start,
+                    gap.missing_end,
+                    max_dte,
+                    strike_range,
+                    chunk_days,
+                    on_progress,
+                )
+                results[gap.symbol] = results.get(gap.symbol, 0) + count
+                logger.info(f"Downloaded {count} option records for {gap.symbol}")
+
+            except Exception as e:
+                logger.error(f"Failed to download option {gap.symbol}: {e}")
+
+        # 更新数据目录
+        if results:
+            self.update_catalog()
+
+        return results
+
+    def _update_progress_range(
+        self,
+        symbol: str,
+        data_type: str,
+        new_start: date,
+        new_end: date,
+        records: int,
+    ) -> None:
+        """更新进度记录的日期范围（扩展模式）
+
+        Args:
+            symbol: 标的代码
+            data_type: 数据类型
+            new_start: 新下载的开始日期
+            new_end: 新下载的结束日期
+            records: 新下载的记录数
+        """
+        progress_key = self._get_progress_key(symbol, data_type)
+        existing = self._progress.get(progress_key)
+
+        if existing and existing.status == "completed":
+            # 扩展现有范围
+            updated_start = min(existing.start_date, new_start)
+            updated_end = max(existing.end_date, new_end)
+            updated_records = existing.total_records + records
+
+            self._progress[progress_key] = DownloadProgress(
+                symbol=symbol,
+                data_type=data_type,
+                start_date=updated_start,
+                end_date=updated_end,
+                last_completed_date=updated_end,
+                total_records=updated_records,
+                status="completed",
+            )
+        else:
+            # 创建新记录
+            self._progress[progress_key] = DownloadProgress(
+                symbol=symbol,
+                data_type=data_type,
+                start_date=new_start,
+                end_date=new_end,
+                last_completed_date=new_end,
+                total_records=records,
+                status="completed",
+            )
+
+        self._save_progress()
+        logger.debug(
+            f"Updated progress for {data_type}:{symbol}: "
+            f"{self._progress[progress_key].start_date} ~ "
+            f"{self._progress[progress_key].end_date}"
+        )

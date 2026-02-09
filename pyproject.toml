@@ -52,6 +52,7 @@ dependencies = [
 
 [project.scripts]
 optrade = "src.business.cli.main:cli"
+backtest = "src.backtest.cli.main:main"
 
 [project.optional-dependencies]
 # QuantConnect 在 PyPI 上版本不兼容，需通过其他方式安装

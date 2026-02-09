@@ -110,6 +110,7 @@ class BacktestMetrics:
     profit_factor: float | None = None
     average_win: float | None = None  # 平均盈利金额
     average_loss: float | None = None  # 平均亏损金额
+    profit_loss_ratio: float | None = None  # 盈亏比 (avg_win / abs(avg_loss))
     expectancy: float | None = None  # 期望收益
     largest_win: float | None = None
     largest_loss: float | None = None
@@ -189,6 +190,12 @@ class BacktestMetrics:
         largest_win = max(closed_pnls) if closed_pnls else None
         largest_loss = min(closed_pnls) if closed_pnls else None
 
+        # 计算盈亏比 (Profit-Loss Ratio)
+        # 注: avg_loss 从 calc_average_loss 返回的是正数
+        profit_loss_ratio = None
+        if avg_win is not None and avg_loss is not None and avg_loss > 0:
+            profit_loss_ratio = avg_win / avg_loss
+
         # ========== 计算期权特定指标 ==========
         option_metrics = cls._calc_option_metrics(trade_records)
 
@@ -239,6 +246,7 @@ class BacktestMetrics:
             profit_factor=profit_factor,
             average_win=avg_win,
             average_loss=avg_loss,
+            profit_loss_ratio=profit_loss_ratio,
             expectancy=expectancy,
             largest_win=largest_win,
             largest_loss=largest_loss,
@@ -490,6 +498,7 @@ class BacktestMetrics:
             "profit_factor": self.profit_factor,
             "average_win": self.average_win,
             "average_loss": self.average_loss,
+            "profit_loss_ratio": self.profit_loss_ratio,
             "expectancy": self.expectancy,
             "largest_win": self.largest_win,
             "largest_loss": self.largest_loss,
@@ -535,6 +544,7 @@ class BacktestMetrics:
             f"  Total Trades:      {self.total_trades}",
             f"  Win Rate:          {self.win_rate:.1%}" if self.win_rate else "  Win Rate: N/A",
             f"  Profit Factor:     {self.profit_factor:.2f}" if self.profit_factor else "  Profit Factor: N/A",
+            f"  P/L Ratio:         {self.profit_loss_ratio:.2f}" if self.profit_loss_ratio else "  P/L Ratio: N/A",
             f"  Avg Win:           ${self.average_win:.2f}" if self.average_win else "  Avg Win: N/A",
             f"  Avg Loss:          ${self.average_loss:.2f}" if self.average_loss else "  Avg Loss: N/A",
             "",

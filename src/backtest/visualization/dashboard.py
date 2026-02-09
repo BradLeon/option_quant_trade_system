@@ -93,6 +93,11 @@ class BacktestDashboard:
     def create_equity_curve(self, show_trades: bool = True) -> go.Figure:
         """创建权益曲线图
 
+        显示:
+        - Portfolio Value (蓝色实线)
+        - SPY 基准曲线 (橙色虚线，如果有 benchmark_result)
+        - 可选显示交易标记
+
         Args:
             show_trades: 是否显示交易标记
 
@@ -105,77 +110,118 @@ class BacktestDashboard:
 
         dates = [s.date for s in snapshots]
         nlv = [s.nlv for s in snapshots]
+        initial = self._result.initial_capital
 
         fig = go.Figure()
 
-        # 权益曲线
-        fig.add_trace(go.Scatter(
-            x=dates,
-            y=nlv,
-            mode="lines",
-            name="Portfolio Value",
-            line=dict(color=self.COLORS["primary"], width=2),
-            hovertemplate="Date: %{x}<br>NLV: $%{y:,.2f}<extra></extra>",
-        ))
+        # 权益曲线 (Portfolio Value)
+        fig.add_trace(
+            go.Scatter(
+                x=dates,
+                y=nlv,
+                mode="lines",
+                name="Portfolio Value",
+                line=dict(color=self.COLORS["primary"], width=2),
+                hovertemplate="NLV: $%{y:,.2f}<extra></extra>",
+            ),
+        )
+
+        # 如果有 benchmark 数据，显示 SPY 基准曲线 (美元)
+        if self._benchmark_result is not None:
+            br = self._benchmark_result
+            # 将 benchmark 累积收益转为美元价值
+            benchmark_nlv = [initial * cum for cum in br.benchmark_cumulative]
+            fig.add_trace(
+                go.Scatter(
+                    x=br.dates,
+                    y=benchmark_nlv,
+                    mode="lines",
+                    name=f"{br.benchmark_name} (Buy & Hold)",
+                    line=dict(color=self.COLORS["secondary"], width=2, dash="dash"),
+                    hovertemplate=f"{br.benchmark_name}: $%{{y:,.2f}}<extra></extra>",
+                ),
+            )
 
         # 添加初始资金基准线
         fig.add_hline(
-            y=self._result.initial_capital,
-            line_dash="dash",
+            y=initial,
+            line_dash="dot",
             line_color=self.COLORS["neutral"],
             annotation_text="Initial Capital",
             annotation_position="bottom right",
         )
 
-        # 添加交易标记
+        # 添加交易标记 (含详细 hover 信息)
         if show_trades:
-            # 找出有交易的日期
-            open_dates = []
-            open_nlv = []
-            close_dates = []
-            close_nlv = []
-
             nlv_by_date = {s.date: s.nlv for s in snapshots}
 
+            open_data = []
+            close_data = []
+
             for record in self._result.trade_records:
-                if record.action == "open" and record.trade_date in nlv_by_date:
-                    open_dates.append(record.trade_date)
-                    open_nlv.append(nlv_by_date[record.trade_date])
-                elif record.action in ("close", "expire") and record.trade_date in nlv_by_date:
-                    close_dates.append(record.trade_date)
-                    close_nlv.append(nlv_by_date[record.trade_date])
+                if record.trade_date not in nlv_by_date:
+                    continue
 
-            # 开仓标记
-            if open_dates:
-                fig.add_trace(go.Scatter(
-                    x=open_dates,
-                    y=open_nlv,
-                    mode="markers",
-                    name="Open",
-                    marker=dict(
-                        symbol="triangle-up",
-                        size=10,
-                        color=self.COLORS["positive"],
-                        line=dict(width=1, color="white"),
-                    ),
-                    hovertemplate="Open Position<br>Date: %{x}<extra></extra>",
-                ))
+                option_type = getattr(record, "option_type", None)
+                option_type_str = option_type.name if hasattr(option_type, "name") else str(option_type)
+                strike = getattr(record, "strike", 0)
+                qty = record.quantity
+                price = record.price
+                pnl = record.pnl
 
-            # 平仓标记
-            if close_dates:
-                fig.add_trace(go.Scatter(
-                    x=close_dates,
-                    y=close_nlv,
-                    mode="markers",
-                    name="Close",
-                    marker=dict(
-                        symbol="triangle-down",
-                        size=10,
-                        color=self.COLORS["negative"],
-                        line=dict(width=1, color="white"),
+                if record.action == "open":
+                    hover = (
+                        f"<b>OPEN</b><br>"
+                        f"{record.underlying} {option_type_str} ${strike:.0f}<br>"
+                        f"Qty: {qty} @ ${price:.2f}"
+                    )
+                    open_data.append((record.trade_date, nlv_by_date[record.trade_date], hover))
+                elif record.action in ("close", "expire"):
+                    pnl_str = f"${pnl:,.2f}" if pnl else "-"
+                    pnl_color = "green" if pnl and pnl > 0 else "red" if pnl and pnl < 0 else "gray"
+                    hover = (
+                        f"<b>CLOSE</b><br>"
+                        f"{record.underlying} {option_type_str} ${strike:.0f}<br>"
+                        f"Qty: {qty} @ ${price:.2f}<br>"
+                        f"<span style='color:{pnl_color}'>PnL: {pnl_str}</span>"
+                    )
+                    close_data.append((record.trade_date, nlv_by_date[record.trade_date], hover))
+
+            if open_data:
+                fig.add_trace(
+                    go.Scatter(
+                        x=[d[0] for d in open_data],
+                        y=[d[1] for d in open_data],
+                        mode="markers",
+                        name="Open",
+                        marker=dict(
+                            symbol="triangle-up",
+                            size=10,
+                            color=self.COLORS["positive"],
+                            line=dict(width=1, color="white"),
+                        ),
+                        text=[d[2] for d in open_data],
+                        hovertemplate="%{text}<extra></extra>",
                     ),
-                    hovertemplate="Close Position<br>Date: %{x}<extra></extra>",
-                ))
+                )
+
+            if close_data:
+                fig.add_trace(
+                    go.Scatter(
+                        x=[d[0] for d in close_data],
+                        y=[d[1] for d in close_data],
+                        mode="markers",
+                        name="Close",
+                        marker=dict(
+                            symbol="triangle-down",
+                            size=10,
+                            color=self.COLORS["negative"],
+                            line=dict(width=1, color="white"),
+                        ),
+                        text=[d[2] for d in close_data],
+                        hovertemplate="%{text}<extra></extra>",
+                    ),
+                )
 
         # 布局
         fig.update_layout(
@@ -325,87 +371,328 @@ class BacktestDashboard:
         return fig
 
     def create_trade_timeline(self) -> go.Figure:
-        """创建交易时间线 (按标的)
+        """创建交易时间线 (Gantt 风格)
+
+        使用 Plotly 的时间线图表展示每个持仓的持有周期。
+        每一行代表一个独立的期权合约，颜色表示盈亏。
 
         Returns:
             Plotly Figure
         """
         trade_records = self._result.trade_records
         if not trade_records:
-            return go.Figure()
+            fig = go.Figure()
+            fig.add_annotation(
+                text="No trade records available",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False,
+                font=dict(size=14, color="gray"),
+            )
+            fig.update_layout(
+                title=dict(text="Position Timeline", x=0.5, xanchor="center"),
+                template="plotly_white",
+            )
+            return fig
 
-        # 按 position_id 配对开平仓
         from collections import defaultdict
 
-        positions = defaultdict(dict)
+        # 配对开平仓记录
+        positions_dict: dict[str, dict] = defaultdict(dict)
+
         for record in trade_records:
-            if hasattr(record, "position_id") and record.position_id:
-                pid = record.position_id
-                if record.action == "open":
-                    positions[pid]["open"] = record
-                elif record.action in ("close", "expire"):
-                    positions[pid]["close"] = record
+            # 使用 symbol 作为 key (symbol 包含 underlying/strike/expiry 信息)
+            key = record.symbol
+            if record.action == "open":
+                positions_dict[key]["open"] = record
+            elif record.action in ("close", "expire"):
+                positions_dict[key]["close"] = record
 
-        fig = go.Figure()
-
-        # 获取所有标的
-        underlyings = sorted(set(
-            getattr(positions[pid].get("open"), "symbol", "").split()[0]
-            for pid in positions
-            if "open" in positions[pid]
-        ))
-
-        # 为每个标的创建 y 轴位置
-        y_map = {u: i for i, u in enumerate(underlyings)}
-
-        for pid, pos in positions.items():
+        # 构建时间线数据
+        timeline_data = []
+        for symbol, pos in positions_dict.items():
             if "open" not in pos:
                 continue
 
             open_rec = pos["open"]
             close_rec = pos.get("close")
 
-            underlying = open_rec.symbol.split()[0] if hasattr(open_rec, "symbol") else "Unknown"
-            y = y_map.get(underlying, 0)
+            underlying = getattr(open_rec, "underlying", "Unknown")
+            option_type = getattr(open_rec, "option_type", "").name if hasattr(getattr(open_rec, "option_type", ""), "name") else str(getattr(open_rec, "option_type", ""))
+            strike = getattr(open_rec, "strike", 0)
+            quantity = open_rec.quantity
 
             start_date = open_rec.trade_date
             end_date = close_rec.trade_date if close_rec else self._result.end_date
-
-            # 确定颜色 (盈利/亏损)
             pnl = close_rec.pnl if close_rec and close_rec.pnl else 0
-            color = self.COLORS["positive"] if pnl >= 0 else self.COLORS["negative"]
+            is_open = close_rec is None
 
-            # 添加线段
+            # 构建标签: "GOOG PUT $325"
+            label = f"{underlying} {option_type} ${strike:.0f}"
+
+            timeline_data.append({
+                "label": label,
+                "underlying": underlying,
+                "start": start_date,
+                "end": end_date,
+                "pnl": pnl,
+                "is_open": is_open,
+                "quantity": quantity,
+                "symbol": symbol,
+            })
+
+        if not timeline_data:
+            fig = go.Figure()
+            fig.add_annotation(
+                text="No positions to display",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False,
+                font=dict(size=14, color="gray"),
+            )
+            fig.update_layout(
+                title=dict(text="Position Timeline", x=0.5, xanchor="center"),
+                template="plotly_white",
+            )
+            return fig
+
+        # 按标的和开始日期排序
+        timeline_data.sort(key=lambda x: (x["underlying"], x["start"]))
+
+        # 创建 Gantt 图
+        fig = go.Figure()
+
+        # 为每个位置分配 y 坐标
+        labels = [d["label"] for d in timeline_data]
+        y_positions = list(range(len(labels)))
+
+        for i, data in enumerate(timeline_data):
+            # 颜色: 未平仓灰色，已平仓按盈亏
+            if data["is_open"]:
+                color = self.COLORS["neutral"]
+                status = "(Open)"
+            elif data["pnl"] >= 0:
+                color = self.COLORS["positive"]
+                status = f"+${data['pnl']:.2f}"
+            else:
+                color = self.COLORS["negative"]
+                status = f"-${abs(data['pnl']):.2f}"
+
+            # 添加水平条形
             fig.add_trace(go.Scatter(
-                x=[start_date, end_date],
-                y=[y, y],
+                x=[data["start"], data["end"]],
+                y=[i, i],
                 mode="lines+markers",
-                line=dict(color=color, width=8),
-                marker=dict(size=10, color=color),
-                name=underlying,
+                line=dict(color=color, width=15),
+                marker=dict(size=8, color=color, symbol=["circle", "square"]),
+                name=data["label"],
                 showlegend=False,
                 hovertemplate=(
-                    f"Position: {pid}<br>"
-                    f"Symbol: {open_rec.symbol}<br>"
-                    f"Entry: {start_date}<br>"
-                    f"Exit: {end_date}<br>"
-                    f"PnL: ${pnl:.2f}<extra></extra>"
+                    f"<b>{data['label']}</b><br>"
+                    f"Qty: {data['quantity']}<br>"
+                    f"Open: {data['start']}<br>"
+                    f"Close: {data['end']}<br>"
+                    f"PnL: {status}<extra></extra>"
                 ),
             ))
 
         fig.update_layout(
-            title=dict(text="Trade Timeline", x=0.5, xanchor="center"),
+            title=dict(text="Position Timeline", x=0.5, xanchor="center"),
             xaxis_title="Date",
+            xaxis=dict(type="date"),
             yaxis=dict(
                 tickmode="array",
-                tickvals=list(range(len(underlyings))),
-                ticktext=underlyings,
+                tickvals=y_positions,
+                ticktext=labels,
+                autorange="reversed",  # 最新的在上面
             ),
+            height=max(400, 50 + 30 * len(labels)),  # 动态高度
             hovermode="closest",
             template="plotly_white",
         )
 
         return fig
+
+    def create_asset_volume(self) -> go.Figure:
+        """创建 Asset Volume 热力图 (Treemap)
+
+        展示各标的的敞口分布和盈亏贡献:
+        - 方块面积 = Gross 敞口占比 (Σ|quantity|)
+        - 颜色深度 = 占比越大越深
+        - 颜色方向 = 红=亏损, 绿=盈利
+        - 同时展示 Net (净敞口) 和 Gross (总敞口)
+
+        Returns:
+            Plotly Figure
+        """
+        from collections import defaultdict
+        from src.data.models.option import OptionType
+
+        trade_records = self._result.trade_records
+        if not trade_records:
+            fig = go.Figure()
+            fig.add_annotation(
+                text="No trade data available",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False,
+                font=dict(size=14, color="gray"),
+            )
+            fig.update_layout(
+                title=dict(text="Asset Volume", x=0.5, xanchor="center"),
+                template="plotly_white",
+            )
+            return fig
+
+        # 按标的统计 Gross 和 Net 敞口 (市值)
+        # Gross Market Value = Σ(|quantity| × price × multiplier)
+        # Net Market Value = Σ(direction × quantity × price × multiplier)
+        MULTIPLIER = 100  # 标准期权乘数
+
+        stats_by_underlying: dict[str, dict] = defaultdict(
+            lambda: {"gross_mv": 0.0, "net_mv": 0.0, "pnl": 0.0, "trades": 0, "contracts": 0}
+        )
+
+        def get_direction(option_type: OptionType) -> int:
+            """PUT=-1 (看跌工具), CALL=+1 (看涨工具)"""
+            return 1 if option_type == OptionType.CALL else -1
+
+        for record in trade_records:
+            underlying = getattr(record, "underlying", "Unknown")
+            option_type = getattr(record, "option_type", None)
+
+            if record.action in ("close", "expire") and record.pnl is not None:
+                stats_by_underlying[underlying]["pnl"] += record.pnl
+
+            if record.action == "open":
+                stats_by_underlying[underlying]["trades"] += 1
+                stats_by_underlying[underlying]["contracts"] += abs(record.quantity)
+
+                # 计算市值 (Market Value)
+                market_value = abs(record.quantity) * record.price * MULTIPLIER
+
+                # Gross Market Value = Σ(|quantity| × price × multiplier)
+                stats_by_underlying[underlying]["gross_mv"] += market_value
+
+                # Net Market Value = Σ(direction × quantity × price × multiplier)
+                if option_type is not None:
+                    direction = get_direction(option_type)
+                    # 注意: quantity 已经有符号 (负数=卖出)
+                    # direction: CALL=+1 (看涨), PUT=-1 (看跌)
+                    stats_by_underlying[underlying]["net_mv"] += direction * record.quantity * record.price * MULTIPLIER
+
+        if not stats_by_underlying:
+            fig = go.Figure()
+            fig.add_annotation(
+                text="No asset data available",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False,
+                font=dict(size=14, color="gray"),
+            )
+            return fig
+
+        # 计算权重 (基于 Gross Market Value)
+        total_gross_mv = sum(s["gross_mv"] for s in stats_by_underlying.values())
+        if total_gross_mv == 0:
+            total_gross_mv = 1  # 避免除零
+
+        for stats in stats_by_underlying.values():
+            stats["weight"] = stats["gross_mv"] / total_gross_mv
+
+        def calculate_color(weight: float, pnl: float) -> str:
+            """根据权重和盈亏计算颜色
+
+            - weight 决定颜色深度 (0.3 ~ 1.0)
+            - pnl 决定红/绿
+            """
+            # 深度: 权重越大越深 (最小 0.3 避免太浅)
+            intensity = 0.3 + 0.7 * min(weight * 2, 1.0)  # 放大权重效果
+
+            if pnl >= 0:
+                # 绿色系
+                r = int(255 * (1 - intensity))
+                g = int(150 + 105 * intensity)
+                b = int(100 * (1 - intensity))
+            else:
+                # 红色系
+                r = int(150 + 105 * intensity)
+                g = int(100 * (1 - intensity))
+                b = int(100 * (1 - intensity))
+
+            return f"rgb({r},{g},{b})"
+
+        # 准备 Treemap 数据
+        labels = []
+        parents = []
+        values = []
+        colors = []
+        customdata = []
+
+        # 根节点
+        total_pnl = sum(s["pnl"] for s in stats_by_underlying.values())
+        total_net_mv = sum(s["net_mv"] for s in stats_by_underlying.values())
+        total_trades = sum(s["trades"] for s in stats_by_underlying.values())
+        total_contracts = sum(s["contracts"] for s in stats_by_underlying.values())
+
+        labels.append("Portfolio")
+        parents.append("")
+        values.append(max(1, total_gross_mv))  # Treemap value 基于 Gross MV
+        colors.append(self.COLORS["primary"])  # Portfolio 用蓝色
+        # customdata: [weight, pnl, net_mv, gross_mv, trades, contracts]
+        customdata.append([1.0, total_pnl, total_net_mv, total_gross_mv, total_trades, total_contracts])
+
+        # 按 Gross Market Value 排序
+        sorted_underlyings = sorted(
+            stats_by_underlying.items(),
+            key=lambda x: x[1]["gross_mv"],
+            reverse=True
+        )
+
+        for underlying, stats in sorted_underlyings:
+            labels.append(underlying)
+            parents.append("Portfolio")
+            values.append(max(1, stats["gross_mv"]))
+            colors.append(calculate_color(stats["weight"], stats["pnl"]))
+            customdata.append([
+                stats["weight"],
+                stats["pnl"],
+                stats["net_mv"],
+                stats["gross_mv"],
+                stats["trades"],
+                stats["contracts"],
+            ])
+
+        fig = go.Figure(go.Treemap(
+            labels=labels,
+            parents=parents,
+            values=values,
+            customdata=customdata,
+            marker=dict(colors=colors),
+            textfont=dict(size=14),
+            texttemplate=(
+                "<b>%{label}</b><br>"
+                "Gross: $%{customdata[3]:,.0f}<br>"
+                "Net: $%{customdata[2]:+,.0f}"
+            ),
+            hovertemplate=(
+                "<b>%{label}</b><br>"
+                "Weight: %{customdata[0]:.1%}<br>"
+                "Gross MV: $%{customdata[3]:,.2f}<br>"
+                "Net MV: $%{customdata[2]:+,.2f} (正=看涨, 负=看跌)<br>"
+                "Contracts: %{customdata[5]}<br>"
+                "Trades: %{customdata[4]}<br>"
+                "PnL: $%{customdata[1]:,.2f}<extra></extra>"
+            ),
+        ))
+
+        fig.update_layout(
+            title=dict(text="Asset Volume (by Market Value)", x=0.5, xanchor="center"),
+            template="plotly_white",
+        )
+
+        return fig
+
+    # 保留旧方法名作为别名，保持兼容性
+    def create_asset_breakdown(self) -> go.Figure:
+        """别名，调用 create_asset_volume()"""
+        return self.create_asset_volume()
 
     def create_benchmark_comparison(self) -> go.Figure:
         """创建基准比较图
@@ -502,7 +789,7 @@ class BacktestDashboard:
         # Alpha 和 Beta
         if br.alpha is not None and br.beta is not None:
             annotations.append(dict(
-                text=f"Alpha: {br.alpha:.2%} | Beta: {br.beta:.2f}",
+                text=f"Alpha: {br.alpha:.4f} | Beta: {br.beta:.2f}",
                 xref="paper",
                 yref="paper",
                 x=0.02,
@@ -576,7 +863,7 @@ class BacktestDashboard:
                 <div style="min-width: 200px; margin: 10px;">
                     <h4 style="color: #2ecc71; margin-bottom: 10px;">Relative Performance</h4>
                     <table style="width: 100%;">
-                        <tr><td>Alpha</td><td style="text-align: right; font-weight: bold;">{fmt_pct(br.alpha)}</td></tr>
+                        <tr><td>Alpha</td><td style="text-align: right; font-weight: bold;">{fmt_num(br.alpha, 4)}</td></tr>
                         <tr><td>Beta</td><td style="text-align: right;">{fmt_num(br.beta)}</td></tr>
                         <tr><td>Information Ratio</td><td style="text-align: right;">{fmt_num(br.information_ratio)}</td></tr>
                         <tr><td>Correlation</td><td style="text-align: right;">{fmt_num(br.correlation)}</td></tr>
@@ -593,6 +880,111 @@ class BacktestDashboard:
                     </table>
                 </div>
             </div>
+        </div>
+        """
+        return html
+
+    def create_trade_records_table(self) -> str:
+        """创建交易记录表格 (HTML)
+
+        Returns:
+            HTML 字符串
+        """
+        trade_records = self._result.trade_records
+        if not trade_records:
+            return ""
+
+        # 排序：按日期
+        sorted_records = sorted(trade_records, key=lambda r: r.trade_date)
+
+        rows = []
+        for record in sorted_records:
+            # 获取属性
+            trade_date = record.trade_date.isoformat()
+            action = record.action.upper()
+            underlying = getattr(record, "underlying", "N/A")
+            option_type = getattr(record, "option_type", None)
+            option_type_str = option_type.name if hasattr(option_type, "name") else str(option_type) if option_type else "N/A"
+            strike = getattr(record, "strike", None)
+            strike_str = f"${strike:.2f}" if strike else "N/A"
+            expiry = getattr(record, "expiration", None)
+            expiry_str = expiry.isoformat() if expiry else "N/A"
+
+            # 计算 DTE (Days To Expiration)
+            if expiry:
+                dte = (expiry - record.trade_date).days
+                dte_str = str(dte)
+            else:
+                dte_str = "N/A"
+
+            quantity = record.quantity
+            price = record.price
+            net_amount = getattr(record, "net_amount", 0)
+            pnl = record.pnl
+
+            # PnL 颜色
+            if pnl is not None and pnl != 0:
+                pnl_color = "green" if pnl > 0 else "red"
+                pnl_str = f'<span style="color: {pnl_color};">${pnl:,.2f}</span>'
+            else:
+                pnl_str = "-"
+
+            # 操作颜色
+            action_color = "#2ecc71" if action == "OPEN" else "#e74c3c" if action == "CLOSE" else "#ff7f0e"
+
+            # Reason (仅 CLOSE/ROLL 显示)
+            reason = getattr(record, "reason", None)
+            if action in ("CLOSE", "ROLL", "EXPIRE") and reason:
+                reason_str = reason
+            else:
+                reason_str = "-"
+
+            rows.append(f"""
+                <tr>
+                    <td>{trade_date}</td>
+                    <td style="color: {action_color}; font-weight: bold;">{action}</td>
+                    <td>{underlying}</td>
+                    <td>{option_type_str}</td>
+                    <td>{strike_str}</td>
+                    <td>{expiry_str}</td>
+                    <td style="text-align: right;">{dte_str}</td>
+                    <td style="text-align: right;">{quantity}</td>
+                    <td style="text-align: right;">${price:,.2f}</td>
+                    <td style="text-align: right;">${net_amount:,.2f}</td>
+                    <td style="text-align: right;">{pnl_str}</td>
+                    <td style="font-size: 11px; color: #666;">{reason_str}</td>
+                </tr>
+            """)
+
+        html = f"""
+        <div class="trade-records" style="margin-top: 30px;">
+            <h3 style="text-align: center; color: #333; margin-bottom: 15px;">Trade Records</h3>
+            <div style="overflow-x: auto;">
+                <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+                    <thead>
+                        <tr style="background: #f8f9fa; border-bottom: 2px solid #dee2e6;">
+                            <th style="padding: 10px; text-align: left;">Date</th>
+                            <th style="padding: 10px; text-align: left;">Action</th>
+                            <th style="padding: 10px; text-align: left;">Underlying</th>
+                            <th style="padding: 10px; text-align: left;">Type</th>
+                            <th style="padding: 10px; text-align: left;">Strike</th>
+                            <th style="padding: 10px; text-align: left;">Expiry</th>
+                            <th style="padding: 10px; text-align: right;">DTE</th>
+                            <th style="padding: 10px; text-align: right;">Qty</th>
+                            <th style="padding: 10px; text-align: right;">Price</th>
+                            <th style="padding: 10px; text-align: right;">Value</th>
+                            <th style="padding: 10px; text-align: right;">PnL</th>
+                            <th style="padding: 10px; text-align: left;">Reason</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {"".join(rows)}
+                    </tbody>
+                </table>
+            </div>
+            <p style="text-align: center; color: #999; margin-top: 10px;">
+                Total: {len(sorted_records)} transactions
+            </p>
         </div>
         """
         return html
@@ -660,6 +1052,7 @@ class BacktestDashboard:
                         <tr><td>Total Trades</td><td style="text-align: right; font-weight: bold;">{m.total_trades}</td></tr>
                         <tr><td>Win Rate</td><td style="text-align: right;">{fmt_pct(m.win_rate)}</td></tr>
                         <tr><td>Profit Factor</td><td style="text-align: right;">{fmt_num(m.profit_factor)}</td></tr>
+                        <tr><td>P/L Ratio</td><td style="text-align: right;">{fmt_num(m.profit_loss_ratio)}</td></tr>
                         <tr><td>Avg Win</td><td style="text-align: right;">{fmt_money(m.average_win)}</td></tr>
                         <tr><td>Avg Loss</td><td style="text-align: right;">{fmt_money(m.average_loss)}</td></tr>
                     </table>
@@ -679,7 +1072,7 @@ class BacktestDashboard:
         Args:
             output_path: 输出文件路径
             include_charts: 要包含的图表 (默认全部)
-                可选: ["equity", "drawdown", "monthly", "timeline", "benchmark"]
+                可选: ["equity", "drawdown", "monthly", "asset", "timeline", "benchmark"]
 
         Returns:
             输出文件路径
@@ -687,11 +1080,9 @@ class BacktestDashboard:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # 默认包含所有图表 (benchmark 只在有数据时包含)
+        # 默认包含所有图表
         if include_charts is None:
-            include_charts = ["equity", "drawdown", "monthly", "timeline"]
-            if self._benchmark_result is not None:
-                include_charts.append("benchmark")
+            include_charts = ["equity", "benchmark", "drawdown", "monthly", "asset", "timeline"]
 
         # 生成图表 HTML
         chart_html_list = []
@@ -700,7 +1091,8 @@ class BacktestDashboard:
             fig = self.create_equity_curve()
             chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
 
-        if "benchmark" in include_charts:
+        # Benchmark comparison chart (单独的收益率对比图)
+        if "benchmark" in include_charts and self._benchmark_result is not None:
             fig = self.create_benchmark_comparison()
             chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
 
@@ -712,6 +1104,10 @@ class BacktestDashboard:
             fig = self.create_monthly_returns_heatmap()
             chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
 
+        if "asset" in include_charts:
+            fig = self.create_asset_breakdown()
+            chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
+
         if "timeline" in include_charts:
             fig = self.create_trade_timeline()
             chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
@@ -719,6 +1115,7 @@ class BacktestDashboard:
         # 生成指标面板
         metrics_html = self.create_metrics_panel()
         benchmark_metrics_html = self.create_benchmark_metrics_panel()
+        trade_records_html = self.create_trade_records_table()
 
         # 组装完整 HTML
         charts_combined = "\n".join(
@@ -776,6 +1173,8 @@ class BacktestDashboard:
         <hr style="margin: 30px 0; border: none; border-top: 1px solid #eee;">
 
         {charts_combined}
+
+        {trade_records_html}
 
         <div class="footer">
             <p>Generated by Option Quant Trade System</p>

@@ -312,8 +312,9 @@ class PositionManager:
                 intrinsic = max(0, underlying_price - position.strike)
 
             logger.warning(
-                f"Option price not found for {position.symbol}, "
-                f"using intrinsic value: {intrinsic:.2f}"
+                f"Option price not found for {position.underlying} "
+                f"{position.option_type.value} K={position.strike} exp={position.expiration} "
+                f"on {self._current_date}, using intrinsic value: {intrinsic:.2f}"
             )
             position.update_market_value(intrinsic, underlying_price)
 
@@ -464,14 +465,15 @@ class PositionManager:
         )
 
         # 推断策略类型
+        # 注意: StrategyType 枚举只有 SHORT_PUT, NAKED_CALL, COVERED_CALL 等
+        # 没有 LONG_PUT/LONG_CALL (长期权一般不作为独立策略)
         if position.option_type == OptionType.PUT and position.is_short:
             strategy_type = StrategyType.SHORT_PUT
         elif position.option_type == OptionType.CALL and position.is_short:
-            strategy_type = StrategyType.SHORT_CALL
-        elif position.option_type == OptionType.PUT and not position.is_short:
-            strategy_type = StrategyType.LONG_PUT
+            strategy_type = StrategyType.NAKED_CALL  # 裸卖 Call
         else:
-            strategy_type = StrategyType.LONG_CALL
+            # 长期权标记为 UNKNOWN
+            strategy_type = StrategyType.UNKNOWN
 
         return PositionData(
             position_id=position.position_id,
