@@ -138,12 +138,12 @@ class BacktestDashboard:
             nlv_by_date = {s.date: s.nlv for s in snapshots}
 
             for record in self._result.trade_records:
-                if record.action == "open" and record.date in nlv_by_date:
-                    open_dates.append(record.date)
-                    open_nlv.append(nlv_by_date[record.date])
-                elif record.action in ("close", "expire") and record.date in nlv_by_date:
-                    close_dates.append(record.date)
-                    close_nlv.append(nlv_by_date[record.date])
+                if record.action == "open" and record.trade_date in nlv_by_date:
+                    open_dates.append(record.trade_date)
+                    open_nlv.append(nlv_by_date[record.trade_date])
+                elif record.action in ("close", "expire") and record.trade_date in nlv_by_date:
+                    close_dates.append(record.trade_date)
+                    close_nlv.append(nlv_by_date[record.trade_date])
 
             # 开仓标记
             if open_dates:
@@ -368,8 +368,8 @@ class BacktestDashboard:
             underlying = open_rec.symbol.split()[0] if hasattr(open_rec, "symbol") else "Unknown"
             y = y_map.get(underlying, 0)
 
-            start_date = open_rec.date
-            end_date = close_rec.date if close_rec else self._result.end_date
+            start_date = open_rec.trade_date
+            end_date = close_rec.trade_date if close_rec else self._result.end_date
 
             # 确定颜色 (盈利/亏损)
             pnl = close_rec.pnl if close_rec and close_rec.pnl else 0

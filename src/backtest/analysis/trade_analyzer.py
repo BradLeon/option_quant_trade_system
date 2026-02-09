@@ -126,8 +126,8 @@ class TradeAnalyzer:
                     close_record = record
 
             if open_record and close_record:
-                # 计算持仓天数
-                holding_days = (close_record.date - open_record.date).days
+                # 计算持仓天数 (使用 trade_date 字段)
+                holding_days = (close_record.trade_date - open_record.trade_date).days
 
                 # 计算收益率
                 entry_value = abs(open_record.price * open_record.quantity * 100)
@@ -141,7 +141,7 @@ class TradeAnalyzer:
                 underlying = getattr(open_record, "underlying", symbol.split()[0])
                 option_type = getattr(open_record, "option_type", "put")
                 strike = getattr(open_record, "strike", 0.0)
-                expiration = getattr(open_record, "expiration", close_record.date)
+                expiration = getattr(open_record, "expiration", close_record.trade_date)
 
                 trade = TradeSummary(
                     position_id=position_id,
@@ -150,8 +150,8 @@ class TradeAnalyzer:
                     option_type=option_type,
                     strike=strike,
                     expiration=expiration,
-                    entry_date=open_record.date,
-                    exit_date=close_record.date,
+                    entry_date=open_record.trade_date,
+                    exit_date=close_record.trade_date,
                     quantity=open_record.quantity,
                     entry_price=open_record.price,
                     exit_price=close_record.price,

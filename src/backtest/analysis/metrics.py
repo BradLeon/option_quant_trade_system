@@ -447,8 +447,9 @@ class BacktestMetrics:
         if close_records or expire_records:
             holding_days = []
             for record in close_records + expire_records:
-                if hasattr(record, "entry_date") and hasattr(record, "date"):
-                    days = (record.date - record.entry_date).days
+                # 尝试使用 entry_date (如果存在)，否则跳过
+                if hasattr(record, "entry_date") and hasattr(record, "trade_date"):
+                    days = (record.trade_date - record.entry_date).days
                     holding_days.append(days)
 
             if holding_days:
