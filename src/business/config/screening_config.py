@@ -264,7 +264,7 @@ class ContractFilterConfig:
     """
 
     # P1: DTE 范围（港股期权到期日稀疏，使用宽范围）
-    dte_range: tuple[int, int] = (7, 45)
+    dte_range: tuple[int, int] = (10, 50)
     optimal_dte_range: tuple[int, int] = (25, 45)
     # P1: |Delta| 范围（绝对值，覆盖两种策略）
     delta_range: tuple[float, float] = (0.05, 0.35)

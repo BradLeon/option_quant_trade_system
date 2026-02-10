@@ -190,6 +190,7 @@ class BacktestExecutor:
         config: BacktestConfig,
         data_provider: DuckDBProvider | None = None,
         progress_callback: Callable[[date, int, int], None] | None = None,
+        attribution_collector: Any | None = None,
     ) -> None:
         """初始化回测执行器
 
@@ -197,6 +198,7 @@ class BacktestExecutor:
             config: 回测配置
             data_provider: 数据提供者 (可选，默认根据配置创建)
             progress_callback: 进度回调函数 (current_date, current_day, total_days)
+            attribution_collector: 归因数据采集器 (可选，传入 AttributionCollector 实例)
         """
         self._config = config
         self._progress_callback = progress_callback
@@ -247,6 +249,10 @@ class BacktestExecutor:
         self._position_counter = 0
         self._daily_snapshots: list[DailySnapshot] = []
         self._errors: list[str] = []
+
+        # 归因采集
+        self._attribution_collector = attribution_collector
+        self._last_monitoring_position_data: list[PositionData] = []
 
     def _init_pipelines(self) -> None:
         """初始化 Pipeline 组件
@@ -386,6 +392,11 @@ class BacktestExecutor:
 
         return result
 
+    @property
+    def attribution_collector(self) -> Any | None:
+        """获取归因数据采集器"""
+        return self._attribution_collector
+
     def _run_single_day(self, current_date: date) -> None:
         """执行单日回测
 
@@ -416,8 +427,28 @@ class BacktestExecutor:
 
         # 3. 运行监控 (如果有持仓)
         suggestions: list[PositionSuggestion] = []
+        self._last_monitoring_position_data = []
         if self._account_simulator.position_count > 0 and self._monitoring_pipeline:
             suggestions = self._run_monitoring()
+
+        # 3.5 采集归因快照 (复用 monitoring 的 PositionData, 避免重复计算 Greeks)
+        if self._attribution_collector:
+            pos_data = self._last_monitoring_position_data
+            if not pos_data and self._account_simulator.position_count > 0:
+                # monitoring 未运行但有持仓：手动获取 PositionData
+                pos_data = self._position_manager.get_position_data_for_monitoring(
+                    positions=self._account_simulator.positions,
+                    as_of_date=current_date,
+                )
+            self._attribution_collector.capture_daily(
+                current_date=current_date,
+                position_data_list=pos_data,
+                nlv=self._account_simulator.nlv,
+                cash=self._account_simulator.cash,
+                margin_used=self._account_simulator.margin_used,
+                data_provider=self._data_provider,
+                as_of_date=current_date,
+            )
 
         # 4. 运行筛选 (寻找新机会)
         screen_result: ScreeningResult | None = None
@@ -518,8 +549,9 @@ class BacktestExecutor:
             # 2. Position 层：计算已实现盈亏
             pnl = self._position_manager.calculate_realized_pnl(position, execution)
 
-            # 2.5. Trade 层：回填 PnL 到交易记录
+            # 2.5. Trade 层：回填 PnL 和 position_id 到交易记录
             self._trade_simulator.update_last_trade_pnl(pnl)
+            self._trade_simulator.update_last_trade_position_id(position.position_id)
 
             # 3. Account 层：移除持仓，更新现金
             success = self._account_simulator.remove_position(
@@ -556,6 +588,9 @@ class BacktestExecutor:
 
             if not position_data:
                 return []
+
+            # 保存 position_data 供归因采集器复用 (避免重复计算 Greeks)
+            self._last_monitoring_position_data = position_data
 
             # 运行监控 (Account 层提供 NLV)
             # 传入 data_provider 以支持从 DuckDB 读取离线数据 (如 Beta, SPY 价格)
@@ -694,6 +729,9 @@ class BacktestExecutor:
             # 2. Position 层：基于 TradeExecution 创建持仓对象
             position = self._position_manager.create_position(execution)
 
+            # 2.5. Trade 层：回填 position_id 到开仓交易记录
+            self._trade_simulator.update_last_trade_position_id(position.position_id)
+
             # 3. Account 层：检查保证金，添加持仓
             success = self._account_simulator.add_position(
                 position=position,
@@ -752,8 +790,9 @@ class BacktestExecutor:
                 close_reason=decision.reason or "monitor_signal",
             )
 
-            # 2.5. Trade 层：回填 PnL 到交易记录
+            # 2.5. Trade 层：回填 PnL 和 position_id 到交易记录
             self._trade_simulator.update_last_trade_pnl(pnl)
+            self._trade_simulator.update_last_trade_position_id(position.position_id)
 
             # 3. Account 层：移除持仓，更新现金
             success = self._account_simulator.remove_position(
@@ -843,8 +882,9 @@ class BacktestExecutor:
                 close_reason=f"roll_to_{decision.roll_to_expiry}",
             )
 
-            # 2.5. Trade 层：回填 PnL 到交易记录
+            # 2.5. Trade 层：回填 PnL 和 position_id 到交易记录
             self._trade_simulator.update_last_trade_pnl(pnl)
+            self._trade_simulator.update_last_trade_position_id(position.position_id)
 
             # 3. Account 层：移除持仓
             close_success = self._account_simulator.remove_position(
@@ -912,6 +952,9 @@ class BacktestExecutor:
 
             # Position 层: 创建持仓对象
             new_position = self._position_manager.create_position(open_execution)
+
+            # Trade 层: 回填 position_id 到开仓交易记录
+            self._trade_simulator.update_last_trade_position_id(new_position.position_id)
 
             # Account 层: 添加持仓
             open_success = self._account_simulator.add_position(

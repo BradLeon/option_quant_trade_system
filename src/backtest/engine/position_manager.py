@@ -551,7 +551,7 @@ class PositionManager:
                             position_gamma,
                             position_theta,
                             position_vega,
-                            greeks.iv if hasattr(greeks, "iv") else None,
+                            quote.iv,
                         )
 
             return None, None, None, None, None

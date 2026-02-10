@@ -229,6 +229,16 @@ def run(
             click.echo(f"vs SPY: {br.strategy_total_return:.2%} vs {br.benchmark_total_return:.2%}")
             click.echo(f"Excess Return: {excess:.2%}")
 
+        if result.attribution_summary:
+            summary = result.attribution_summary
+            click.echo()
+            click.echo("Attribution:")
+            click.echo(f"  Delta PnL: ${summary.get('delta_pnl', 0):,.0f}")
+            click.echo(f"  Gamma PnL: ${summary.get('gamma_pnl', 0):,.0f}")
+            click.echo(f"  Theta PnL: ${summary.get('theta_pnl', 0):,.0f}")
+            click.echo(f"  Vega PnL:  ${summary.get('vega_pnl', 0):,.0f}")
+            click.echo(f"  Residual:  ${summary.get('residual', 0):,.0f}")
+
         if result.report_path:
             click.echo()
             click.echo(f"Report: {result.report_path}")

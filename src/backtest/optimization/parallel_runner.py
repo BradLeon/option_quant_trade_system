@@ -184,12 +184,14 @@ class ParallelBacktestRunner:
         # 为每个标的创建配置
         tasks = []
         for symbol in symbols:
+            # 使用 strategy_types (新字段) 而不是 strategy_type (已废弃)
+            strategy_types = [st.value for st in base_config.strategy_types]
             config_dict = {
                 "name": f"{base_config.name}_{symbol}",
                 "start_date": base_config.start_date.isoformat(),
                 "end_date": base_config.end_date.isoformat(),
                 "symbols": [symbol],
-                "strategy_type": base_config.strategy_type.value,
+                "strategy_types": strategy_types,
                 "initial_capital": base_config.initial_capital,
                 "max_margin_utilization": base_config.max_margin_utilization,
                 "max_position_pct": base_config.max_position_pct,
@@ -226,12 +228,14 @@ class ParallelBacktestRunner:
         # 创建任务
         tasks = []
         for config in configs:
+            # 使用 strategy_types (新字段) 而不是 strategy_type (已废弃)
+            strategy_types = [st.value for st in config.strategy_types]
             config_dict = {
                 "name": config.name,
                 "start_date": config.start_date.isoformat(),
                 "end_date": config.end_date.isoformat(),
                 "symbols": config.symbols,
-                "strategy_type": config.strategy_type.value,
+                "strategy_types": strategy_types,
                 "initial_capital": config.initial_capital,
                 "max_margin_utilization": config.max_margin_utilization,
                 "max_position_pct": config.max_position_pct,

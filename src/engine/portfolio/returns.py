@@ -382,7 +382,7 @@ def calc_var(
         VaR as a positive decimal (potential loss at given confidence).
         Returns None if insufficient data.
     """
-    if returns is None or len(returns) < 10:
+    if returns is None or len(returns) < 5:
         return None
 
     returns_array = np.array(returns)
@@ -407,7 +407,7 @@ def calc_cvar(
         CVaR as a positive decimal.
         Returns None if insufficient data.
     """
-    if returns is None or len(returns) < 10:
+    if returns is None or len(returns) < 5:
         return None
 
     returns_array = np.array(returns)

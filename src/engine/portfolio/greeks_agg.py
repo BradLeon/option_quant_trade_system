@@ -1,24 +1,52 @@
 """Portfolio Greeks aggregation."""
 
 import logging
+from datetime import date
+from typing import TYPE_CHECKING
 
 from src.engine.models.position import Position
+
+if TYPE_CHECKING:
+    from src.data.providers.base import DataProvider
 
 logger = logging.getLogger(__name__)
 
 
-def _get_spy_price(base_currency: str = "USD") -> float | None:
+def _get_spy_price(
+    base_currency: str = "USD",
+    data_provider: "DataProvider | None" = None,
+) -> float | None:
     """Get current SPY price for beta-weighted delta calculation.
 
-    Uses yfinance to fetch the latest SPY price.
+    In backtest mode (data_provider provided), reads from DuckDB.
+    In live mode, uses yfinance to fetch the latest SPY price.
     If base_currency is not USD, converts the price.
 
     Args:
         base_currency: Target currency for the price.
+        data_provider: Optional data provider for backtest mode.
 
     Returns:
         Current SPY price in base_currency or None if unavailable.
     """
+    # Backtest mode: read from data_provider
+    if data_provider is not None:
+        try:
+            quote = data_provider.get_stock_quote("SPY")
+            if quote and quote.close and quote.close > 0:
+                price = quote.close
+                # Convert to base_currency if not USD
+                if base_currency != "USD":
+                    from src.data.currency import CurrencyConverter
+                    converter = CurrencyConverter()
+                    price = converter.convert(price, "USD", base_currency)
+                logger.debug(f"Fetched SPY price from data_provider: {price:.2f} {base_currency}")
+                return price
+        except Exception as e:
+            logger.debug(f"Failed to get SPY price from data_provider: {e}")
+        return None
+
+    # Live mode: use yfinance
     try:
         import yfinance as yf
 
@@ -40,15 +68,38 @@ def _get_spy_price(base_currency: str = "USD") -> float | None:
         return None
 
 
-def _get_stock_beta(symbol: str) -> float | None:
-    """Get stock beta from Yahoo Finance.
+def _get_stock_beta(
+    symbol: str,
+    data_provider: "DataProvider | None" = None,
+    as_of_date: date | None = None,
+) -> float | None:
+    """Get stock beta.
+
+    In backtest mode (data_provider provided), reads from stock_beta_daily.parquet
+    or stock_beta.parquet. In live mode, uses yfinance.
 
     Args:
         symbol: Stock ticker symbol (e.g., "AAPL", "9988.HK").
+        data_provider: Optional data provider for backtest mode.
+        as_of_date: Query date for rolling beta lookup (backtest mode).
 
     Returns:
         Stock beta or None if unavailable.
     """
+    # Backtest mode: read from data_provider
+    if data_provider is not None:
+        try:
+            # Use get_stock_beta if available (DuckDBProvider)
+            if hasattr(data_provider, "get_stock_beta"):
+                beta = data_provider.get_stock_beta(symbol.upper(), as_of_date)
+                if beta is not None:
+                    logger.debug(f"Fetched beta for {symbol} from data_provider: {beta:.2f} (as_of={as_of_date})")
+                    return beta
+        except Exception as e:
+            logger.debug(f"Failed to get beta for {symbol} from data_provider: {e}")
+        return None
+
+    # Live mode: use yfinance
     try:
         import yfinance as yf
 
@@ -173,7 +224,11 @@ def calc_portfolio_vega(positions: list[Position]) -> float:
     return total
 
 
-def calc_beta_weighted_delta(positions: list[Position]) -> float | None:
+def calc_beta_weighted_delta(
+    positions: list[Position],
+    data_provider: "DataProvider | None" = None,
+    as_of_date: date | None = None,
+) -> float | None:
     """Calculate beta-weighted delta normalized to SPY.
 
     This converts all position deltas to SPY-equivalent shares,
@@ -188,6 +243,8 @@ def calc_beta_weighted_delta(positions: list[Position]) -> float | None:
 
     Args:
         positions: List of Position objects with delta, beta, and underlying_price.
+        data_provider: Optional data provider for backtest mode (reads from DuckDB).
+        as_of_date: Query date for rolling beta lookup (backtest mode).
 
     Returns:
         Beta-weighted delta in SPY-equivalent shares, or None if SPY price unavailable.
@@ -205,9 +262,9 @@ def calc_beta_weighted_delta(positions: list[Position]) -> float | None:
     if hasattr(positions[0], "currency"):
         base_currency = positions[0].currency
 
-    spy_price = _get_spy_price(base_currency)
+    spy_price = _get_spy_price(base_currency, data_provider=data_provider)
     if spy_price is None or spy_price <= 0:
-        logger.debug(f"calc_beta_weighted_delta: SPY price unavailable")
+        logger.debug("calc_beta_weighted_delta: SPY price unavailable")
         return None
 
     logger.debug(f"calc_beta_weighted_delta: SPY price={spy_price:.2f}")
@@ -218,12 +275,14 @@ def calc_beta_weighted_delta(positions: list[Position]) -> float | None:
             logger.debug(f"  {pos.symbol}: SKIP - delta={pos.delta}, und_price={pos.underlying_price}")
             continue
 
-        # Get beta - use provided value or fetch from Yahoo Finance
+        # Get beta - use provided value or fetch from data source
         beta = pos.beta
         beta_source = "provided"
         if beta is None:
-            beta = _get_stock_beta(pos.symbol)
-            beta_source = "yfinance"
+            # Use underlying symbol for beta lookup (not option symbol)
+            underlying = getattr(pos, "underlying", None) or pos.symbol
+            beta = _get_stock_beta(underlying, data_provider=data_provider, as_of_date=as_of_date)
+            beta_source = "data_provider" if data_provider else "yfinance"
         if beta is None:
             logger.debug(f"  {pos.symbol}: SKIP - no beta available")
             continue
@@ -315,11 +374,17 @@ def calc_gamma_dollars(positions: list[Position]) -> float:
     return total
 
 
-def summarize_portfolio_greeks(positions: list[Position]) -> dict[str, float | None]:
+def summarize_portfolio_greeks(
+    positions: list[Position],
+    data_provider: "DataProvider | None" = None,
+    as_of_date: date | None = None,
+) -> dict[str, float | None]:
     """Get summary of all portfolio Greeks.
 
     Args:
         positions: List of Position objects.
+        data_provider: Optional data provider for backtest mode (reads from DuckDB).
+        as_of_date: Query date for rolling beta lookup (backtest mode).
 
     Returns:
         Dictionary with all aggregated Greek values.
@@ -334,7 +399,9 @@ def summarize_portfolio_greeks(positions: list[Position]) -> dict[str, float | N
         "total_vega": calc_portfolio_vega(positions),
         "delta_dollars": calc_delta_dollars(positions),
         "gamma_dollars": total_gamma,  # Same as total_gamma after currency conversion
-        "beta_weighted_delta": calc_beta_weighted_delta(positions),
+        "beta_weighted_delta": calc_beta_weighted_delta(
+            positions, data_provider=data_provider, as_of_date=as_of_date
+        ),
     }
 
     return summary

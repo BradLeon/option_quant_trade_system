@@ -38,6 +38,21 @@ from src.data.models.option import OptionType
 logger = logging.getLogger(__name__)
 
 
+class CloseReasonType(str, Enum):
+    """结构化平仓原因类型"""
+
+    EXPIRED_WORTHLESS = "expired_worthless"  # OTM到期
+    EXPIRED_ITM = "expired_itm"  # ITM到期/被指派
+    PROFIT_TARGET = "profit_target"  # 止盈
+    STOP_LOSS = "stop_loss"  # 止损（通用）
+    STOP_LOSS_DELTA = "stop_loss_delta"  # Delta止损
+    STOP_LOSS_OTM = "stop_loss_otm"  # OTM止损
+    TIME_EXIT = "time_exit"  # DTE/时间退出
+    ROLL = "roll"  # 展期平仓
+    MANUAL_CLOSE = "manual_close"  # 手动/其他平仓
+    UNKNOWN = "unknown"  # 未知
+
+
 class OrderSide(str, Enum):
     """订单方向"""
 
@@ -76,6 +91,7 @@ class TradeRecord:
     net_amount: float  # 净金额（含费用）
     pnl: float | None = None  # 已实现盈亏（仅平仓/到期时）
     reason: str | None = None
+    close_reason_type: CloseReasonType | None = None  # 结构化平仓原因
     position_id: str | None = None  # 可选，由 Position 层填充
 
 
@@ -492,6 +508,7 @@ class TradeSimulator:
             gross_amount=gross_amount,
             net_amount=net_amount,
             reason=reason,
+            close_reason_type=self._infer_close_reason_type(reason, action),
         )
         self._trade_records.append(trade_record)
 
@@ -654,6 +671,10 @@ class TradeSimulator:
             gross_amount=gross_amount,
             net_amount=net_amount,
             reason=reason,
+            close_reason_type=(
+                CloseReasonType.EXPIRED_ITM if is_itm
+                else CloseReasonType.EXPIRED_WORTHLESS
+            ),
         )
         self._trade_records.append(trade_record)
 
@@ -715,3 +736,41 @@ class TradeSimulator:
         """
         if self._trade_records:
             self._trade_records[-1].pnl = pnl
+
+    @staticmethod
+    def _infer_close_reason_type(reason: str, action: str) -> CloseReasonType | None:
+        """从 reason 字符串推断结构化平仓类型"""
+        if action == "open":
+            return None
+        if action == "expire":
+            if "assigned" in reason:
+                return CloseReasonType.EXPIRED_ITM
+            return CloseReasonType.EXPIRED_WORTHLESS
+        # action == "close"
+        r = reason.lower()
+        if "profit" in r or "止盈" in reason:
+            return CloseReasonType.PROFIT_TARGET
+        if "delta" in r or "DELTA" in reason:
+            return CloseReasonType.STOP_LOSS_DELTA
+        if "otm" in r or "OTM" in reason:
+            return CloseReasonType.STOP_LOSS_OTM
+        if "stop" in r or "loss" in r or "止损" in reason or "触发止损" in reason or "无条件平仓" in reason:
+            return CloseReasonType.STOP_LOSS
+        if "dte" in r or "time" in r:
+            return CloseReasonType.TIME_EXIT
+        if "roll" in r:
+            return CloseReasonType.ROLL
+        if "close" in r or "平仓" in reason:
+            return CloseReasonType.MANUAL_CLOSE
+        return CloseReasonType.UNKNOWN
+
+    def update_last_trade_position_id(self, position_id: str) -> None:
+        """更新最后一条交易记录的 position_id
+
+        用于将 TradeRecord 关联到具体持仓。
+
+        Args:
+            position_id: 持仓 ID
+        """
+        if self._trade_records:
+            self._trade_records[-1].position_id = position_id

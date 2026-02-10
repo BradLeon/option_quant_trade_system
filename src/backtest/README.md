@@ -9,6 +9,8 @@
 - [数据源配置](#数据源配置)
 - [为什么自己计算 IV 和 Greeks](#为什么自己计算-iv-和-greeks)
 - [模块结构](#模块结构)
+- [报告图表说明](#报告图表说明)
+- [归因分析](#归因分析)
 - [API 参考](#api-参考)
 - [故障排查](#故障排查)
 
@@ -469,22 +471,135 @@ option_quant_trade_system/
 │   │   └── schema.py                # 数据 Schema 定义
 │   │
 │   ├── engine/
-│   │   ├── backtest_executor.py     # 回测执行器 (协调三层组件)
+│   │   ├── backtest_executor.py     # 回测执行器 (协调三层组件, 支持 attribution_collector)
 │   │   ├── position_manager.py      # 持仓管理器 (Position 层)
 │   │   ├── account_simulator.py     # 账户模拟器 (Account 层)
 │   │   └── trade_simulator.py       # 交易模拟器 (Trade 层)
 │   │
+│   ├── attribution/                 # Greeks 归因模块
+│   │   ├── models.py                # 数据模型 (Snapshot, Attribution, SliceStats)
+│   │   ├── collector.py             # 采集器 (Observer 模式挂载到 Executor)
+│   │   ├── pnl_attribution.py       # PnL 归因引擎 (Delta/Gamma/Theta/Vega 分解)
+│   │   ├── slice_attribution.py     # 多维切片 (按标的/期权类型/平仓原因/IV 环境)
+│   │   ├── strategy_diagnosis.py    # 策略诊断
+│   │   └── regime_analyzer.py       # 市场环境分析
+│   │
 │   ├── analysis/
 │   │   └── metrics.py               # 绩效指标计算
 │   │
-│   ├── visualization/
-│   │   └── dashboard.py             # 可视化仪表盘
+│   ├── optimization/
+│   │   ├── benchmark.py             # SPY 基准比较
+│   │   └── ...
 │   │
+│   ├── visualization/
+│   │   ├── dashboard.py             # 可视化仪表盘 (含 K 线/VIX/事件日历图表)
+│   │   └── attribution_charts.py    # 归因可视化 (瀑布图、累计面积图、Greeks 子图)
+│   │
+│   ├── pipeline.py                  # Pipeline 协调器 (含 MarketContext 数据管道)
 │   └── README.md                    # 本文档
 │
-└── tests/verification/
-    └── verify_backtest_data.py      # 数据连通性验证
+└── tests/
+    ├── verification/
+    │   └── verify_backtest_data.py  # 数据连通性验证
+    └── backtest/
+        ├── test_attribution.py      # 归因模块端到端验证
+        └── test_analysis_visualization.py  # 可视化测试
 ```
+
+---
+
+## 报告图表说明
+
+Pipeline 运行后生成的 HTML 报告包含以下图表 (按顺序排列):
+
+| # | 图表 | 方法 | 说明 |
+|---|------|------|------|
+| 1 | Equity Curve | `create_equity_curve()` | 权益曲线 + 交易标记 (开仓=绿色三角, 平仓=红色三角) |
+| 2 | Benchmark Comparison | `create_benchmark_comparison()` | 策略 vs SPY 累积收益对比 (需有 benchmark 数据) |
+| 3 | Drawdown | `create_drawdown_chart()` | 回撤区域图，标注最大回撤点 |
+| 4 | Monthly Returns | `create_monthly_returns_heatmap()` | 月度收益热力图 (红=亏损, 绿=盈利) |
+| 5 | Asset Volume | `create_asset_volume()` | Treemap 展示各标的敞口分布和盈亏 |
+| 6 | Position Timeline | `create_trade_timeline()` | Gantt 风格持仓时间线，按 position_id 配对 |
+| 7 | Symbol K-lines | `create_symbol_kline(symbol)` | 每个标的的日 K 线 (OHLC + Volume) + 交易标记叠加 |
+| 8 | SPY K-line | `create_spy_kline()` | SPY 日 K 线 (OHLC + Volume) |
+| 9 | VIX K-line | `create_vix_kline()` | VIX 日 K 线 |
+| 10 | Events Calendar | `create_events_calendar()` | 重大经济事件日历 (FOMC/CPI/NFP/GDP/PPI) |
+| 11 | Attribution Charts | `AttributionCharts` | 累计归因面积图 + 每日柱状图 + Greeks 2×2 子图 + 切片对比 |
+| 12 | Trade Records | `create_trade_records_table()` | 交易记录明细表 |
+
+可通过 `include_charts` 参数选择性生成:
+
+```python
+dashboard.generate_report(
+    "report.html",
+    include_charts=["equity", "drawdown", "symbol_klines", "attribution"],
+)
+```
+
+---
+
+## 归因分析
+
+Pipeline 自动执行 Greeks 归因分析，无需额外配置。
+
+### 工作原理
+
+1. **数据采集**: `AttributionCollector` 以 Observer 模式挂载到 `BacktestExecutor`，在回测期间采集每日持仓和组合快照
+2. **PnL 分解**: 基于 Taylor 展开将 PnL 分解为 `Delta + Gamma + Theta + Vega + Residual`
+3. **切片归因**: 按标的、期权类型、平仓原因、IV 环境等维度聚合分析
+
+### 归因公式
+
+```
+Daily PnL ≈ Delta × ΔS + ½ × Gamma × (ΔS)² + Theta × Δt + Vega × Δσ + Residual
+```
+
+### 切片维度
+
+| 维度 | 方法 | 回答的问题 |
+|------|------|-----------|
+| 按标的 | `by_underlying()` | GOOG 和 SPY 各贡献了多少 PnL？ |
+| 按期权类型 | `by_option_type()` | Short Call vs Short Put 谁更赚钱？ |
+| 按平仓原因 | `by_exit_reason()` | 哪种止损规则效果最好？ |
+| 按 IV 环境 | `by_iv_regime()` | 高 IV 开仓 vs 低 IV 开仓表现差异？ |
+
+### 归因图表
+
+| 图表 | 说明 |
+|------|------|
+| Cumulative Attribution | 面积图，Delta/Gamma/Theta/Vega 累计贡献随时间变化 |
+| Daily Attribution Bar | 堆叠柱状图，每日各因子 PnL 贡献 |
+| Greeks Exposure | 2×2 子图，组合 Delta/Gamma/Theta/Vega 暴露 |
+| Slice Comparison | 分组柱状图，按标的/类型/原因对比各因子贡献 |
+
+### 编程接口
+
+```python
+from src.backtest.attribution.collector import AttributionCollector
+from src.backtest.attribution.pnl_attribution import PnLAttributionEngine
+from src.backtest.attribution.slice_attribution import SliceAttributionEngine
+
+# 带归因的回测
+collector = AttributionCollector()
+executor = BacktestExecutor(config, attribution_collector=collector)
+result = executor.run()
+
+# 计算归因
+engine = PnLAttributionEngine(
+    position_snapshots=collector.position_snapshots,
+    portfolio_snapshots=collector.portfolio_snapshots,
+    trade_records=result.trade_records,
+)
+daily_attrs = engine.compute_all_daily()
+trade_attrs = engine.compute_trade_attributions()
+
+# 切片分析
+slices = SliceAttributionEngine(trade_attrs, collector.position_snapshots)
+by_underlying = slices.by_underlying()    # {"GOOG": SliceStats, "SPY": SliceStats}
+by_exit = slices.by_exit_reason()         # {"PROFIT_TARGET": SliceStats, ...}
+```
+
+> **注**: Pipeline 模式下归因自动集成，无需手动调用以上接口。
 
 ---
 

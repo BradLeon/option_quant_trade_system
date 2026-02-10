@@ -31,36 +31,46 @@ def print_separator(title: str) -> None:
     print("=" * 80 + "\n")
 
 
+@pytest.fixture(scope="module")
+def real_data_dir() -> Path | None:
+    """获取真实数据目录 (module 作用域，只检查一次)"""
+    data_dir = Path("/Volumes/ORICO/option_quant")
+    return data_dir if data_dir.exists() else None
+
+
+@pytest.fixture(scope="module")
+def backtest_result(real_data_dir: Path | None):
+    """运行回测获取结果 (module 作用域，只运行一次)
+
+    所有测试共享同一个回测结果，避免重复运行。
+    """
+    if real_data_dir is None:
+        pytest.skip("Real data directory not available at /Volumes/ORICO/option_quant")
+
+    print("\n🚀 运行回测 (仅执行一次，所有测试共享结果)...")
+
+    config = BacktestConfig(
+        name="ANALYSIS_VIZ_TEST",
+        description="测试分析与可视化模块",
+        start_date=date(2026, 1, 2),
+        end_date=date(2026, 2, 4),
+        symbols=["GOOG", "SPY"],
+        data_dir=str(real_data_dir),
+        initial_capital=1_000_000,
+        max_positions=20,
+        max_margin_utilization=0.70,
+        strategy_types=[StrategyType.SHORT_PUT, StrategyType.COVERED_CALL],
+    )
+
+    executor = BacktestExecutor(config)
+    result = executor.run()
+
+    print(f"✅ 回测完成: {result.trading_days} 交易日, {result.total_trades} 笔交易\n")
+    return result
+
+
 class TestAnalysisVisualization:
     """回测分析与可视化测试"""
-
-    @pytest.fixture
-    def real_data_dir(self) -> Path | None:
-        """获取真实数据目录"""
-        data_dir = Path("/Volumes/ORICO/option_quant")
-        return data_dir if data_dir.exists() else None
-
-    @pytest.fixture
-    def backtest_result(self, real_data_dir: Path | None):
-        """运行回测获取结果"""
-        if real_data_dir is None:
-            pytest.skip("Real data directory not available at /Volumes/ORICO/option_quant")
-
-        config = BacktestConfig(
-            name="ANALYSIS_VIZ_TEST",
-            description="测试分析与可视化模块",
-            start_date=date(2026, 1, 28),
-            end_date=date(2026, 2, 4),
-            symbols=["GOOG", "SPY"],
-            data_dir=str(real_data_dir),
-            initial_capital=1_000_000,
-            max_positions=20,
-            max_margin_utilization=0.70,
-            strategy_types=[StrategyType.SHORT_PUT, StrategyType.COVERED_CALL],
-        )
-
-        executor = BacktestExecutor(config)
-        return executor.run()
 
     def test_backtest_metrics(self, backtest_result) -> None:
         """测试绩效指标计算

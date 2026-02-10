@@ -17,7 +17,7 @@ Usage:
 """
 
 import json
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from src.backtest.analysis.metrics import BacktestMetrics
     from src.backtest.engine.backtest_executor import BacktestResult
     from src.backtest.optimization.benchmark import BenchmarkResult
+    from src.backtest.visualization.attribution_charts import AttributionCharts
 
 
 def _check_plotly():
@@ -70,6 +71,8 @@ class BacktestDashboard:
         result: "BacktestResult",
         metrics: "BacktestMetrics | None" = None,
         benchmark_result: "BenchmarkResult | None" = None,
+        attribution_charts: "AttributionCharts | None" = None,
+        market_context=None,
     ) -> None:
         """初始化仪表盘
 
@@ -77,12 +80,16 @@ class BacktestDashboard:
             result: 回测结果
             metrics: 回测指标 (可选，如果不提供会自动计算)
             benchmark_result: 基准比较结果 (可选)
+            attribution_charts: 归因图表实例 (可选)
+            market_context: 市场上下文数据 (可选，用于 K 线/事件图表)
         """
         _check_plotly()
 
         self._result = result
         self._metrics = metrics
         self._benchmark_result = benchmark_result
+        self._attribution_charts: "AttributionCharts | None" = attribution_charts
+        self._market_context = market_context
 
         # 如果没有提供指标，自动计算
         if self._metrics is None:
@@ -396,12 +403,11 @@ class BacktestDashboard:
 
         from collections import defaultdict
 
-        # 配对开平仓记录
+        # 配对开平仓记录 (使用 position_id 避免同合约多笔交易覆盖)
         positions_dict: dict[str, dict] = defaultdict(dict)
 
         for record in trade_records:
-            # 使用 symbol 作为 key (symbol 包含 underlying/strike/expiry 信息)
-            key = record.symbol
+            key = record.position_id or record.symbol
             if record.action == "open":
                 positions_dict[key]["open"] = record
             elif record.action in ("close", "expire"):
@@ -423,6 +429,9 @@ class BacktestDashboard:
 
             start_date = open_rec.trade_date
             end_date = close_rec.trade_date if close_rec else self._result.end_date
+            # 同日开平仓: 最小 1 天宽度，否则水平条不可见
+            if start_date == end_date:
+                end_date = end_date + timedelta(days=1)
             pnl = close_rec.pnl if close_rec and close_rec.pnl else 0
             is_open = close_rec is None
 
@@ -476,9 +485,9 @@ class BacktestDashboard:
                 color = self.COLORS["negative"]
                 status = f"-${abs(data['pnl']):.2f}"
 
-            # 添加水平条形
+            # 添加水平条形 (使用 ISO 字符串避免 Plotly 显示时间戳)
             fig.add_trace(go.Scatter(
-                x=[data["start"], data["end"]],
+                x=[data["start"].isoformat(), data["end"].isoformat()],
                 y=[i, i],
                 mode="lines+markers",
                 line=dict(color=color, width=15),
@@ -693,6 +702,333 @@ class BacktestDashboard:
     def create_asset_breakdown(self) -> go.Figure:
         """别名，调用 create_asset_volume()"""
         return self.create_asset_volume()
+
+    def create_symbol_kline(self, symbol: str) -> go.Figure:
+        """创建标的日 K 线图 (Candlestick + Volume + 交易标记)
+
+        Args:
+            symbol: 标的代码
+
+        Returns:
+            Plotly Figure
+        """
+        if not self._market_context or symbol not in self._market_context.symbol_klines:
+            fig = go.Figure()
+            fig.add_annotation(
+                text=f"No kline data for {symbol}",
+                xref="paper", yref="paper", x=0.5, y=0.5,
+                showarrow=False, font=dict(size=14, color="gray"),
+            )
+            fig.update_layout(
+                title=dict(text=f"{symbol} Daily K-Line", x=0.5, xanchor="center"),
+                template="plotly_white",
+            )
+            return fig
+
+        klines = self._market_context.symbol_klines[symbol]
+        dates = [k.timestamp.date().isoformat() for k in klines]
+        opens = [k.open for k in klines]
+        highs = [k.high for k in klines]
+        lows = [k.low for k in klines]
+        closes = [k.close for k in klines]
+        volumes = [k.volume for k in klines]
+
+        fig = make_subplots(
+            rows=2, cols=1, shared_xaxes=True,
+            row_heights=[0.7, 0.3], vertical_spacing=0.03,
+        )
+
+        # Candlestick
+        fig.add_trace(go.Candlestick(
+            x=dates, open=opens, high=highs, low=lows, close=closes,
+            name=symbol,
+            increasing_line_color=self.COLORS["positive"],
+            decreasing_line_color=self.COLORS["negative"],
+        ), row=1, col=1)
+
+        # Volume bars
+        vol_colors = [
+            self.COLORS["positive"] if c >= o else self.COLORS["negative"]
+            for o, c in zip(opens, closes)
+        ]
+        fig.add_trace(go.Bar(
+            x=dates, y=volumes, name="Volume",
+            marker_color=vol_colors, opacity=0.5, showlegend=False,
+        ), row=2, col=1)
+
+        # 叠加交易标记
+        if self._market_context.trade_records:
+            close_by_date = {k.timestamp.date(): k.close for k in klines}
+            open_marks = []
+            close_marks = []
+
+            for rec in self._market_context.trade_records:
+                if getattr(rec, "underlying", None) != symbol:
+                    continue
+                if rec.trade_date not in close_by_date:
+                    continue
+                price = close_by_date[rec.trade_date]
+                dt_str = rec.trade_date.isoformat()
+                if rec.action == "open":
+                    open_marks.append((dt_str, price))
+                elif rec.action in ("close", "expire"):
+                    close_marks.append((dt_str, price))
+
+            if open_marks:
+                fig.add_trace(go.Scatter(
+                    x=[m[0] for m in open_marks],
+                    y=[m[1] for m in open_marks],
+                    mode="markers", name="Open Trade",
+                    marker=dict(symbol="triangle-up", size=12,
+                                color=self.COLORS["positive"],
+                                line=dict(width=1, color="white")),
+                ), row=1, col=1)
+
+            if close_marks:
+                fig.add_trace(go.Scatter(
+                    x=[m[0] for m in close_marks],
+                    y=[m[1] for m in close_marks],
+                    mode="markers", name="Close Trade",
+                    marker=dict(symbol="triangle-down", size=12,
+                                color=self.COLORS["negative"],
+                                line=dict(width=1, color="white")),
+                ), row=1, col=1)
+
+        fig.update_layout(
+            title=dict(text=f"{symbol} Daily K-Line", x=0.5, xanchor="center"),
+            xaxis2_title="Date",
+            yaxis_title="Price ($)",
+            yaxis2_title="Volume",
+            xaxis_rangeslider_visible=False,
+            hovermode="x unified",
+            template="plotly_white",
+            height=500,
+        )
+
+        return fig
+
+    def create_spy_kline(self) -> go.Figure:
+        """创建 SPY 日 K 线图 (Candlestick + Volume)
+
+        Returns:
+            Plotly Figure
+        """
+        if not self._market_context or not self._market_context.spy_klines:
+            fig = go.Figure()
+            fig.add_annotation(
+                text="No SPY kline data available",
+                xref="paper", yref="paper", x=0.5, y=0.5,
+                showarrow=False, font=dict(size=14, color="gray"),
+            )
+            fig.update_layout(
+                title=dict(text="SPY Daily K-Line", x=0.5, xanchor="center"),
+                template="plotly_white",
+            )
+            return fig
+
+        klines = self._market_context.spy_klines
+        dates = [k.timestamp.date().isoformat() for k in klines]
+        opens = [k.open for k in klines]
+        highs = [k.high for k in klines]
+        lows = [k.low for k in klines]
+        closes = [k.close for k in klines]
+        volumes = [k.volume for k in klines]
+
+        fig = make_subplots(
+            rows=2, cols=1, shared_xaxes=True,
+            row_heights=[0.7, 0.3], vertical_spacing=0.03,
+        )
+
+        fig.add_trace(go.Candlestick(
+            x=dates, open=opens, high=highs, low=lows, close=closes,
+            name="SPY",
+            increasing_line_color=self.COLORS["positive"],
+            decreasing_line_color=self.COLORS["negative"],
+        ), row=1, col=1)
+
+        vol_colors = [
+            self.COLORS["positive"] if c >= o else self.COLORS["negative"]
+            for o, c in zip(opens, closes)
+        ]
+        fig.add_trace(go.Bar(
+            x=dates, y=volumes, name="Volume",
+            marker_color=vol_colors, opacity=0.5, showlegend=False,
+        ), row=2, col=1)
+
+        fig.update_layout(
+            title=dict(text="SPY Daily K-Line", x=0.5, xanchor="center"),
+            xaxis2_title="Date",
+            yaxis_title="Price ($)",
+            yaxis2_title="Volume",
+            xaxis_rangeslider_visible=False,
+            hovermode="x unified",
+            template="plotly_white",
+            height=500,
+        )
+
+        return fig
+
+    def create_vix_kline(self) -> go.Figure:
+        """创建 VIX 日 K 线图 (反色: 上涨=红, 下跌=绿)
+
+        Returns:
+            Plotly Figure
+        """
+        if not self._market_context or not self._market_context.vix_data:
+            fig = go.Figure()
+            fig.add_annotation(
+                text="No VIX data available",
+                xref="paper", yref="paper", x=0.5, y=0.5,
+                showarrow=False, font=dict(size=14, color="gray"),
+            )
+            fig.update_layout(
+                title=dict(text="VIX Daily K-Line", x=0.5, xanchor="center"),
+                template="plotly_white",
+            )
+            return fig
+
+        vix = self._market_context.vix_data
+        dates = [d.date.isoformat() for d in vix]
+        # MacroData OHLC 可能为 None，fallback 到 value
+        opens = [d.open if d.open is not None else d.value for d in vix]
+        highs = [d.high if d.high is not None else d.value for d in vix]
+        lows = [d.low if d.low is not None else d.value for d in vix]
+        closes = [d.close if d.close is not None else d.value for d in vix]
+
+        fig = go.Figure()
+
+        fig.add_trace(go.Candlestick(
+            x=dates, open=opens, high=highs, low=lows, close=closes,
+            name="VIX",
+            increasing_line_color=self.COLORS["positive"],
+            decreasing_line_color=self.COLORS["negative"],
+        ))
+
+        fig.update_layout(
+            title=dict(text="VIX Daily K-Line", x=0.5, xanchor="center"),
+            xaxis_title="Date",
+            yaxis_title="VIX",
+            xaxis_rangeslider_visible=False,
+            hovermode="x unified",
+            template="plotly_white",
+            height=400,
+        )
+
+        return fig
+
+    def create_events_calendar(self) -> go.Figure:
+        """创建重大事件日历
+
+        y 轴: FOMC / CPI / NFP / GDP / PPI
+        x 轴: 日期时间线
+        每个事件 = 菱形标记，颜色按 impact
+
+        Returns:
+            Plotly Figure
+        """
+        # 收集事件 (优先使用 market_context，补充 FOMC 静态数据)
+        events = []
+        if self._market_context and self._market_context.economic_events:
+            events = list(self._market_context.economic_events)
+
+        # 始终尝试补充 FOMC 静态日历
+        try:
+            import yaml
+
+            fomc_path = Path(__file__).parent.parent.parent.parent / "config" / "screening" / "fomc_calendar.yaml"
+            if fomc_path.exists():
+                with open(fomc_path) as f:
+                    fomc_data = yaml.safe_load(f)
+
+                existing_fomc_dates = set()
+                for ev in events:
+                    if getattr(ev, "event_type", None) and ev.event_type.name == "FOMC":
+                        existing_fomc_dates.add(ev.event_date)
+
+                start = self._result.start_date
+                end = self._result.end_date
+
+                for _year, dates_list in fomc_data.get("fomc_meetings", {}).items():
+                    for date_str in dates_list:
+                        fomc_date = date.fromisoformat(date_str)
+                        if start <= fomc_date <= end and fomc_date not in existing_fomc_dates:
+                            # 创建简单的事件 dict (非 EconomicEvent dataclass)
+                            events.append(_FOMCEvent(fomc_date))
+        except Exception:
+            pass
+
+        if not events:
+            fig = go.Figure()
+            fig.add_annotation(
+                text="No economic events available",
+                xref="paper", yref="paper", x=0.5, y=0.5,
+                showarrow=False, font=dict(size=14, color="gray"),
+            )
+            fig.update_layout(
+                title=dict(text="Economic Events Calendar", x=0.5, xanchor="center"),
+                template="plotly_white",
+            )
+            return fig
+
+        # 事件分类映射
+        event_rows = {"FOMC": 0, "CPI": 1, "NFP": 2, "GDP": 3, "PPI": 4}
+        row_labels = list(event_rows.keys())
+
+        # Impact 颜色映射
+        impact_colors = {"HIGH": "#e74c3c", "MEDIUM": "#ff7f0e", "LOW": "#95a5a6"}
+
+        fig = go.Figure()
+
+        # 按类型分组绘制
+        for event in events:
+            event_type_name = _get_event_type_name(event)
+            if event_type_name not in event_rows:
+                continue
+
+            y_val = event_rows[event_type_name]
+            event_date = _get_event_date(event)
+            impact_name = _get_event_impact(event)
+            color = impact_colors.get(impact_name, "#95a5a6")
+            name = _get_event_name(event)
+
+            fig.add_trace(go.Scatter(
+                x=[event_date.isoformat()],
+                y=[y_val],
+                mode="markers",
+                marker=dict(symbol="diamond", size=14, color=color,
+                            line=dict(width=1, color="white")),
+                name=event_type_name,
+                showlegend=False,
+                hovertemplate=(
+                    f"<b>{name}</b><br>"
+                    f"Date: {event_date}<br>"
+                    f"Impact: {impact_name}<extra></extra>"
+                ),
+            ))
+
+        # 图例: impact 级别
+        for impact_label, color in impact_colors.items():
+            fig.add_trace(go.Scatter(
+                x=[None], y=[None], mode="markers",
+                marker=dict(symbol="diamond", size=12, color=color),
+                name=f"{impact_label} Impact",
+            ))
+
+        fig.update_layout(
+            title=dict(text="Economic Events Calendar", x=0.5, xanchor="center"),
+            xaxis_title="Date",
+            xaxis=dict(type="date"),
+            yaxis=dict(
+                tickmode="array",
+                tickvals=list(range(len(row_labels))),
+                ticktext=row_labels,
+            ),
+            hovermode="closest",
+            template="plotly_white",
+            height=350,
+        )
+
+        return fig
 
     def create_benchmark_comparison(self) -> go.Figure:
         """创建基准比较图
@@ -1066,13 +1402,16 @@ class BacktestDashboard:
         self,
         output_path: str | Path,
         include_charts: list[str] | None = None,
+        slice_engine=None,
     ) -> Path:
         """生成独立 HTML 报告
 
         Args:
             output_path: 输出文件路径
             include_charts: 要包含的图表 (默认全部)
-                可选: ["equity", "drawdown", "monthly", "asset", "timeline", "benchmark"]
+                可选: ["equity", "benchmark", "drawdown", "monthly", "asset", "timeline",
+                       "symbol_klines", "spy_kline", "vix_kline", "events_calendar", "attribution"]
+            slice_engine: SliceAttributionEngine 实例 (可选，用于切片归因图表)
 
         Returns:
             输出文件路径
@@ -1082,7 +1421,11 @@ class BacktestDashboard:
 
         # 默认包含所有图表
         if include_charts is None:
-            include_charts = ["equity", "benchmark", "drawdown", "monthly", "asset", "timeline"]
+            include_charts = [
+                "equity", "benchmark", "drawdown", "monthly", "asset", "timeline",
+                "symbol_klines", "spy_kline", "vix_kline", "events_calendar",
+                "attribution",
+            ]
 
         # 生成图表 HTML
         chart_html_list = []
@@ -1111,6 +1454,74 @@ class BacktestDashboard:
         if "timeline" in include_charts:
             fig = self.create_trade_timeline()
             chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
+
+        # Symbol K-lines (每个标的一张)
+        if "symbol_klines" in include_charts and self._market_context:
+            for symbol in self._market_context.symbol_klines:
+                try:
+                    fig = self.create_symbol_kline(symbol)
+                    chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
+                except Exception:
+                    pass
+
+        # SPY K-line
+        if "spy_kline" in include_charts:
+            try:
+                fig = self.create_spy_kline()
+                chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
+            except Exception:
+                pass
+
+        # VIX K-line
+        if "vix_kline" in include_charts:
+            try:
+                fig = self.create_vix_kline()
+                chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
+            except Exception:
+                pass
+
+        # Events Calendar
+        if "events_calendar" in include_charts:
+            try:
+                fig = self.create_events_calendar()
+                chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
+            except Exception:
+                pass
+
+        # 归因图表 (如果有归因数据)
+        if "attribution" in include_charts and self._attribution_charts is not None:
+            try:
+                fig = self._attribution_charts.create_cumulative_attribution()
+                chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
+                fig = self._attribution_charts.create_daily_attribution_bar()
+                chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
+                fig = self._attribution_charts.create_greeks_exposure_timeline()
+                chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
+
+                # 切片归因图表
+                if slice_engine is not None:
+                    by_underlying = slice_engine.by_underlying()
+                    if by_underlying:
+                        fig = self._attribution_charts.create_slice_comparison(
+                            by_underlying, title="Attribution by Underlying"
+                        )
+                        chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
+
+                    by_exit = slice_engine.by_exit_reason()
+                    if by_exit:
+                        fig = self._attribution_charts.create_slice_comparison(
+                            by_exit, title="Attribution by Exit Reason"
+                        )
+                        chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
+
+                    by_type = slice_engine.by_option_type()
+                    if by_type:
+                        fig = self._attribution_charts.create_slice_comparison(
+                            by_type, title="Attribution by Option Type"
+                        )
+                        chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
+            except Exception:
+                pass
 
         # 生成指标面板
         metrics_html = self.create_metrics_panel()
@@ -1198,3 +1609,39 @@ class BacktestDashboard:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False) as f:
             report_path = self.generate_report(f.name)
             webbrowser.open(f"file://{report_path}")
+
+
+class _FOMCEvent:
+    """轻量 FOMC 事件 (从静态 YAML 加载，无需完整 EconomicEvent)"""
+
+    def __init__(self, event_date: date) -> None:
+        self.event_date = event_date
+        self.event_type = type("_ET", (), {"name": "FOMC"})()
+        self.impact = type("_EI", (), {"name": "HIGH"})()
+        self.name = "FOMC Meeting"
+
+
+def _get_event_type_name(event) -> str:
+    """获取事件类型名称 (兼容 EconomicEvent 和 _FOMCEvent)"""
+    et = getattr(event, "event_type", None)
+    if et is None:
+        return "OTHER"
+    return et.name if hasattr(et, "name") else str(et)
+
+
+def _get_event_date(event) -> date:
+    """获取事件日期"""
+    return getattr(event, "event_date", date.today())
+
+
+def _get_event_impact(event) -> str:
+    """获取事件影响级别"""
+    impact = getattr(event, "impact", None)
+    if impact is None:
+        return "LOW"
+    return impact.name if hasattr(impact, "name") else str(impact)
+
+
+def _get_event_name(event) -> str:
+    """获取事件名称"""
+    return getattr(event, "name", "Unknown Event")

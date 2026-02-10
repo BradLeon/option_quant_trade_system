@@ -1988,21 +1988,20 @@ HTTPS_PROXY=http://127.0.0.1:33210
 30 0,1,2,3,4,5,6 * * 2-6 cd $PROJECT_DIR && uv run optrade screen -m us --push >> logs/screen_us_$(date +\%Y\%m\%d).log 2>&1
 
 # ------------------------------------------------------------
-# 持仓监控: 每小时执行，推送风险预警
-# US 交易时段: 北京时间 21:30-06:00
-# HK 交易时段: 北京时间 09:30-16:00
+# 持仓监控: 收盘前1小时执行，推送风险预警，周一到周五
+# HK 收盘: 16:00 北京时间 → 监控 15:00
+# US 收盘: 16:00 ET → 监控 3:00/4:00 AM 北京时间 (EDT/EST)
 # ------------------------------------------------------------
-# US 市场监控（每小时整点）
-0 22,23 * * 1-5 cd $PROJECT_DIR && uv run optrade monitor -a live --push >> logs/monitor_$(date +\%Y\%m\%d).log 2>&1
-0 0,1,2,3,4,5,6 * * 2-6 cd $PROJECT_DIR && uv run optrade monitor -a live --push >> logs/monitor_$(date +\%Y\%m\%d).log 2>&1
+# HK 收盘前1小时: 15:00 北京时间，周一到周五
+0 15 * * 1-5 cd $PROJECT_DIR && uv run optrade monitor -a live --push >> logs/monitor_$(date +\%Y\%m\%d).log 2>&1
 
-# HK 市场监控（每小时整点）
-0 10,11,12,13,14,15,16 * * 1-5 cd $PROJECT_DIR && uv run optrade monitor -a live --push >> logs/monitor_$(date +\%Y\%m\%d).log 2>&1
+# US 收盘前1小时: 3:00 (夏令时) / 4:00 (冬令时) 北京时间，周二到周六
+0 3,4 * * 2-6 cd $PROJECT_DIR && uv run optrade monitor -a live --push >> logs/monitor_$(date +\%Y\%m\%d).log 2>&1
 
 # ------------------------------------------------------------
-# Dashboard 仪表盘: 每天 9:30, 16:30, 22:30 (轻量级展示)
+# Dashboard 仪表盘: 每天 9:30, 16:30, 22:30，周一到周五
 # ------------------------------------------------------------
-30 9,16,22 * * * cd $PROJECT_DIR && uv run optrade dashboard -a live --push >> logs/dashboard_$(date +\%Y\%m\%d).log 2>&1
+30 9,16,22 * * 1-5 cd $PROJECT_DIR && uv run optrade dashboard -a live --push >> logs/dashboard_$(date +\%Y\%m\%d).log 2>&1
 ```
 
 **常见问题排查**：

@@ -99,7 +99,7 @@ ignore = ["D100", "D104", "D107"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
-addopts = "-v --cov=src --cov-report=term-missing"
+addopts = "-v --cov=src --cov-report=term-missing -W ignore::DeprecationWarning"
 
 [dependency-groups]
 dev = [

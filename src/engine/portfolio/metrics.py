@@ -12,7 +12,8 @@ Example:
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
+from typing import TYPE_CHECKING
 
 from src.engine.models.position import Position
 from src.engine.portfolio.greeks_agg import (
@@ -30,11 +31,16 @@ from src.engine.portfolio.risk_metrics import (
     calc_vega_weighted_iv_hv,
 )
 
+if TYPE_CHECKING:
+    from src.data.providers.base import DataProvider
+
 
 def calc_portfolio_metrics(
     positions: list[Position],
     nlv: float | None = None,
     position_iv_hv_ratios: dict[str, float] | None = None,
+    data_provider: "DataProvider | None" = None,
+    as_of_date: date | None = None,
 ) -> PortfolioMetrics:
     """Calculate all portfolio-level metrics.
 
@@ -49,6 +55,8 @@ def calc_portfolio_metrics(
             calculated. If None, these fields remain None for backward compatibility.
         position_iv_hv_ratios: Dict mapping symbol to its IV/HV ratio.
             Used to calculate vega_weighted_iv_hv quality metric.
+        data_provider: Optional data provider for backtest mode (reads from DuckDB).
+        as_of_date: Query date for rolling beta lookup (backtest mode).
 
     Returns:
         PortfolioMetrics with all calculated values.
@@ -66,7 +74,9 @@ def calc_portfolio_metrics(
     total_gamma = calc_portfolio_gamma(positions)
     total_theta = calc_portfolio_theta(positions)
     total_vega = calc_portfolio_vega(positions)
-    beta_weighted_delta = calc_beta_weighted_delta(positions)
+    beta_weighted_delta = calc_beta_weighted_delta(
+        positions, data_provider=data_provider, as_of_date=as_of_date
+    )
 
     # Calculate NLV-normalized percentages (only if NLV provided and positive)
     beta_weighted_delta_pct = None
@@ -79,7 +89,7 @@ def calc_portfolio_metrics(
         # BWD% = (BWD_shares * SPY_price) / NLV
         # This converts SPY-equivalent shares to dollar exposure, then normalizes
         if beta_weighted_delta is not None:
-            spy_price = _get_spy_price()
+            spy_price = _get_spy_price(data_provider=data_provider)
             if spy_price and spy_price > 0:
                 beta_weighted_delta_pct = (beta_weighted_delta * spy_price) / nlv
         # delta_pct is less meaningful (raw shares / NLV), keep for reference
