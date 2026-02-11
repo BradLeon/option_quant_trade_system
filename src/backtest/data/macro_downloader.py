@@ -218,10 +218,12 @@ class MacroDownloader:
         """保存宏观数据为 Parquet
 
         追加模式：如果文件存在，读取现有数据并合并去重。
+        注意: 不保存 volume/adj_close — 宏观指标 (VIX/TNX 等) 的 volume 无意义,
+        且不同指标的 volume 类型不一致 (int64 vs null) 会导致 concat schema 冲突。
         """
         parquet_path = self._get_parquet_path()
 
-        # 转换为 PyArrow Table
+        # 转换为 PyArrow Table (不含 volume/adj_close)
         data = {
             "indicator": [r.indicator for r in records],
             "date": [r.date for r in records],
@@ -229,8 +231,6 @@ class MacroDownloader:
             "high": [r.high for r in records],
             "low": [r.low for r in records],
             "close": [r.close for r in records],
-            "volume": [r.volume for r in records],
-            "adj_close": [r.adj_close for r in records],
         }
 
         new_table = pa.Table.from_pydict(data)
@@ -238,6 +238,10 @@ class MacroDownloader:
         # 如果文件存在，合并数据
         if parquet_path.exists():
             existing_table = pq.read_table(parquet_path)
+            # 旧文件可能含 volume/adj_close 列，需对齐到新 schema
+            keep_cols = [c for c in existing_table.column_names
+                         if c in new_table.column_names]
+            existing_table = existing_table.select(keep_cols)
             combined = pa.concat_tables([existing_table, new_table])
 
             # 去重 (按 indicator, date)

@@ -921,7 +921,7 @@ class DuckDBProvider(DataProvider):
             conn = self._get_conn()
             rows = conn.execute(
                 f"""
-                SELECT indicator, date, open, high, low, close, volume
+                SELECT indicator, date, open, high, low, close
                 FROM read_parquet('{parquet_path}')
                 WHERE indicator = ?
                   AND date >= ?
@@ -933,7 +933,7 @@ class DuckDBProvider(DataProvider):
 
             results = []
             for row in rows:
-                # row: (indicator, date, open, high, low, close, volume)
+                # row: (indicator, date, open, high, low, close)
                 data_date = row[1]
                 if isinstance(data_date, str):
                     data_date = date.fromisoformat(data_date)
@@ -948,7 +948,7 @@ class DuckDBProvider(DataProvider):
                     high=row[3],
                     low=row[4],
                     close=row[5],
-                    volume=row[6],
+                    volume=None,
                     source="duckdb",
                 )
                 results.append(macro)

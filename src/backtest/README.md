@@ -18,25 +18,97 @@
 
 ## 快速开始
 
-### 1. 启动前置依赖
+回测分为两步：**下载历史数据** → **运行策略回测**。
 
-回测和交易需要以下外部服务：
+### Step 0: 启动前置依赖
 
 ```bash
 # 启动 ThetaData Terminal (期权/股票历史数据)
 ./scripts/ensure_thetadata.sh
 
-# 启动 IBKR TWS (交易 + 基本面数据)
-./scripts/ensure_tws.sh paper   # Paper 账户
-./scripts/ensure_tws.sh live    # Live 账户
+# 启动 IBKR TWS (基本面数据, 可选)
+./scripts/ensure_tws.sh paper
 ```
 
-| 服务 | 用途 | 启动脚本 |
-|------|------|---------|
-| ThetaData Terminal | 期权/股票历史 EOD 数据 | `./scripts/ensure_thetadata.sh` |
-| IBKR TWS (IBC) | 交易执行 + 基本面数据 | `./scripts/ensure_tws.sh paper` |
+| 服务 | 用途 | 必需 |
+|------|------|------|
+| ThetaData Terminal | 期权/股票历史 EOD 数据 | ✅ |
+| IBKR TWS (IBC) | 基本面数据 (EPS/Revenue) | 可选 |
 
-### 2. 验证数据连通性
+### Step 1: 历史数据下载
+
+使用 `scripts/download_backtest_data.py` 批量下载回测所需的全部历史数据：
+
+```bash
+# 完整下载 (默认 GOOG, SPY, QQQ, 2023-06-01 ~ 2026-02-01)
+uv run python scripts/download_backtest_data.py
+
+# 自定义标的和日期范围
+uv run python scripts/download_backtest_data.py \
+  --symbols GOOG SPY QQQ \
+  --start 2023-06-01 --end 2026-02-01
+
+# 指定数据目录
+uv run python scripts/download_backtest_data.py -d /Volumes/ORICO/option_quant
+
+# 只下载某个阶段
+uv run python scripts/download_backtest_data.py --phase stock
+uv run python scripts/download_backtest_data.py --phase option
+uv run python scripts/download_backtest_data.py --phase macro
+
+# 查看下载进度
+uv run python scripts/download_backtest_data.py --status
+
+# 重置某阶段进度 (强制重新下载)
+uv run python scripts/download_backtest_data.py --reset stock beta
+```
+
+下载包含 6 个阶段，按依赖顺序自动执行：
+
+```
+1. Stock EOD (ThetaData, 按半年分块)
+   ↓
+2. Option EOD + Greeks (ThetaData, 按年→7天分块)
+   ↓
+3. Macro (yfinance: VIX, TNX, 逐指标下载)
+   ↓
+4. Economic Calendar (FRED + FOMC 静态日历)
+   ↓
+5. Fundamental (IBKR: EPS, Revenue, 可选)
+   ↓
+6. Rolling Beta (本地计算, 依赖 stock_daily)
+```
+
+**特性**：
+- **断点续传**: 每个阶段/标的/年份独立记录进度，中断后重新运行自动跳过已完成部分
+- **自适应限速**: 检测 429/超时后自动扩大请求间隔，连续成功后缓慢恢复
+- **数据验证**: 检查 parquet 中实际数据和时间窗口，缺失则自动重新下载
+- **FREE 账户兼容**: 自动限制请求日期不早于 2023-06-01
+
+### Step 2: 策略回测与分析
+
+数据就绪后，使用 Pipeline CLI 运行回测并生成可视化报告：
+
+```bash
+# 运行完整回测 (跳过下载, 使用已有数据)
+uv run backtest run \
+  --name "SHORT_PUT_TEST" \
+  --start 2025-12-01 \
+  --end 2026-02-01 \
+  --symbols GOOG --symbols SPY \
+  --capital 1000000 \
+  --skip-download
+
+# 查看帮助
+uv run backtest run --help
+
+# 打开生成的 HTML 报告
+open reports/short_put_test_*.html
+```
+
+报告包含权益曲线、回撤分析、月度收益热力图、K 线图、VIX/事件日历、Greeks 归因等 12 类图表 (详见 [报告图表说明](#报告图表说明))。
+
+### 补充: 验证数据连通性
 
 ```bash
 # 运行完整验证测试
@@ -46,10 +118,9 @@ uv run python tests/verification/verify_backtest_data.py
 uv run python tests/verification/verify_backtest_data.py --source thetadata
 uv run python tests/verification/verify_backtest_data.py --source yfinance
 uv run python tests/verification/verify_backtest_data.py --source ibkr
-uv run python tests/verification/verify_backtest_data.py --source greeks
 ```
 
-### 3. 基本使用
+### 补充: Python API 方式
 
 ```python
 from datetime import date
@@ -455,6 +526,7 @@ for opt in enriched:
 ```
 option_quant_trade_system/
 ├── scripts/
+│   ├── download_backtest_data.py # 回测历史数据批量下载 (Step 1)
 │   ├── ensure_thetadata.sh      # ThetaData Terminal 自动启动
 │   ├── ensure_tws.sh            # IBKR TWS 自动启动 (账户切换)
 │   ├── start_tws.sh             # TWS 启动脚本 (IBC)
