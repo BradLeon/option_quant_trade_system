@@ -281,31 +281,7 @@ def trade_screen(
 
         click.echo(f"  ✅ 连接成功")
 
-        # 2. 获取真实账户状态
-        from src.business.trading.account_bridge import portfolio_to_account_state
-
-        aggregator = conn.get_aggregator()
-        portfolio = aggregator.get_consolidated_portfolio(account_type=AccType.PAPER)
-        account_state = portfolio_to_account_state(portfolio, broker="ibkr")
-
-        click.echo(f"\n💰 账户状态:")
-        click.echo(f"   NLV: ${account_state.total_equity:,.2f}")
-        click.echo(f"   Cash: ${account_state.cash_balance:,.2f}")
-        click.echo(f"   Available Margin: ${account_state.available_margin:,.2f}")
-        click.echo(f"   Used Margin: ${account_state.used_margin:,.2f}")
-        click.echo(f"   Margin Utilization: {account_state.margin_utilization:.1%}")
-        click.echo(f"   Cash Ratio: {account_state.cash_ratio:.1%}")
-        click.echo(f"   Positions: {account_state.total_position_count}")
-
-        # Debug: Show raw broker summary data
-        if verbose and "ibkr" in portfolio.by_broker:
-            summary = portfolio.by_broker["ibkr"]
-            click.echo(f"\n   [DEBUG] Raw IBKR Summary:")
-            click.echo(f"     margin_available: {summary.margin_available}")
-            click.echo(f"     buying_power: {summary.buying_power}")
-            click.echo(f"     margin_used: {summary.margin_used}")
-
-        # 3. 运行三层筛选
+        # 2. 运行三层筛选 (先筛选，再获取账户状态，避免无机会时浪费时间获取持仓)
         from src.business.config.screening_config import ScreeningConfig
         from src.business.screening.models import MarketType
         from src.business.screening.pipeline import ScreeningPipeline
@@ -326,7 +302,7 @@ def trade_screen(
                 # 确定标的列表
                 if symbol:
                     # 用户指定了标的，按市场过滤
-                    symbol_list = [s for s in symbol if _is_market_symbol(s, mkt)]
+                    symbol_list = [s.upper() for s in symbol if _is_market_symbol(s, mkt)]
                     if not symbol_list:
                         continue
                     pool_name = f"自定义 ({len(symbol_list)} 只)"
@@ -365,13 +341,39 @@ def trade_screen(
                     else:
                         click.echo(f"      ❌ 无符合条件的合约")
 
-        # 检查是否有任何机会
+        # 检查是否有任何机会 (无机会则直接退出，无需获取持仓)
         if not all_confirmed:
             click.echo("\n📋 无符合条件的开仓机会")
             _cleanup_connection(conn)
             return
 
         click.echo(f"\n📊 共发现 {len(all_confirmed)} 个开仓机会")
+
+        # 3. 获取账户状态 (跳过 Greeks 计算，仅需 NLV/cash/margin 等汇总指标)
+        from src.business.trading.account_bridge import portfolio_to_account_state
+
+        aggregator = conn.get_aggregator()
+        portfolio = aggregator.get_consolidated_portfolio(
+            account_type=AccType.PAPER, fetch_greeks=False
+        )
+        account_state = portfolio_to_account_state(portfolio, broker="ibkr")
+
+        click.echo(f"\n💰 账户状态:")
+        click.echo(f"   NLV: ${account_state.total_equity:,.2f}")
+        click.echo(f"   Cash: ${account_state.cash_balance:,.2f}")
+        click.echo(f"   Available Margin: ${account_state.available_margin:,.2f}")
+        click.echo(f"   Used Margin: ${account_state.used_margin:,.2f}")
+        click.echo(f"   Margin Utilization: {account_state.margin_utilization:.1%}")
+        click.echo(f"   Cash Ratio: {account_state.cash_ratio:.1%}")
+        click.echo(f"   Positions: {account_state.total_position_count}")
+
+        # Debug: Show raw broker summary data
+        if verbose and "ibkr" in portfolio.by_broker:
+            summary = portfolio.by_broker["ibkr"]
+            click.echo(f"\n   [DEBUG] Raw IBKR Summary:")
+            click.echo(f"     margin_available: {summary.margin_available}")
+            click.echo(f"     buying_power: {summary.buying_power}")
+            click.echo(f"     margin_used: {summary.margin_used}")
 
         # 显示筛选结果详情
         _print_screen_summary(all_confirmed)
@@ -486,10 +488,11 @@ def _cleanup_connection(conn) -> None:
 
 def _is_market_symbol(symbol: str, market: str) -> bool:
     """判断标的是否属于指定市场"""
+    s = symbol.upper()
     if market == "hk":
-        return symbol.endswith(".HK")
+        return s.endswith(".HK")
     else:  # us
-        return not symbol.endswith(".HK")
+        return not s.endswith(".HK")
 
 
 def _push_trade_decisions(
@@ -647,9 +650,9 @@ def _print_opportunity_card(opp, index: int) -> None:
 @click.option(
     "--account-type",
     "-a",
-    type=click.Choice(["paper", "real"]),
+    type=click.Choice(["paper", "live"]),
     default="paper",
-    help="账户类型：paper（模拟）或 real（真实）",
+    help="账户类型：paper（模拟）或 live（真实）",
 )
 @click.option(
     "--urgency",
@@ -722,8 +725,8 @@ def trade_monitor(
 
     # 转换 account_type 字符串为枚举
     from src.data.models.account import AccountType as AccType
-    acc_type_enum = AccType.PAPER if account_type == "paper" else AccType.REAL
-    acc_type_label = "Paper" if account_type == "paper" else "Real"
+    acc_type_enum = AccType.PAPER if account_type == "paper" else AccType.LIVE
+    acc_type_label = "Paper" if account_type == "paper" else "Live"
 
     click.echo("\n" + "=" * 60)
     click.echo("📊 Trade Monitor (Monitor → Trade 全流程)")
@@ -1168,3 +1171,401 @@ def cancel(order_id: str, confirm: bool) -> None:
         logger.exception("Failed to cancel order")
         click.echo(f"Error: {e}", err=True)
         raise SystemExit(1)
+
+
+# ============================================================================
+# Backtest Commands
+# ============================================================================
+
+
+@trade.group()
+def backtest() -> None:
+    """策略回测
+
+    \b
+    回测命令:
+      run      运行回测
+      report   生成报告
+    """
+    pass
+
+
+@backtest.command("run")
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(exists=True),
+    required=True,
+    help="回测配置文件路径 (YAML)",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default="reports/backtest",
+    help="输出目录 (默认: reports/backtest)",
+)
+@click.option(
+    "--report/--no-report",
+    default=True,
+    help="是否生成 HTML 报告",
+)
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    help="显示详细日志",
+)
+def backtest_run(
+    config: str,
+    output: str,
+    report: bool,
+    verbose: bool,
+) -> None:
+    """运行策略回测
+
+    从 YAML 配置文件运行回测，生成 HTML 报告。
+
+    \b
+    配置文件示例 (config/backtest/short_put.yaml):
+      name: SHORT_PUT_2024
+      start_date: 2024-01-01
+      end_date: 2024-12-31
+      symbols: [AAPL, MSFT, GOOGL]
+      strategy_type: short_put
+      initial_capital: 100000
+
+    \b
+    示例:
+      optrade trade backtest run -c config/backtest/short_put.yaml
+      optrade trade backtest run -c config.yaml -o reports/my_backtest
+    """
+    # 配置日志
+    log_level = logging.DEBUG if verbose else logging.WARNING
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+
+    from pathlib import Path
+
+    try:
+        from src.backtest import (
+            BacktestConfig,
+            BacktestExecutor,
+            BacktestMetrics,
+            BacktestDashboard,
+        )
+    except ImportError as e:
+        raise click.ClickException(f"Backtest module not available: {e}")
+
+    click.echo("\n" + "=" * 60)
+    click.echo("📊 Strategy Backtest")
+    click.echo("=" * 60)
+
+    # 1. 加载配置
+    click.echo(f"\n📄 加载配置: {config}")
+    try:
+        bt_config = BacktestConfig.from_yaml(config)
+    except Exception as e:
+        raise click.ClickException(f"配置加载失败: {e}")
+
+    click.echo(f"   名称: {bt_config.name}")
+    click.echo(f"   区间: {bt_config.start_date} ~ {bt_config.end_date}")
+    click.echo(f"   标的: {', '.join(bt_config.symbols[:5])}{'...' if len(bt_config.symbols) > 5 else ''}")
+    click.echo(f"   策略: {bt_config.strategy_type.value}")
+    click.echo(f"   本金: ${bt_config.initial_capital:,.0f}")
+
+    # 2. 创建执行器
+    click.echo(f"\n🚀 运行回测...")
+
+    # 进度条
+    progress_bar = None
+
+    def progress_callback(current_date, current_day, total_days):
+        nonlocal progress_bar
+        if progress_bar is None:
+            progress_bar = click.progressbar(
+                length=total_days,
+                label="   Progress",
+                show_pos=True,
+            )
+            progress_bar.__enter__()
+        progress_bar.update(1)
+
+    try:
+        executor = BacktestExecutor(
+            config=bt_config,
+            progress_callback=progress_callback,
+        )
+
+        result = executor.run()
+
+        # 关闭进度条
+        if progress_bar:
+            progress_bar.__exit__(None, None, None)
+
+    except Exception as e:
+        if progress_bar:
+            progress_bar.__exit__(None, None, None)
+        raise click.ClickException(f"回测执行失败: {e}")
+
+    # 3. 计算指标
+    click.echo(f"\n📈 计算指标...")
+    metrics = BacktestMetrics.from_backtest_result(result)
+
+    # 4. 显示结果摘要
+    click.echo(f"\n" + "=" * 60)
+    click.echo("📊 回测结果摘要")
+    click.echo("=" * 60)
+
+    click.echo(f"\n--- 收益 ---")
+    click.echo(f"   总收益:     ${metrics.total_return:,.2f} ({metrics.total_return_pct:.2%})")
+    if metrics.annualized_return is not None:
+        click.echo(f"   年化收益:   {metrics.annualized_return:.2%}")
+    click.echo(f"   最终净值:   ${metrics.final_nlv:,.2f}")
+
+    click.echo(f"\n--- 风险 ---")
+    if metrics.max_drawdown is not None:
+        click.echo(f"   最大回撤:   {metrics.max_drawdown:.2%}")
+    if metrics.volatility is not None:
+        click.echo(f"   波动率:     {metrics.volatility:.2%}")
+
+    click.echo(f"\n--- 风险调整收益 ---")
+    if metrics.sharpe_ratio is not None:
+        click.echo(f"   Sharpe:     {metrics.sharpe_ratio:.2f}")
+    if metrics.sortino_ratio is not None:
+        click.echo(f"   Sortino:    {metrics.sortino_ratio:.2f}")
+    if metrics.calmar_ratio is not None:
+        click.echo(f"   Calmar:     {metrics.calmar_ratio:.2f}")
+
+    click.echo(f"\n--- 交易 ---")
+    click.echo(f"   总交易数:   {metrics.total_trades}")
+    if metrics.win_rate is not None:
+        click.echo(f"   胜率:       {metrics.win_rate:.1%}")
+    if metrics.profit_factor is not None:
+        click.echo(f"   盈亏比:     {metrics.profit_factor:.2f}")
+
+    click.echo(f"\n--- 费用 ---")
+    click.echo(f"   佣金:       ${metrics.total_commission:,.2f}")
+    click.echo(f"   滑点:       ${metrics.total_slippage:,.2f}")
+    click.echo(f"   总费用占比: {metrics.commission_pct:.2%}")
+
+    # 5. 生成报告
+    if report:
+        click.echo(f"\n📝 生成报告...")
+        output_dir = Path(output)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        report_path = output_dir / f"{bt_config.name}_{bt_config.end_date}.html"
+
+        try:
+            dashboard = BacktestDashboard(result, metrics)
+            dashboard.generate_report(report_path)
+            click.echo(f"   ✅ 报告已保存: {report_path}")
+        except ImportError:
+            click.echo(f"   ⚠️  Plotly 未安装，跳过 HTML 报告")
+            click.echo(f"      安装: pip install plotly")
+        except Exception as e:
+            click.echo(f"   ⚠️  报告生成失败: {e}")
+
+        # 保存 JSON 结果
+        json_path = output_dir / f"{bt_config.name}_{bt_config.end_date}.json"
+        try:
+            with open(json_path, "w") as f:
+                json.dump(metrics.to_dict(), f, indent=2, default=str)
+            click.echo(f"   ✅ JSON 已保存: {json_path}")
+        except Exception as e:
+            click.echo(f"   ⚠️  JSON 保存失败: {e}")
+
+    click.echo(f"\n" + "=" * 60)
+    click.echo(f"✅ 回测完成 ({result.execution_time_seconds:.1f}s)")
+    click.echo("=" * 60 + "\n")
+
+
+@backtest.command("report")
+@click.argument("result_json", type=click.Path(exists=True))
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    help="输出 HTML 路径 (默认与 JSON 同名)",
+)
+def backtest_report(result_json: str, output: str) -> None:
+    """从 JSON 结果生成 HTML 报告
+
+    \b
+    示例:
+      optrade trade backtest report reports/backtest/SHORT_PUT_2024.json
+    """
+    from pathlib import Path
+
+    json_path = Path(result_json)
+
+    if output:
+        output_path = Path(output)
+    else:
+        output_path = json_path.with_suffix(".html")
+
+    click.echo(f"\n📝 生成报告: {output_path}")
+
+    try:
+        # 加载 JSON
+        with open(json_path) as f:
+            data = json.load(f)
+
+        # 由于我们只有 metrics，创建一个最小的报告
+        # 实际上需要完整的 BacktestResult 来生成完整报告
+        click.echo(f"   ⚠️  仅从 JSON 生成报告需要完整的回测结果")
+        click.echo(f"   建议使用 'backtest run' 直接生成报告")
+
+    except Exception as e:
+        raise click.ClickException(f"报告生成失败: {e}")
+
+
+@backtest.command("download-macro")
+@click.option(
+    "--data-dir",
+    "-d",
+    type=click.Path(),
+    required=True,
+    help="数据存储目录",
+)
+@click.option(
+    "--start-date",
+    "-s",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    required=True,
+    help="开始日期 (YYYY-MM-DD)",
+)
+@click.option(
+    "--end-date",
+    "-e",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    required=True,
+    help="结束日期 (YYYY-MM-DD)",
+)
+@click.option(
+    "--indicators",
+    "-i",
+    multiple=True,
+    help="指定指标 (可多次使用，默认下载所有)",
+)
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    help="显示详细日志",
+)
+def backtest_download_macro(
+    data_dir: str,
+    start_date,
+    end_date,
+    indicators: tuple[str, ...],
+    verbose: bool,
+) -> None:
+    """下载宏观数据 (VIX/TNX 等)
+
+    从 yfinance 下载宏观指数历史数据，保存为 Parquet 供回测使用。
+
+    \b
+    默认下载指标:
+      ^VIX      CBOE 波动率指数
+      ^VIX3M    CBOE 3个月波动率指数
+      ^TNX      10年期美国国债收益率
+      ^TYX      30年期美国国债收益率
+      ^IRX      13周美国国债利率
+      ^GSPC     S&P 500 指数
+      SPY       S&P 500 ETF
+      QQQ       NASDAQ-100 ETF
+
+    \b
+    示例:
+      # 下载所有默认指标
+      optrade trade backtest download-macro -d data/backtest -s 2015-01-01 -e 2024-12-31
+
+      # 只下载 VIX 和 TNX
+      optrade trade backtest download-macro -d data/backtest -s 2015-01-01 -e 2024-12-31 -i ^VIX -i ^TNX
+    """
+    from pathlib import Path
+
+    # 配置日志
+    log_level = logging.DEBUG if verbose else logging.WARNING
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+
+    try:
+        from src.backtest.data.macro_downloader import MacroDownloader, DEFAULT_MACRO_INDICATORS
+    except ImportError as e:
+        raise click.ClickException(f"MacroDownloader not available: {e}")
+
+    click.echo("\n" + "=" * 60)
+    click.echo("📥 Download Macro Data")
+    click.echo("=" * 60)
+
+    data_path = Path(data_dir)
+    data_path.mkdir(parents=True, exist_ok=True)
+
+    # 确定要下载的指标
+    if indicators:
+        indicator_list = list(indicators)
+    else:
+        indicator_list = DEFAULT_MACRO_INDICATORS
+
+    click.echo(f"\n📁 数据目录: {data_path}")
+    click.echo(f"📅 日期范围: {start_date.date()} ~ {end_date.date()}")
+    click.echo(f"📊 指标列表: {len(indicator_list)} 个")
+    for ind in indicator_list[:5]:
+        click.echo(f"   - {ind}")
+    if len(indicator_list) > 5:
+        click.echo(f"   - ... ({len(indicator_list) - 5} more)")
+
+    # 创建下载器
+    downloader = MacroDownloader(data_dir=data_path)
+
+    # 进度回调
+    def on_progress(indicator: str, current: int, total: int):
+        click.echo(f"   [{current}/{total}] Downloading {indicator}...")
+
+    click.echo(f"\n🚀 开始下载...")
+
+    try:
+        results = downloader.download_indicators(
+            indicators=indicator_list,
+            start_date=start_date.date(),
+            end_date=end_date.date(),
+            on_progress=on_progress,
+        )
+    except Exception as e:
+        raise click.ClickException(f"下载失败: {e}")
+
+    # 显示结果
+    click.echo(f"\n" + "=" * 60)
+    click.echo("📊 下载结果")
+    click.echo("=" * 60)
+
+    total_records = 0
+    success_count = 0
+    for indicator, count in results.items():
+        if count > 0:
+            click.echo(f"   ✅ {indicator}: {count} records")
+            total_records += count
+            success_count += 1
+        else:
+            click.echo(f"   ❌ {indicator}: failed")
+
+    click.echo(f"\n   总计: {total_records} records ({success_count}/{len(indicator_list)} 成功)")
+
+    # 显示数据范围
+    date_range = downloader.get_date_range()
+    if date_range:
+        click.echo(f"   数据范围: {date_range[0]} ~ {date_range[1]}")
+
+    parquet_path = data_path / "macro_daily.parquet"
+    click.echo(f"\n   📁 保存位置: {parquet_path}")
+
+    click.echo(f"\n" + "=" * 60)
+    click.echo("✅ 宏观数据下载完成")
+    click.echo("=" * 60 + "\n")

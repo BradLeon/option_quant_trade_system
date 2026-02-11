@@ -603,6 +603,98 @@ class YahooProvider(DataProvider):
             # Re-raise for retry logic to handle
             raise
 
+    def get_option_quotes_batch(
+        self,
+        contracts: list[OptionContract],
+        min_volume: int | None = None,
+    ) -> list[OptionQuote]:
+        """Get quotes for multiple option contracts.
+
+        Yahoo Finance doesn't support direct option quote by symbol,
+        so this fetches option chains and filters to match requested contracts.
+
+        Args:
+            contracts: List of OptionContract instances to query.
+            min_volume: Optional minimum volume filter.
+
+        Returns:
+            List of OptionQuote instances for matching contracts.
+        """
+        if not contracts:
+            return []
+
+        # Group contracts by underlying
+        contracts_by_underlying: dict[str, list[OptionContract]] = {}
+        for contract in contracts:
+            underlying = contract.underlying
+            if underlying not in contracts_by_underlying:
+                contracts_by_underlying[underlying] = []
+            contracts_by_underlying[underlying].append(contract)
+
+        results: list[OptionQuote] = []
+
+        for underlying, underlying_contracts in contracts_by_underlying.items():
+            # Determine date range for option chain fetch
+            expiry_dates = [c.expiry_date for c in underlying_contracts]
+            min_expiry = min(expiry_dates)
+            max_expiry = max(expiry_dates)
+
+            # Fetch option chain
+            chain = self.get_option_chain(
+                underlying=underlying,
+                expiry_start=min_expiry,
+                expiry_end=max_expiry,
+            )
+
+            if chain is None:
+                logger.warning(f"No option chain available for {underlying}")
+                continue
+
+            # Build lookup for matching contracts
+            # Key: (strike, expiry_date, option_type)
+            chain_quotes: dict[tuple[float, date, OptionType], OptionQuote] = {}
+
+            for quote in chain.calls:
+                key = (
+                    quote.contract.strike_price,
+                    quote.contract.expiry_date,
+                    OptionType.CALL,
+                )
+                chain_quotes[key] = quote
+
+            for quote in chain.puts:
+                key = (
+                    quote.contract.strike_price,
+                    quote.contract.expiry_date,
+                    OptionType.PUT,
+                )
+                chain_quotes[key] = quote
+
+            # Match requested contracts
+            for contract in underlying_contracts:
+                key = (
+                    contract.strike_price,
+                    contract.expiry_date,
+                    contract.option_type,
+                )
+                quote = chain_quotes.get(key)
+
+                if quote:
+                    # Apply volume filter
+                    if min_volume is not None:
+                        volume = quote.volume or 0
+                        if volume < min_volume:
+                            continue
+                    results.append(quote)
+                else:
+                    logger.debug(
+                        f"No matching quote for {contract.underlying} "
+                        f"{contract.strike_price} {contract.option_type.value} "
+                        f"{contract.expiry_date}"
+                    )
+
+        return results
+
     def get_put_call_ratio(self, symbol: str = "SPY") -> float | None:
         """Calculate Put/Call Ratio from option chain volume with caching and retry.
 

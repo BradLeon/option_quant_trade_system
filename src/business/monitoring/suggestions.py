@@ -9,7 +9,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from enum import Enum
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from src.business.monitoring.models import (
     Alert,
@@ -21,6 +21,9 @@ from src.business.monitoring.models import (
 from src.business.monitoring.roll_calculator import RollTargetCalculator
 from src.data.models.option import OptionChain
 from src.engine.models.enums import StrategyType
+
+if TYPE_CHECKING:
+    from src.data.providers.base import DataProvider
 
 
 @runtime_checkable
@@ -88,9 +91,11 @@ class PositionSuggestion:
 
 ALERT_ACTION_MAP: dict[tuple[AlertType, AlertLevel], tuple[ActionType, UrgencyLevel]] = {
     # === RED Alerts → IMMEDIATE ===
+    # NOTE: 原 ROLL 统一改为 CLOSE，由 Screen 捕捉新开仓机会
     (AlertType.STOP_LOSS, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
-    (AlertType.DTE_WARNING, AlertLevel.RED): (ActionType.ROLL, UrgencyLevel.IMMEDIATE),
-    (AlertType.MONEYNESS, AlertLevel.RED): (ActionType.ROLL, UrgencyLevel.IMMEDIATE),
+    (AlertType.DTE_WARNING, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
+    (AlertType.DTE_PROFITABLE, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
+    (AlertType.MONEYNESS, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
     (AlertType.DELTA_CHANGE, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
     (AlertType.GAMMA_EXPOSURE, AlertLevel.RED): (ActionType.REDUCE, UrgencyLevel.IMMEDIATE),
     (AlertType.TGR_LOW, AlertLevel.RED): (ActionType.ADJUST, UrgencyLevel.IMMEDIATE),
@@ -103,12 +108,12 @@ ALERT_ACTION_MAP: dict[tuple[AlertType, AlertLevel], tuple[ActionType, UrgencyLe
     (AlertType.DELTA_EXPOSURE, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
     (AlertType.VEGA_EXPOSURE, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
     (AlertType.THETA_EXPOSURE, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
-    # === YELLOW Alerts → SOON or MONITOR ===
-    (AlertType.DTE_WARNING, AlertLevel.YELLOW): (ActionType.ROLL, UrgencyLevel.SOON),
+    # === YELLOW Alerts → 仅警告，不执行交易 ===
+    (AlertType.DTE_WARNING, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
     (AlertType.MONEYNESS, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
     (AlertType.DELTA_CHANGE, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
-    (AlertType.GAMMA_EXPOSURE, AlertLevel.YELLOW): (ActionType.SET_STOP, UrgencyLevel.SOON),
-    (AlertType.GAMMA_NEAR_EXPIRY, AlertLevel.YELLOW): (ActionType.ROLL, UrgencyLevel.SOON),
+    (AlertType.GAMMA_EXPOSURE, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
+    (AlertType.GAMMA_NEAR_EXPIRY, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
     (AlertType.IV_HV_CHANGE, AlertLevel.YELLOW): (ActionType.REVIEW, UrgencyLevel.MONITOR),
     (AlertType.TGR_LOW, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
     (AlertType.VEGA_EXPOSURE, AlertLevel.YELLOW): (ActionType.REDUCE, UrgencyLevel.SOON),
@@ -140,46 +145,61 @@ STRATEGY_SPECIFIC_SUGGESTIONS: dict[
     tuple[AlertType, AlertLevel, StrategyType],
     tuple[ActionType, UrgencyLevel, str]
 ] = {
-    # === DTE < 7 天 (RED) - 按策略区分 ===
+    # NOTE: 原 ROLL 统一改为 CLOSE，由 Screen 捕捉新开仓机会
+    # === DTE < 4 天且亏损 (RED) - 统一平仓 ===
     (AlertType.DTE_WARNING, AlertLevel.RED, StrategyType.SHORT_PUT): (
-        ActionType.ROLL, UrgencyLevel.IMMEDIATE,
-        "强制平仓或展期到下月"
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "DTE < 4 且亏损，平仓止损"
     ),
     (AlertType.DTE_WARNING, AlertLevel.RED, StrategyType.COVERED_CALL): (
-        ActionType.HOLD, UrgencyLevel.MONITOR,
-        "可持有到期（Gamma 风险由正股覆盖）"
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "DTE < 4 且亏损，平仓止损"
     ),
     (AlertType.DTE_WARNING, AlertLevel.RED, StrategyType.SHORT_STRANGLE): (
         ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
-        "强制平仓（盈利止盈，亏损不展期，等待新开仓机会）"
+        "DTE < 4 且亏损，平仓止损"
     ),
 
-    # === |Delta| > 0.50 (RED) - 按策略区分 ===
+    # === DTE < 4 天且盈利 (RED) - 统一平仓止盈 ===
+    (AlertType.DTE_PROFITABLE, AlertLevel.RED, StrategyType.SHORT_PUT): (
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "DTE < 4 且盈利，平仓锁定利润"
+    ),
+    (AlertType.DTE_PROFITABLE, AlertLevel.RED, StrategyType.COVERED_CALL): (
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "DTE < 4 且盈利，平仓锁定利润"
+    ),
+    (AlertType.DTE_PROFITABLE, AlertLevel.RED, StrategyType.SHORT_STRANGLE): (
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "DTE < 4 且盈利，平仓锁定利润"
+    ),
+
+    # === |Delta| > 0.50 (RED) - 统一平仓 ===
     (AlertType.DELTA_CHANGE, AlertLevel.RED, StrategyType.SHORT_PUT): (
-        ActionType.ROLL, UrgencyLevel.IMMEDIATE,
-        "展期到更低 Strike 或平仓止损"
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "Delta 过高，平仓止损"
     ),
     (AlertType.DELTA_CHANGE, AlertLevel.RED, StrategyType.COVERED_CALL): (
-        ActionType.ADJUST, UrgencyLevel.SOON,
-        "可接受行权（卖出正股）或展期到更高 Strike"
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "Delta 过高，平仓"
     ),
     (AlertType.DELTA_CHANGE, AlertLevel.RED, StrategyType.SHORT_STRANGLE): (
         ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
-        "平仓 Delta 恶化的腿，保留另一腿"
+        "平仓 Delta 恶化的腿"
     ),
 
-    # === OTM% < 5% (RED) - 按策略区分 ===
+    # === OTM% < 5% (RED) - 统一平仓 ===
     (AlertType.OTM_PCT, AlertLevel.RED, StrategyType.SHORT_PUT): (
-        ActionType.ROLL, UrgencyLevel.IMMEDIATE,
-        "展期到下月或更低 Strike"
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "OTM 不足，平仓止损"
     ),
     (AlertType.OTM_PCT, AlertLevel.RED, StrategyType.COVERED_CALL): (
-        ActionType.ADJUST, UrgencyLevel.SOON,
-        "展期到更高 Strike 或接受行权"
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "OTM 不足，平仓"
     ),
     (AlertType.OTM_PCT, AlertLevel.RED, StrategyType.SHORT_STRANGLE): (
-        ActionType.ROLL, UrgencyLevel.IMMEDIATE,
-        "展期恶化的腿"
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "OTM 不足，平仓恶化的腿"
     ),
 
     # === P&L < -100% (RED) - 按策略区分 ===
@@ -210,10 +230,10 @@ STRATEGY_SPECIFIC_SUGGESTIONS: dict[
         "平仓换到更高效的合约"
     ),
 
-    # === Gamma Risk > 1% (RED) - 按策略区分 ===
+    # === Gamma Risk > 1% (RED) - 统一平仓 ===
     (AlertType.GAMMA_RISK_PCT, AlertLevel.RED, StrategyType.SHORT_PUT): (
-        ActionType.ROLL, UrgencyLevel.IMMEDIATE,
-        "平仓或展期到更远 Strike"
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "Gamma 风险过高，平仓"
     ),
     (AlertType.GAMMA_RISK_PCT, AlertLevel.RED, StrategyType.COVERED_CALL): (
         ActionType.HOLD, UrgencyLevel.MONITOR,
@@ -263,7 +283,8 @@ ALERT_PRIORITY = {
     AlertType.GROSS_LEVERAGE: 85,  # 敞口
     AlertType.STRESS_TEST_LOSS: 80,  # 稳健
     AlertType.MONEYNESS: 75,  # 行权风险
-    AlertType.DTE_WARNING: 70,
+    AlertType.DTE_WARNING: 70,  # DTE 临近且亏损 → 展期
+    AlertType.DTE_PROFITABLE: 68,  # DTE 临近且盈利 → 平仓
     AlertType.DELTA_CHANGE: 65,
     AlertType.GAMMA_EXPOSURE: 60,
     AlertType.DELTA_EXPOSURE: 50,
@@ -422,6 +443,8 @@ class SuggestionGenerator:
         monitor_result: MonitorResult,
         positions: list[PositionData] | None = None,
         vix: float | None = None,
+        as_of_date: date | None = None,
+        data_provider: "DataProvider | None" = None,
     ) -> list[PositionSuggestion]:
         """主入口：生成调整建议
 
@@ -429,10 +452,16 @@ class SuggestionGenerator:
             monitor_result: 监控结果（包含 alerts）
             positions: 持仓数据列表（用于获取额外上下文）
             vix: 当前 VIX 值（用于市场环境调整）
+            as_of_date: 查询日期（回测模式使用，None 表示使用当前日期）
+            data_provider: 数据提供者（用于获取真实期权链数据）
 
         Returns:
             排序后的 PositionSuggestion 列表
         """
+        # 确定当前日期（回测模式使用 as_of_date）
+        current_date = as_of_date or date.today()
+        # 保存 data_provider 供后续方法使用
+        self._current_data_provider = data_provider
         if not monitor_result.alerts:
             return []
 
@@ -448,18 +477,34 @@ class SuggestionGenerator:
             else:
                 position_alerts.append(alert)
 
-        # Step 2: 处理组合级 RED Alert → 选择具体持仓
+        # Step 2: 优先处理持仓级 Alert（Position-level reasons 优先展示）
         positions_list = positions or []
         processed_position_ids: set[str] = set()  # 避免重复
 
+        grouped_alerts = self._group_alerts_by_position(position_alerts)
+
+        for position_id, alerts in grouped_alerts.items():
+            suggestion = self._generate_for_position(
+                position_id, alerts, positions, current_date
+            )
+            if suggestion:
+                suggestions.append(suggestion)
+                processed_position_ids.add(position_id)
+
+        # Step 3: 处理组合级 RED Alert → 选择具体持仓
+        # 仅处理尚未被 Position-level Alert 覆盖的持仓
         for alert in portfolio_alerts:
             if alert.level == AlertLevel.RED:
                 config = PORTFOLIO_ALERT_POSITION_SELECTOR.get(alert.alert_type)
                 if config:
                     selected = self._select_positions_for_alert(alert, positions_list)
                     for pos in selected:
-                        # 避免同一持仓被多个组合级 Alert 重复添加
+                        # 跳过已被 Position-level Alert 处理的持仓
                         if pos.position_id in processed_position_ids:
+                            logger.debug(
+                                f"Skipping {pos.symbol} for portfolio alert - "
+                                f"already processed by position-level alert"
+                            )
                             continue
                         processed_position_ids.add(pos.position_id)
 
@@ -469,25 +514,11 @@ class SuggestionGenerator:
                         suggestions.append(suggestion)
                 else:
                     # 无配置的组合级 Alert，仍走原逻辑（生成 portfolio 级建议）
-                    position_alerts.append(alert)
+                    # 但需要检查是否已有对应持仓的建议
+                    pass
             else:
-                # 非 RED 级别的组合级 Alert，仍走原逻辑
-                position_alerts.append(alert)
-
-        # Step 3: 处理持仓级 Alert（现有逻辑）
-        grouped_alerts = self._group_alerts_by_position(position_alerts)
-
-        for position_id, alerts in grouped_alerts.items():
-            # 跳过已被组合级 Alert 处理的持仓
-            if position_id in processed_position_ids:
-                logger.debug(
-                    f"Skipping position {position_id} - already processed by portfolio alert"
-                )
-                continue
-
-            suggestion = self._generate_for_position(position_id, alerts, positions)
-            if suggestion:
-                suggestions.append(suggestion)
+                # 非 RED 级别的组合级 Alert，仅当无对应持仓建议时才处理
+                pass
 
         # Step 4: 市场环境调整
         if vix:
@@ -549,6 +580,7 @@ class SuggestionGenerator:
         position_id: str,
         alerts: list[Alert],
         positions: list[PositionData] | None,
+        current_date: date | None = None,
     ) -> PositionSuggestion | None:
         """为单个持仓生成建议
 
@@ -559,10 +591,12 @@ class SuggestionGenerator:
             position_id: 持仓 ID
             alerts: 该持仓的 alerts
             positions: 所有持仓数据
+            current_date: 当前日期（回测模式使用）
 
         Returns:
             PositionSuggestion 或 None
         """
+        today = current_date or date.today()
         if not alerts:
             return None
 
@@ -643,26 +677,38 @@ class SuggestionGenerator:
                         available_expiries, available_strikes = self._fetch_option_chain_data(
                             underlying=pos.underlying or pos.symbol,
                             option_type=pos.option_type,
+                            as_of_date=today,
                         )
 
-                        roll_target = self._roll_calculator.calculate(
-                            position=pos,
-                            alert=primary_alert,
-                            available_expiries=available_expiries,
-                            available_strikes=available_strikes,
-                        )
-                        metadata["suggested_expiry"] = roll_target.suggested_expiry
-                        metadata["suggested_strike"] = roll_target.suggested_strike
-                        metadata["suggested_dte"] = roll_target.suggested_dte
-                        metadata["roll_credit"] = roll_target.roll_credit
-                        metadata["roll_reason"] = roll_target.reason
-                        logger.info(
-                            f"Roll target calculated for {pos.symbol}: "
-                            f"expiry={roll_target.suggested_expiry}, "
-                            f"strike={roll_target.suggested_strike}, "
-                            f"dte={roll_target.suggested_dte}"
-                            f"{' [from chain]' if available_expiries else ''}"
-                        )
+                        # 如果没有真实期权链数据，跳过 ROLL 建议（避免使用理论值导致错误交易）
+                        # 检查 None 或空列表
+                        if not available_expiries or not available_strikes:
+                            logger.warning(
+                                f"Skipping ROLL for {pos.symbol}: no option chain data available. "
+                                f"Downgrading to CLOSE to avoid theoretical contract."
+                            )
+                            # 降级为 CLOSE 操作，避免使用不存在的合约
+                            action = ActionType.CLOSE
+                            reason = f"{reason} (无期权链数据，无法展期，建议平仓)"
+                        else:
+                            roll_target = self._roll_calculator.calculate(
+                                position=pos,
+                                alert=primary_alert,
+                                available_expiries=available_expiries,
+                                available_strikes=available_strikes,
+                                today=today,
+                            )
+                            metadata["suggested_expiry"] = roll_target.suggested_expiry
+                            metadata["suggested_strike"] = roll_target.suggested_strike
+                            metadata["suggested_dte"] = roll_target.suggested_dte
+                            metadata["roll_credit"] = roll_target.roll_credit
+                            metadata["roll_reason"] = roll_target.reason
+                            logger.info(
+                                f"Roll target calculated for {pos.symbol}: "
+                                f"expiry={roll_target.suggested_expiry}, "
+                                f"strike={roll_target.suggested_strike}, "
+                                f"dte={roll_target.suggested_dte} [from chain]"
+                            )
 
         return PositionSuggestion(
             position_id=position_id,
@@ -679,27 +725,38 @@ class SuggestionGenerator:
         self,
         underlying: str,
         option_type: str | None,
+        as_of_date: date | None = None,
     ) -> tuple[list[str] | None, list[float] | None]:
         """获取期权链数据用于 ROLL 目标计算
+
+        优先使用 data_provider（回测/实盘通用），回退到 option_chain_provider。
 
         Args:
             underlying: 标的代码
             option_type: 期权类型 ("put" / "call")
+            as_of_date: 查询日期（回测模式使用，None 表示使用当前日期）
 
         Returns:
             (available_expiries, available_strikes) 元组
             如果无法获取，返回 (None, None)
         """
-        if not self._option_chain_provider:
+        today = as_of_date or date.today()
+        expiry_start = today + timedelta(days=25)
+        expiry_end = today + timedelta(days=60)
+
+        # 优先使用 data_provider（回测/实盘统一接口）
+        provider = getattr(self, "_current_data_provider", None) or self._option_chain_provider
+        if not provider:
+            logger.debug(f"No data provider available for option chain lookup")
             return None, None
 
         try:
-            # 获取期权链（DTE 25-60 天范围）
-            today = date.today()
-            expiry_start = today + timedelta(days=25)
-            expiry_end = today + timedelta(days=60)
+            # 检查是否有 get_option_chain 方法
+            if not hasattr(provider, "get_option_chain"):
+                logger.debug(f"Provider {type(provider).__name__} has no get_option_chain method")
+                return None, None
 
-            chain = self._option_chain_provider.get_option_chain(
+            chain = provider.get_option_chain(
                 underlying=underlying,
                 expiry_start=expiry_start,
                 expiry_end=expiry_end,

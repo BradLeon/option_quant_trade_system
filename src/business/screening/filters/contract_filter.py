@@ -29,6 +29,7 @@ from src.business.screening.models import (
     ContractOpportunity,
     UnderlyingScore,
 )
+from src.data.providers.base import DataProvider
 from src.data.providers.unified_provider import UnifiedDataProvider
 from src.engine.contract.liquidity import (
     calc_bid_ask_spread_ratio,
@@ -71,16 +72,103 @@ class ContractFilter:
     def __init__(
         self,
         config: ScreeningConfig,
-        provider: UnifiedDataProvider | None = None,
+        provider: DataProvider | None = None,
     ) -> None:
         """初始化合约过滤器
 
         Args:
             config: 筛选配置
-            provider: 统一数据提供者，默认创建新实例
+            provider: 数据提供者 (DataProvider 或其子类)，默认创建 UnifiedDataProvider
         """
         self.config = config
-        self.provider = provider or UnifiedDataProvider()
+        self.provider: DataProvider = provider or UnifiedDataProvider()
+
+    def _get_reference_date(self) -> date:
+        """获取参考日期（回测兼容）
+
+        在回测模式下，provider 会有 as_of_date 属性，表示当前模拟的日期。
+        实盘模式下，使用 date.today()。
+        """
+        if hasattr(self.provider, "as_of_date"):
+            return self.provider.as_of_date
+        return date.today()
+
+    def _collect_filter_stats(
+        self, opportunities: list[ContractOpportunity]
+    ) -> dict[str, int]:
+        """收集过滤统计信息
+
+        从合约评估结果中提取被拒绝的原因，按原因类型聚合统计。
+
+        Args:
+            opportunities: 合约评估结果列表
+
+        Returns:
+            字典：{过滤原因: 被过滤的合约数量}
+        """
+        import re
+
+        stats: dict[str, int] = {}
+
+        for opp in opportunities:
+            if opp.passed:
+                continue
+
+            # 分析每个拒绝原因
+            for reason in opp.disqualify_reasons:
+                # 提取标准化的原因类型
+                # 例如：[P1] Spread=15.2% 过高（>10%） → [P1] Spread 过高
+                # 例如：[P1] DTE=5 超出范围 (7-45) → [P1] DTE 超出范围
+                # 例如：[P1] |Delta|=0.05 超出范围 → [P1] |Delta| 超出范围
+                match = re.match(r"(\[P[0-3]\])\s*(.+?)(?:=[\d.-]+%?)?(?:\s+(?:过高|不足|超出|缺失|数据缺失))", reason)
+                if match:
+                    priority = match.group(1)
+                    metric = match.group(2).strip()
+                    # 统一格式
+                    if "过高" in reason:
+                        key = f"{priority} {metric} 过高"
+                    elif "不足" in reason:
+                        key = f"{priority} {metric} 不足"
+                    elif "超出" in reason:
+                        key = f"{priority} {metric} 超出范围"
+                    elif "缺失" in reason:
+                        key = f"{priority} {metric} 缺失"
+                    else:
+                        key = reason
+                else:
+                    # 无法解析的原因，直接使用
+                    key = reason
+
+                stats[key] = stats.get(key, 0) + 1
+
+        return stats
+
+    def _log_filter_stats(
+        self, stats: dict[str, int], total_evaluated: int, total_passed: int
+    ) -> None:
+        """输出过滤统计信息
+
+        Args:
+            stats: 过滤统计字典
+            total_evaluated: 总评估合约数
+            total_passed: 通过的合约数
+        """
+        if not stats:
+            return
+
+        total_rejected = total_evaluated - total_passed
+        logger.info("=" * 60)
+        logger.info(f"合约过滤统计: 评估={total_evaluated}, 通过={total_passed}, 拒绝={total_rejected}")
+        logger.info("-" * 60)
+
+        # 按拒绝数量降序排列
+        sorted_stats = sorted(stats.items(), key=lambda x: -x[1])
+
+        for reason, count in sorted_stats:
+            pct = count / total_evaluated * 100 if total_evaluated > 0 else 0
+            logger.info(f"  {reason}: {count} ({pct:.1f}%)")
+
+        logger.info("=" * 60)
 
     def evaluate(
         self,
@@ -119,6 +207,13 @@ class ContractFilter:
                 all_opportunities.extend(opportunities)
             except Exception as e:
                 logger.error(f"评估 {score.symbol} 合约失败: {e}")
+
+        # 收集并输出过滤统计（在过滤之前）
+        if all_opportunities:
+            total_evaluated = len(all_opportunities)
+            total_passed = sum(1 for o in all_opportunities if o.passed)
+            stats = self._collect_filter_stats(all_opportunities)
+            self._log_filter_stats(stats, total_evaluated, total_passed)
 
         # 根据 return_rejected 参数过滤
         if not return_rejected:
@@ -166,7 +261,7 @@ class ContractFilter:
         dte_min, dte_max = filter_config.dte_range
         delta_min, delta_max = filter_config.delta_range
         liquidity_config = filter_config.liquidity
-        today = date.today()
+        today = self._get_reference_date()
 
         # 确定 option_type 参数（单一类型时传入，否则 None 获取全部）
         types_to_eval = option_types or ["put", "call"]
@@ -351,8 +446,8 @@ class ContractFilter:
         disqualify_reasons: list[str] = []  # P0/P1 阻塞
         warnings: list[str] = []  # P2/P3 警告
 
-        # 业务层：计算 DTE
-        today = date.today()
+        # 业务层：计算 DTE（使用参考日期，回测兼容）
+        today = self._get_reference_date()
         dte = (expiry - today).days
 
         # 获取 Greeks

@@ -945,7 +945,7 @@ class UnifiedDataProvider:
                 option_symbol=quote.contract.symbol,
                 price=premium,
                 lot_size=lot_size,
-                account_type=AccountType.REAL,
+                account_type=AccountType.LIVE,
             )
         except Exception as e:
             logger.debug(f"Futu margin query failed for {quote.contract.symbol}: {e}")

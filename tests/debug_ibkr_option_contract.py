@@ -19,7 +19,7 @@ def main():
     print("IBKR Option Contract Debug")
     print("=" * 80)
 
-    with IBKRProvider(account_type=AccountType.REAL) as ibkr:
+    with IBKRProvider(account_type=AccountType.LIVE) as ibkr:
         # Get positions
         positions = ibkr._ib.positions()
 

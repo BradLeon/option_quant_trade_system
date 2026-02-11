@@ -87,6 +87,7 @@ class OrderGenerator:
             time_in_force=self._config.default_time_in_force,
             contract_multiplier=decision.contract_multiplier,
             currency=decision.currency,
+            decision_type=decision.decision_type.value,  # 记录决策类型
             broker=decision.broker,
             account_type="paper",  # 强制 paper
             status=OrderStatus.PENDING_VALIDATION,
@@ -207,6 +208,7 @@ class OrderGenerator:
             time_in_force=self._config.default_time_in_force,
             contract_multiplier=decision.contract_multiplier,
             currency=decision.currency,
+            decision_type="roll",  # 记录决策类型
             broker=decision.broker,
             account_type="paper",
             status=OrderStatus.PENDING_VALIDATION,
@@ -255,6 +257,7 @@ class OrderGenerator:
             time_in_force=self._config.default_time_in_force,
             contract_multiplier=decision.contract_multiplier,
             currency=decision.currency,
+            decision_type="roll",  # 记录决策类型
             broker=decision.broker,
             account_type="paper",
             status=OrderStatus.PENDING_VALIDATION,

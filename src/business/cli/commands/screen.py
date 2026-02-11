@@ -152,7 +152,7 @@ def screen(
                 # 确定标的列表
                 if symbol:
                     # 用户指定了标的，按市场过滤
-                    symbol_list = [s for s in symbol if _is_market_symbol(s, mkt)]
+                    symbol_list = [s.upper() for s in symbol if _is_market_symbol(s, mkt)]
                     if not symbol_list:
                         continue
                     pool_name = None
@@ -249,10 +249,11 @@ def screen(
 
 def _is_market_symbol(symbol: str, market: str) -> bool:
     """判断标的是否属于指定市场"""
+    s = symbol.upper()
     if market == "hk":
-        return symbol.endswith(".HK")
+        return s.endswith(".HK")
     else:  # us
-        return not symbol.endswith(".HK")
+        return not s.endswith(".HK")
 
 
 def _output_text(result) -> None:

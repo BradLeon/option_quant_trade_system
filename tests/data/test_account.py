@@ -110,7 +110,7 @@ def test_futu_real_account():
     with FutuProvider() as futu:
         # Account Summary
         print("\n--- Account Summary ---")
-        summary = futu.get_account_summary(AccountType.REAL)
+        summary = futu.get_account_summary(AccountType.LIVE)
         if summary:
             print(f"Account ID: {summary.account_id}")
             print(f"Total Assets: {summary.total_assets:,.2f}")
@@ -122,7 +122,7 @@ def test_futu_real_account():
 
         # Positions
         print("\n--- Positions ---")
-        positions = futu.get_positions(AccountType.REAL)
+        positions = futu.get_positions(AccountType.LIVE)
         stocks = [p for p in positions if p.asset_type != AssetType.OPTION]
         options = [p for p in positions if p.asset_type == AssetType.OPTION]
 
@@ -166,7 +166,7 @@ def test_futu_real_account():
 
         # Cash
         print("\n--- Cash Balances ---")
-        cash = futu.get_cash_balances(AccountType.REAL)
+        cash = futu.get_cash_balances(AccountType.LIVE)
         for c in cash:
             print(f"  {c.currency}: balance={c.balance:,.2f}")
         print("\n--- Ground Truth Cash 对比 ---")
@@ -181,7 +181,7 @@ def test_ibkr_live_account():
     print("IBKR Live 账户测试")
     print("=" * 80)
 
-    with IBKRProvider(account_type=AccountType.REAL) as ibkr:
+    with IBKRProvider(account_type=AccountType.LIVE) as ibkr:
         # Account Summary
         print("\n--- Account Summary ---")
         summary = ibkr.get_account_summary()
@@ -268,13 +268,13 @@ def test_consolidated_portfolio():
     print("合并持仓测试 (Futu + IBKR)")
     print("=" * 80)
 
-    with IBKRProvider(account_type=AccountType.REAL) as ibkr, FutuProvider() as futu:
+    with IBKRProvider(account_type=AccountType.LIVE) as ibkr, FutuProvider() as futu:
         # AccountAggregator now fetches Greeks directly:
         # - IBKR options: Greeks fetched via IBKR's get_positions()
         # - Futu options: Greeks fetched via IBKR's fetch_greeks_for_hk_option()
         aggregator = AccountAggregator(ibkr, futu)
         portfolio = aggregator.get_consolidated_portfolio(
-            account_type=AccountType.REAL,
+            account_type=AccountType.LIVE,
             base_currency="USD",
         )
 
@@ -345,9 +345,9 @@ def test_exposure_by_market():
     print("按市场计算敞口")
     print("=" * 80)
 
-    with IBKRProvider(account_type=AccountType.REAL) as ibkr, FutuProvider() as futu:
+    with IBKRProvider(account_type=AccountType.LIVE) as ibkr, FutuProvider() as futu:
         aggregator = AccountAggregator(ibkr, futu)
-        exposure = aggregator.get_total_exposure_by_market(AccountType.REAL, "USD")
+        exposure = aggregator.get_total_exposure_by_market(AccountType.LIVE, "USD")
 
         print("\n--- 市场敞口 (USD) ---")
         total = 0

@@ -12,8 +12,11 @@ Monitoring Pipeline - 监控管道
 """
 
 import logging
-from datetime import datetime
-from typing import Optional
+from datetime import date, datetime
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from src.data.providers.base import DataProvider
 
 from src.business.config.monitoring_config import MonitoringConfig
 from src.business.monitoring.models import (
@@ -75,6 +78,8 @@ class MonitoringPipeline:
         vix: Optional[float] = None,
         market_sentiment: Optional[dict] = None,
         nlv: Optional[float] = None,
+        data_provider: "Optional[DataProvider]" = None,
+        as_of_date: Optional[date] = None,
     ) -> MonitorResult:
         """执行完整监控流程
 
@@ -85,6 +90,8 @@ class MonitoringPipeline:
             market_sentiment: 市场情绪数据（可选）
             nlv: 账户净值，用于计算 NLV 归一化百分比指标（可选）
                 如果未提供，尝试从 capital_metrics.total_equity 获取
+            data_provider: 数据提供者（回测模式使用）
+            as_of_date: 查询日期，用于获取滚动 Beta（回测模式使用）
 
         Returns:
             MonitorResult: 监控结果
@@ -128,6 +135,8 @@ class MonitoringPipeline:
                 positions,  # type: ignore[arg-type]
                 nlv=effective_nlv,
                 position_iv_hv_ratios=position_iv_hv_ratios if position_iv_hv_ratios else None,
+                data_provider=data_provider,
+                as_of_date=as_of_date,
             )
 
             # DEBUG: 打印计算结果
@@ -151,6 +160,16 @@ class MonitoringPipeline:
             all_alerts.extend(portfolio_alerts)
             logger.info(f"组合级预警: {len(portfolio_alerts)} 个")
 
+            # 打印组合级预警详情
+            for alert in portfolio_alerts:
+                level_icon = {"red": "🔴", "yellow": "🟡", "green": "🟢"}.get(alert.level.value, "⚪")
+                value_str = f"{alert.current_value:.4f}" if alert.current_value is not None else "N/A"
+                threshold_str = alert.threshold_range or (f"{alert.threshold_value:.4f}" if alert.threshold_value else "N/A")
+                logger.info(
+                    f"  {level_icon} [Portfolio] {alert.alert_type.value}: "
+                    f"{alert.message} (当前={value_str}, 阈值={threshold_str})"
+                )
+
         # 2. Position 级监控
         if positions:
             logger.info("Step 2: 执行持仓级监控...")
@@ -158,12 +177,33 @@ class MonitoringPipeline:
             all_alerts.extend(position_alerts)
             logger.info(f"持仓级预警: {len(position_alerts)} 个")
 
+            # 打印持仓级预警详情
+            for alert in position_alerts:
+                level_icon = {"red": "🔴", "yellow": "🟡", "green": "🟢"}.get(alert.level.value, "⚪")
+                symbol_str = alert.symbol or "N/A"
+                value_str = f"{alert.current_value:.4f}" if alert.current_value is not None else "N/A"
+                threshold_str = alert.threshold_range or (f"{alert.threshold_value:.4f}" if alert.threshold_value else "N/A")
+                logger.info(
+                    f"  {level_icon} [{symbol_str}] {alert.alert_type.value}: "
+                    f"{alert.message} (当前={value_str}, 阈值={threshold_str})"
+                )
+
         # 3. Capital 级监控
         if capital_metrics:
             logger.info("Step 3: 执行资金级监控...")
             capital_alerts = self.capital_monitor.evaluate(capital_metrics)
             all_alerts.extend(capital_alerts)
             logger.info(f"资金级预警: {len(capital_alerts)} 个")
+
+            # 打印资金级预警详情
+            for alert in capital_alerts:
+                level_icon = {"red": "🔴", "yellow": "🟡", "green": "🟢"}.get(alert.level.value, "⚪")
+                value_str = f"{alert.current_value:.4f}" if alert.current_value is not None else "N/A"
+                threshold_str = alert.threshold_range or (f"{alert.threshold_value:.4f}" if alert.threshold_value else "N/A")
+                logger.info(
+                    f"  {level_icon} [Capital] {alert.alert_type.value}: "
+                    f"{alert.message} (当前={value_str}, 阈值={threshold_str})"
+                )
 
         # 确定整体状态
         overall_status = self._determine_overall_status(all_alerts)
@@ -178,8 +218,25 @@ class MonitoringPipeline:
             monitor_result=temp_result,
             positions=positions,
             vix=vix,
+            as_of_date=as_of_date,
+            data_provider=data_provider,
         )
         logger.info(f"生成建议: {len(suggestions)} 个")
+
+        # 打印建议详情
+        for suggestion in suggestions:
+            urgency_icon = {
+                "immediate": "🚨",
+                "soon": "⚡",
+                "monitor": "👀",
+            }.get(suggestion.urgency.value, "📋")
+            action_str = suggestion.action.value.upper()
+            logger.info(
+                f"  {urgency_icon} [{suggestion.symbol}] {action_str}: "
+                f"{suggestion.reason}"
+            )
+            if suggestion.details:
+                logger.info(f"      └─ {suggestion.details}")
 
         # 统计
         positions_at_risk = len(set(
@@ -224,12 +281,16 @@ class MonitoringPipeline:
         self,
         positions: list[PositionData],
         nlv: Optional[float] = None,
+        data_provider: "Optional[DataProvider]" = None,
+        as_of_date: Optional[date] = None,
     ) -> tuple[list[Alert], PortfolioMetrics]:
         """仅执行组合级监控
 
         Args:
             positions: 持仓数据列表
             nlv: 账户净值，用于计算 NLV 归一化百分比指标（可选）
+            data_provider: 数据提供者（回测模式使用）
+            as_of_date: 查询日期，用于获取滚动 Beta（回测模式使用）
 
         Returns:
             (预警列表, 组合指标)
@@ -244,6 +305,8 @@ class MonitoringPipeline:
             positions,  # type: ignore[arg-type]
             nlv=nlv,
             position_iv_hv_ratios=position_iv_hv_ratios if position_iv_hv_ratios else None,
+            data_provider=data_provider,
+            as_of_date=as_of_date,
         )
         alerts = self.portfolio_monitor.evaluate(portfolio_metrics)
         return alerts, portfolio_metrics

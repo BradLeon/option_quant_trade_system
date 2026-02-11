@@ -29,9 +29,9 @@ logger = logging.getLogger(__name__)
 @click.option(
     "--account-type",
     "-a",
-    type=click.Choice(["paper", "real"]),
+    type=click.Choice(["paper", "live"]),
     default=None,
-    help="账户类型：paper（模拟）或 real（真实）",
+    help="账户类型：paper（模拟）或 live（真实）",
 )
 @click.option(
     "--ibkr-only",
@@ -187,7 +187,7 @@ def _load_from_account(
     """从真实账户加载持仓数据
 
     Args:
-        account_type: "paper" 或 "real"
+        account_type: "paper" 或 "live"
         ibkr_only: 仅使用 IBKR
         futu_only: 仅使用 Futu
 
@@ -223,7 +223,7 @@ def _load_from_account(
     aggregator = conn.get_aggregator()
 
     # 获取合并后的组合
-    acc_type = AccType.PAPER if account_type == "paper" else AccType.REAL
+    acc_type = AccType.PAPER if account_type == "paper" else AccType.LIVE
     click.echo(f"📥 获取 {acc_type.value} 账户持仓...")
 
     portfolio = aggregator.get_consolidated_portfolio(account_type=acc_type)

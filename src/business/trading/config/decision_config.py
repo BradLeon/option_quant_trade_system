@@ -6,23 +6,11 @@ Decision Configuration - 决策引擎配置
 """
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any
 
+from src.business.config.config_mode import ConfigMode
 from src.business.trading.config.risk_config import RiskConfig
-
-
-def _env_str(key: str, default: str) -> str:
-    """从环境变量获取 str"""
-    return os.getenv(key, default)
-
-
-def _env_bool(key: str, default: bool) -> bool:
-    """从环境变量获取 bool"""
-    val = os.getenv(key)
-    if val is not None:
-        return val.lower() in ("true", "1", "yes")
-    return default
 
 
 @dataclass
@@ -112,35 +100,62 @@ class DecisionConfig:
     def margin_safety_buffer(self) -> float:
         return self.risk.margin_safety_buffer
 
+    _ENV_PREFIX = "DECISION_"
+
+    _BOOL_FIELDS = {"close_before_open", "single_action_per_underlying"}
+
     @classmethod
-    def load(cls) -> "DecisionConfig":
+    def load(
+        cls,
+        mode: ConfigMode = ConfigMode.LIVE,
+        risk_config: RiskConfig | None = None,
+    ) -> "DecisionConfig":
         """加载配置
 
-        优先级: 环境变量 > 默认值
+        Args:
+            mode: 配置模式 (LIVE 或 BACKTEST)
+            risk_config: 可选的 RiskConfig 实例，如果不提供则根据 mode 加载
+
+        Returns:
+            DecisionConfig 实例
+
+        优先级: 传入的 risk_config > 环境变量 > dataclass 字段默认值
+        环境变量命名规则: DECISION_ + 字段名大写，如 DECISION_DEFAULT_BROKER
         """
-        return cls(
-            risk=RiskConfig.load(),
-            close_before_open=_env_bool("DECISION_CLOSE_BEFORE_OPEN", True),
-            single_action_per_underlying=_env_bool(
-                "DECISION_SINGLE_ACTION_PER_UNDERLYING", True
-            ),
-            default_broker=_env_str("DECISION_DEFAULT_BROKER", "ibkr"),
-            default_price_type=_env_str("DECISION_DEFAULT_PRICE_TYPE", "mid"),
-        )
+        # 使用传入的 RiskConfig 或根据 mode 加载
+        risk = risk_config if risk_config is not None else RiskConfig.load(mode=mode)
+        kwargs: dict[str, Any] = {"risk": risk}
+        for f in fields(cls):
+            if f.name == "risk":
+                continue
+            env_key = f"{cls._ENV_PREFIX}{f.name.upper()}"
+            val = os.getenv(env_key)
+            if val is not None:
+                if f.name in cls._BOOL_FIELDS:
+                    kwargs[f.name] = val.lower() in ("true", "1", "yes")
+                else:
+                    kwargs[f.name] = val
+        return cls(**kwargs)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "DecisionConfig":
-        """从字典创建配置 (用于测试)"""
-        # 如果包含风控参数，传递给 RiskConfig
-        risk = RiskConfig.from_dict(data)
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+        mode: ConfigMode = ConfigMode.LIVE,
+    ) -> "DecisionConfig":
+        """从字典创建配置 (用于测试)
 
-        return cls(
-            risk=risk,
-            close_before_open=data.get("close_before_open", True),
-            single_action_per_underlying=data.get("single_action_per_underlying", True),
-            default_broker=data.get("default_broker", "ibkr"),
-            default_price_type=data.get("default_price_type", "mid"),
-        )
+        Args:
+            data: 配置字典
+            mode: 配置模式 (LIVE 或 BACKTEST)
+
+        只覆盖字典中存在的字段，缺失字段使用 dataclass 默认值。
+        """
+        risk = RiskConfig.from_dict(data, mode=mode)
+        valid_fields = {f.name for f in fields(cls)} - {"risk"}
+        kwargs = {k: v for k, v in data.items() if k in valid_fields}
+        kwargs["risk"] = risk
+        return cls(**kwargs)
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典"""

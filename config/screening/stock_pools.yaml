@@ -20,6 +20,9 @@ us_pools:
       - GOOG   # Alphabet
       - NVDA   # NVIDIA
       - TSLA   # Tesla
+      - TSM   # TSM
+      - AVGO # Broadcom
+      - MSFT # Microsoft
       # 指数 ETF
       #- IVE    # S&P 500 ETF
       #- QQQ    # Nasdaq 100 ETF

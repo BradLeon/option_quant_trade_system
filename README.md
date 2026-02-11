@@ -17,6 +17,13 @@ option_quant_trade_system/
 │   │   ├── currency/            # 汇率转换 (Yahoo Finance FX)
 │   │   ├── formatters/          # 数据格式化 (QuantConnect)
 │   │   └── cache/               # 数据缓存 (Supabase)
+│   ├── backtest/                # 策略回测系统 (NEW)
+│   │   ├── config/              # 回测配置 (BacktestConfig)
+│   │   ├── data/                # 数据层 (ThetaData, DuckDB)
+│   │   ├── engine/              # 回测引擎 (Executor, Simulator)
+│   │   ├── analysis/            # 分析 (Metrics, TradeAnalyzer)
+│   │   ├── visualization/       # 可视化 (Plotly Dashboard)
+│   │   └── optimization/        # 优化 (Parallel, Sweep, Benchmark, WalkForward)
 │   └── engine/                  # 计算引擎层
 │       ├── models/              # 引擎数据模型
 │       │   ├── bs_params.py     # BSParams - B-S计算参数封装
@@ -234,7 +241,7 @@ uv run optrade monitor --help
 uv run optrade monitor -a paper
 
 # 从真实账户监控
-uv run optrade monitor -a real
+uv run optrade monitor -a live
 
 # 仅使用 IBKR 账户
 uv run optrade monitor -a paper --ibkr-only
@@ -265,7 +272,7 @@ uv run optrade monitor -a paper -v
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `-a, --account-type` | 账户类型：`paper`, `real` | - |
+| `-a, --account-type` | 账户类型：`paper`, `live` | - |
 | `--ibkr-only` | 仅使用 IBKR 账户 | 否 |
 | `--futu-only` | 仅使用 Futu 账户 | 否 |
 | `-p, --positions` | 持仓数据 JSON 文件 | - |
@@ -301,7 +308,7 @@ uv run optrade dashboard
 uv run optrade dashboard -a paper
 
 # 从真实账户获取数据
-uv run optrade dashboard -a real
+uv run optrade dashboard -a live
 
 # 自动刷新（每30秒）
 uv run optrade dashboard -a paper -r 30
@@ -323,7 +330,7 @@ uv run optrade dashboard -a paper -v
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `-a, --account-type` | 账户类型：`paper`, `real` | 使用示例数据 |
+| `-a, --account-type` | 账户类型：`paper`, `live` | 使用示例数据 |
 | `--ibkr-only` | 仅使用 IBKR 账户 | 否 |
 | `--futu-only` | 仅使用 Futu 账户 | 否 |
 | `-r, --refresh` | 自动刷新间隔（秒），0=不刷新 | `0` |
@@ -854,6 +861,128 @@ with IBKRProvider() as provider:
 | 市场情绪分析 | Yahoo | VIX + Put/Call Ratio |
 | 宏观分析 | Yahoo | 完整宏观指标 |
 
+### IBC 自动化运行 (推荐)
+
+#### 为什么需要 IBC？
+
+IBKR TWS 在无人值守运行时存在以下问题，导致定时任务失败：
+
+| 问题 | 说明 |
+|------|------|
+| 强制每日重启 | IBKR 要求 TWS 每 24 小时重启一次，重启后需要重新登录 |
+| 2FA 认证阻塞 | 重启后需要手动完成双因素认证，无法自动恢复 |
+| 弹窗干扰 | 各种警告对话框会阻塞 API 连接 |
+| 会话冲突 | 其他设备登录会踢掉当前会话 |
+
+**IBC (IB Controller)** 是社区开源工具，通过 Java Agent 注入 TWS 进程，拦截并自动处理这些场景：
+- 自动输入用户名/密码完成登录
+- 自动处理 2FA 超时并重试
+- 自动点击确认各种弹窗
+- 自动处理每日重启流程
+- 支持通过参数切换 Paper/Live 账户
+
+#### 文件结构
+
+| 文件 | 位置 | 功能 |
+|------|------|------|
+| `IBC/` | `~/IBC/` | IBC 程序目录 (从 GitHub clone) |
+| `config.ini` | `~/IBC/config.ini` | Paper 账户的 IBC 配置 (用户名/密码/交易模式) |
+| `config-live.ini` | `~/IBC/config-live.ini` | Live 账户的 IBC 配置 |
+| `start_tws.sh` | `~/start_tws.sh` | TWS 启动脚本，支持 `paper`/`live` 参数 |
+| `ensure_tws.sh` | `~/ensure_tws.sh` | 智能账户切换脚本，确保 TWS 以正确账户运行 |
+| `com.ibc.tws.plist` | `~/Library/LaunchAgents/` | macOS 开机自启动配置 |
+
+#### 端口映射
+
+系统根据 `IBKR_APP_TYPE` 环境变量自动选择端口：
+
+```env
+# .env 配置
+IBKR_APP_TYPE=tws  # 使用 TWS 端口 (配合 IBC)
+```
+
+| 应用类型 | Paper 端口 | Live 端口 |
+|----------|-----------|-----------|
+| TWS (`tws`) | 7497 | 7496 |
+| Gateway (`gateway`) | 4002 | 4001 |
+
+当 CLI 指定 `-a paper` 时，代码自动连接 7497；指定 `-a live` 时连接 7496。
+
+#### 使用方式
+
+**手动启动 TWS**：
+```bash
+~/start_tws.sh          # 默认 paper 账户
+~/start_tws.sh paper    # 明确指定 paper
+~/start_tws.sh live     # 切换到 live 账户
+```
+
+**定时任务中使用**：
+```bash
+# 确保 TWS 以正确账户运行，然后执行命令
+~/ensure_tws.sh paper && uv run optrade trade monitor -a paper --execute -y --push
+```
+
+**开机自启动** (macOS)：
+```bash
+launchctl load ~/Library/LaunchAgents/com.ibc.tws.plist    # 启用
+launchctl unload ~/Library/LaunchAgents/com.ibc.tws.plist  # 停用
+```
+
+#### 工作流程
+
+```
+定时任务触发
+      │
+      v
+┌─────────────────┐
+│ ensure_tws.sh   │ ──检测端口──> TWS 已运行且账户匹配? ──是──> 直接执行命令
+│     paper       │                    │
+└─────────────────┘                   否
+                                       │
+                                       v
+                              ┌─────────────────┐
+                              │   stop_tws()    │  杀掉旧进程
+                              └────────┬────────┘
+                                       │
+                                       v
+                              ┌─────────────────┐
+                              │ start_tws.sh    │  用正确配置启动
+                              │     paper       │
+                              └────────┬────────┘
+                                       │
+                                       v
+                              ┌─────────────────┐
+                              │ 等待端口就绪     │  最多 60 秒
+                              │   (7497)        │
+                              └────────┬────────┘
+                                       │
+                                       v
+                              执行 optrade 命令
+```
+
+#### 快速安装
+
+```bash
+# 1. 克隆 IBC
+cd ~ && git clone https://github.com/IbcAlpha/IBC.git
+
+# 2. 创建配置文件 (根据模板修改用户名密码)
+cp ~/IBC/resources/config.ini ~/IBC/config.ini
+cp ~/IBC/resources/config.ini ~/IBC/config-live.ini
+# 编辑 config.ini 设置 Paper 账户凭据
+# 编辑 config-live.ini 设置 Live 账户凭据
+
+# 3. 创建启动脚本 (参考上方 start_tws.sh 和 ensure_tws.sh)
+# 4. 设置执行权限
+chmod +x ~/start_tws.sh ~/ensure_tws.sh
+
+# 5. 测试启动
+~/start_tws.sh paper
+```
+
+详细配置参考：[IBC 用户指南](https://github.com/IbcAlpha/IBC/blob/master/userguide.md)
+
 ## 计算引擎层 (Calculation Engine)
 
 计算引擎层提供期权量化指标的计算功能，采用四层架构设计：
@@ -1162,6 +1291,230 @@ print(get_sentiment_summary(hk_sentiment))
 - 综合评分采用加权计算：VIX(25%) + 期限结构(15%) + 主趋势(25%) + 次趋势(15%) + PCR(20%)
 - 缺失数据时权重自动重新分配
 
+## 策略回测系统 (Backtest Module)
+
+策略回测系统支持基于历史数据的期权策略验证，最大化复用现有 ScreeningPipeline/MonitoringPipeline。
+
+### 模块结构
+
+```
+src/backtest/
+├── config/                      # 回测配置
+│   └── backtest_config.py       # BacktestConfig 数据类
+├── data/                        # 数据层
+│   ├── thetadata_client.py      # ThetaData REST API 客户端
+│   ├── data_downloader.py       # 批量数据下载器
+│   ├── duckdb_provider.py       # DuckDB 数据提供者 (实现 DataProvider)
+│   └── schema.py                # DuckDB/Parquet 表结构定义
+├── engine/                      # 回测引擎
+│   ├── backtest_executor.py     # 回测执行器 (主入口)
+│   ├── account_simulator.py     # 账户模拟器 (资金/保证金)
+│   ├── position_tracker.py      # 持仓跟踪器
+│   └── trade_simulator.py       # 交易模拟器 (滑点/佣金)
+├── analysis/                    # 分析模块
+│   ├── metrics.py               # BacktestMetrics (Sharpe/Sortino/Calmar)
+│   └── trade_analyzer.py        # 交易分析 (按标的/月份/年份)
+├── visualization/               # 可视化
+│   └── dashboard.py             # Plotly 仪表盘 (HTML 报告)
+└── optimization/                # 优化模块
+    ├── parallel_runner.py       # 并行回测 (多进程/多线程)
+    ├── parameter_sweep.py       # 参数网格搜索
+    ├── benchmark.py             # 基准比较 (SPY Buy&Hold)
+    └── walk_forward.py          # 滚动验证 (过拟合检测)
+```
+
+### 快速开始
+
+```python
+from datetime import date
+from src.backtest import (
+    BacktestConfig,
+    DuckDBProvider,
+    BacktestExecutor,
+    BacktestMetrics,
+    BacktestDashboard,
+)
+
+# 1. 配置回测
+config = BacktestConfig(
+    name="SHORT_PUT_2023",
+    start_date=date(2023, 1, 1),
+    end_date=date(2023, 12, 31),
+    symbols=["AAPL", "MSFT", "NVDA"],
+    initial_capital=100_000,
+    max_positions=10,
+    max_position_pct=0.10,  # 单标的最大 10%
+)
+
+# 2. 创建数据提供者
+provider = DuckDBProvider(
+    data_dir="/path/to/thetadata",
+    as_of_date=config.start_date,
+)
+
+# 3. 运行回测
+executor = BacktestExecutor(config, provider)
+result = executor.run()
+
+# 4. 计算指标
+metrics = BacktestMetrics.from_backtest_result(result)
+print(f"总收益: {metrics.total_return_pct:.2%}")
+print(f"Sharpe: {metrics.sharpe_ratio:.2f}")
+print(f"最大回撤: {metrics.max_drawdown:.2%}")
+
+# 5. 生成报告
+dashboard = BacktestDashboard(result, metrics)
+dashboard.generate_report("reports/backtest_2023.html")
+```
+
+### CLI 命令
+
+```bash
+# 运行回测
+uv run optrade trade backtest --config config/backtest/short_put.yaml
+
+# 指定输出目录
+uv run optrade trade backtest --config short_put.yaml --output reports/
+
+# 详细日志
+uv run optrade trade backtest --config short_put.yaml -v
+```
+
+### 参数优化
+
+```python
+from src.backtest import ParameterSweep, SweepResult
+
+# 创建参数搜索
+sweep = ParameterSweep(base_config)
+sweep.add_param("max_positions", [5, 10, 15])
+sweep.add_param("max_position_pct", [0.05, 0.10, 0.15])
+
+# 并行执行 (9 种组合)
+result = sweep.run(max_workers=4)
+
+# 查看最佳参数
+print(f"最佳 Sharpe 参数: {result.best_by_sharpe.params}")
+print(f"最佳收益参数: {result.best_by_return.params}")
+
+# 生成热力图
+x, y, z = result.get_heatmap_data("max_positions", "max_position_pct", "sharpe_ratio")
+```
+
+### 基准比较
+
+```python
+from src.backtest import BenchmarkComparison
+
+# 与 SPY 比较
+benchmark = BenchmarkComparison(result)
+comparison = benchmark.compare_with_spy(provider)
+
+print(f"策略收益: {comparison.strategy_total_return:.2%}")
+print(f"SPY收益: {comparison.benchmark_total_return:.2%}")
+print(f"Alpha: {comparison.alpha:.2%}")
+print(f"Beta: {comparison.beta:.2f}")
+print(f"信息比率: {comparison.information_ratio:.2f}")
+
+# 集成到仪表盘
+dashboard = BacktestDashboard(result, metrics, benchmark_result=comparison)
+dashboard.generate_report("reports/backtest_with_benchmark.html")
+```
+
+### Walk-Forward 验证
+
+```python
+from src.backtest import WalkForwardValidator
+
+# 滚动验证 (12个月训练 + 3个月测试)
+validator = WalkForwardValidator(base_config)
+wf_result = validator.run(
+    train_months=12,
+    test_months=3,
+    n_splits=4,
+)
+
+print(f"样本内收益: {wf_result.is_total_return:.2%}")
+print(f"样本外收益: {wf_result.oos_total_return:.2%}")
+print(f"过拟合评分: {wf_result.overfitting_score:.2f}")  # 0-1, 越高越可能过拟合
+
+# 查看详细摘要
+print(wf_result.summary())
+```
+
+### 性能优化
+
+```python
+from src.backtest import ParallelBacktestRunner
+
+# 多标的并行回测
+runner = ParallelBacktestRunner(max_workers=4)
+result = runner.run_multi_symbol(
+    base_config=config,
+    symbols=["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN"],
+)
+
+print(f"完成: {result.completed_tasks}/{result.total_tasks}")
+print(f"成功率: {result.success_rate:.1%}")
+
+# 创建优化的 DuckDB 数据库 (带索引)
+provider.create_optimized_db("backtest.duckdb", symbols=["AAPL", "MSFT"])
+provider.use_optimized_db("backtest.duckdb")
+```
+
+### Greeks 计算缓存
+
+```python
+from src.engine.bs import calc_bs_greeks_cached, get_greeks_cache_info
+
+# 使用缓存的 Greeks 计算 (重复计算时性能提升显著)
+greeks = calc_bs_greeks_cached(params)
+
+# 查看缓存效率
+info = get_greeks_cache_info()
+print(f"缓存命中率: {info.hits / (info.hits + info.misses):.1%}")
+```
+
+### 数据准备
+
+回测系统使用 ThetaData 作为历史数据源。数据需要预先下载到本地：
+
+```python
+from src.backtest import ThetaDataClient, DataDownloader
+
+# 1. 创建客户端
+client = ThetaDataClient(api_key="your_api_key")
+
+# 2. 下载数据
+downloader = DataDownloader(client, data_dir="/path/to/data")
+downloader.download_symbols(
+    symbols=["AAPL", "MSFT"],
+    start_date=date(2020, 1, 1),
+    end_date=date(2024, 12, 31),
+)
+```
+
+### 回测配置文件
+
+```yaml
+# config/backtest/short_put.yaml
+name: SHORT_PUT_2020_2024
+start_date: 2020-01-01
+end_date: 2024-12-31
+symbols:
+  - AAPL
+  - MSFT
+  - NVDA
+strategy_type: SHORT_PUT
+initial_capital: 100000
+max_margin_utilization: 0.5
+max_position_pct: 0.10
+max_positions: 10
+slippage_pct: 0.001
+commission_per_contract: 0.65
+data_dir: /Volumes/TradingData/thetadata
+```
+
 ## 账户持仓模块 (Account & Position)
 
 多券商账户聚合模块，支持从 IBKR 和 Futu 获取持仓，统一汇率转换，并使用智能路由获取期权 Greeks。
@@ -1207,7 +1560,7 @@ from src.data.providers.account_aggregator import AccountAggregator
 from src.data.models import AccountType
 
 # 连接多个券商
-with IBKRProvider(account_type=AccountType.REAL) as ibkr, \
+with IBKRProvider(account_type=AccountType.LIVE) as ibkr, \
      FutuProvider() as futu:
 
     # 创建 UnifiedProvider 用于期权 Greeks 路由
@@ -1226,7 +1579,7 @@ with IBKRProvider(account_type=AccountType.REAL) as ibkr, \
 
     # 获取合并后的投资组合
     portfolio = aggregator.get_consolidated_portfolio(
-        account_type=AccountType.REAL,
+        account_type=AccountType.LIVE,
         base_currency="USD",
     )
 
@@ -1635,21 +1988,20 @@ HTTPS_PROXY=http://127.0.0.1:33210
 30 0,1,2,3,4,5,6 * * 2-6 cd $PROJECT_DIR && uv run optrade screen -m us --push >> logs/screen_us_$(date +\%Y\%m\%d).log 2>&1
 
 # ------------------------------------------------------------
-# 持仓监控: 每小时执行，推送风险预警
-# US 交易时段: 北京时间 21:30-06:00
-# HK 交易时段: 北京时间 09:30-16:00
+# 持仓监控: 收盘前1小时执行，推送风险预警，周一到周五
+# HK 收盘: 16:00 北京时间 → 监控 15:00
+# US 收盘: 16:00 ET → 监控 3:00/4:00 AM 北京时间 (EDT/EST)
 # ------------------------------------------------------------
-# US 市场监控（每小时整点）
-0 22,23 * * 1-5 cd $PROJECT_DIR && uv run optrade monitor -a real --push >> logs/monitor_$(date +\%Y\%m\%d).log 2>&1
-0 0,1,2,3,4,5,6 * * 2-6 cd $PROJECT_DIR && uv run optrade monitor -a real --push >> logs/monitor_$(date +\%Y\%m\%d).log 2>&1
+# HK 收盘前1小时: 15:00 北京时间，周一到周五
+0 15 * * 1-5 cd $PROJECT_DIR && uv run optrade monitor -a live --push >> logs/monitor_$(date +\%Y\%m\%d).log 2>&1
 
-# HK 市场监控（每小时整点）
-0 10,11,12,13,14,15,16 * * 1-5 cd $PROJECT_DIR && uv run optrade monitor -a real --push >> logs/monitor_$(date +\%Y\%m\%d).log 2>&1
+# US 收盘前1小时: 3:00 (夏令时) / 4:00 (冬令时) 北京时间，周二到周六
+0 3,4 * * 2-6 cd $PROJECT_DIR && uv run optrade monitor -a live --push >> logs/monitor_$(date +\%Y\%m\%d).log 2>&1
 
 # ------------------------------------------------------------
-# Dashboard 仪表盘: 每天 9:30, 16:30, 22:30 (轻量级展示)
+# Dashboard 仪表盘: 每天 9:30, 16:30, 22:30，周一到周五
 # ------------------------------------------------------------
-30 9,16,22 * * * cd $PROJECT_DIR && uv run optrade dashboard -a real --push >> logs/dashboard_$(date +\%Y\%m\%d).log 2>&1
+30 9,16,22 * * 1-5 cd $PROJECT_DIR && uv run optrade dashboard -a live --push >> logs/dashboard_$(date +\%Y\%m\%d).log 2>&1
 ```
 
 **常见问题排查**：

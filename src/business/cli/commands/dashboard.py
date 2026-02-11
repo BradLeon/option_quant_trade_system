@@ -29,9 +29,9 @@ logger = logging.getLogger(__name__)
 @click.option(
     "--account-type",
     "-a",
-    type=click.Choice(["paper", "real"]),
+    type=click.Choice(["paper", "live"]),
     default=None,
-    help="账户类型：paper（模拟）或 real（真实）",
+    help="账户类型：paper（模拟）或 live（真实）",
 )
 @click.option(
     "--ibkr-only",
@@ -89,7 +89,7 @@ def dashboard(
       optrade dashboard -a paper --ibkr-only
 
       # 推送结果到飞书
-      optrade dashboard -a real --push
+      optrade dashboard -a live --push
     """
     # 配置日志
     log_level = logging.DEBUG if verbose else logging.WARNING
@@ -206,7 +206,7 @@ def _load_from_account(
     """从真实账户加载持仓数据
 
     Args:
-        account_type: "paper" 或 "real"
+        account_type: "paper" 或 "live"
         ibkr_only: 仅使用 IBKR
         futu_only: 仅使用 Futu
 
@@ -242,7 +242,7 @@ def _load_from_account(
         aggregator = conn.get_aggregator()
 
         # 获取合并后的组合
-        acc_type = AccType.PAPER if account_type == "paper" else AccType.REAL
+        acc_type = AccType.PAPER if account_type == "paper" else AccType.LIVE
         portfolio = aggregator.get_consolidated_portfolio(account_type=acc_type)
 
         # 使用 DataBridge 转换持仓

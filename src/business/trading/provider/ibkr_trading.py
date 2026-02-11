@@ -64,8 +64,26 @@ class IBKRTradingProvider(TradingProvider):
     """
 
     # 端口定义
-    PAPER_PORT = 4002  # Paper Trading Gateway
-    LIVE_PORT = 4001  # Live Trading Gateway (禁止使用)
+    # TWS ports: Paper=7497, Live=7496
+    # Gateway ports: Paper=4002, Live=4001
+    # Default to TWS ports (set IBKR_APP_TYPE=gateway to use Gateway ports)
+    TWS_PAPER_PORT = 7497
+    TWS_LIVE_PORT = 7496
+    GATEWAY_PAPER_PORT = 4002
+    GATEWAY_LIVE_PORT = 4001
+
+    @classmethod
+    def _get_paper_port(cls) -> int:
+        """Get paper trading port based on IBKR_APP_TYPE setting."""
+        app_type = os.getenv("IBKR_APP_TYPE", "tws").lower()
+        if app_type == "gateway":
+            return cls.GATEWAY_PAPER_PORT
+        return cls.TWS_PAPER_PORT
+
+    @property
+    def PAPER_PORT(self) -> int:  # noqa: N802
+        """Paper trading port (depends on IBKR_APP_TYPE)."""
+        return self._get_paper_port()
 
     # IBKR 错误代码映射
     ERROR_CODES: dict[int, str] = {
@@ -93,14 +111,14 @@ class IBKRTradingProvider(TradingProvider):
 
         Args:
             host: TWS/Gateway 主机地址
-            port: 端口号 (只允许 4002)
+            port: 端口号 (只允许 Paper Trading 端口: TWS=7497, Gateway=4002)
             client_id: 客户端 ID
             timeout: 超时时间
             account_type: 账户类型 (必须是 PAPER)
 
         Raises:
             AccountTypeError: 账户类型不是 PAPER
-            ValueError: 端口不是 4002
+            ValueError: 端口不是 Paper Trading 端口
         """
         # 调用父类构造函数验证账户类型
         super().__init__(account_type)
@@ -109,14 +127,17 @@ class IBKRTradingProvider(TradingProvider):
 
         self._host = host or os.getenv("IBKR_HOST", "127.0.0.1")
 
+        # 获取 Paper Trading 端口 (根据 IBKR_APP_TYPE 自动选择)
+        paper_port = self._get_paper_port()
+
         # 端口验证: 只允许 Paper Trading 端口
-        if port is not None and port != self.PAPER_PORT:
+        if port is not None and port != paper_port:
             raise AccountTypeError(
-                f"Only Paper Trading port ({self.PAPER_PORT}) is allowed. "
+                f"Only Paper Trading port ({paper_port}) is allowed. "
                 f"Port {port} is NOT permitted. "
                 "This system does NOT support live trading."
             )
-        self._port = port or self.PAPER_PORT
+        self._port = port or paper_port
 
         # 生成唯一的 client ID
         default_client_id = 200 + (os.getpid() % 800)  # 200-999 范围

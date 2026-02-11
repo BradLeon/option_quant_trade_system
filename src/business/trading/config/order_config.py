@@ -5,43 +5,8 @@ Order Configuration - 订单管理配置
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Any
-
-
-def _env_str(key: str, default: str) -> str:
-    """从环境变量获取 str"""
-    return os.getenv(key, default)
-
-
-def _env_float(key: str, default: float) -> float:
-    """从环境变量获取 float"""
-    val = os.getenv(key)
-    if val is not None:
-        try:
-            return float(val)
-        except ValueError:
-            pass
-    return default
-
-
-def _env_int(key: str, default: int) -> int:
-    """从环境变量获取 int"""
-    val = os.getenv(key)
-    if val is not None:
-        try:
-            return int(val)
-        except ValueError:
-            pass
-    return default
-
-
-def _env_bool(key: str, default: bool) -> bool:
-    """从环境变量获取 bool"""
-    val = os.getenv(key)
-    if val is not None:
-        return val.lower() in ("true", "1", "yes")
-    return default
 
 
 @dataclass
@@ -80,46 +45,44 @@ class OrderConfig:
     execution_mode: str = "manual"  # manual or auto
     require_confirm: bool = True  # CLI 需要 --confirm
 
+    _ENV_PREFIX = "ORDER_"
+
+    # bool 字段需要特殊解析
+    _BOOL_FIELDS = {
+        "notify_on_submit", "notify_on_fill", "notify_on_reject",
+        "notify_on_cancel", "require_confirm",
+    }
+
     @classmethod
     def load(cls) -> "OrderConfig":
         """加载配置
 
-        优先级: 环境变量 > 默认值
+        优先级: 环境变量 > dataclass 字段默认值
+        环境变量命名规则: ORDER_ + 字段名大写，如 ORDER_EXECUTION_MODE
         """
-        return cls(
-            storage_path=_env_str("ORDER_STORAGE_PATH", "data/trading/orders"),
-            storage_format=_env_str("ORDER_STORAGE_FORMAT", "json"),
-            default_time_in_force=_env_str("ORDER_DEFAULT_TIME_IN_FORCE", "DAY"),
-            default_order_type=_env_str("ORDER_DEFAULT_ORDER_TYPE", "limit"),
-            max_price_deviation_pct=_env_float("ORDER_MAX_PRICE_DEVIATION_PCT", 0.05),
-            max_retries=_env_int("ORDER_MAX_RETRIES", 3),
-            retry_delay_seconds=_env_int("ORDER_RETRY_DELAY_SECONDS", 5),
-            notify_on_submit=_env_bool("ORDER_NOTIFY_ON_SUBMIT", True),
-            notify_on_fill=_env_bool("ORDER_NOTIFY_ON_FILL", True),
-            notify_on_reject=_env_bool("ORDER_NOTIFY_ON_REJECT", True),
-            notify_on_cancel=_env_bool("ORDER_NOTIFY_ON_CANCEL", True),
-            execution_mode=_env_str("ORDER_EXECUTION_MODE", "manual"),
-            require_confirm=_env_bool("ORDER_REQUIRE_CONFIRM", True),
-        )
+        kwargs: dict[str, Any] = {}
+        for f in fields(cls):
+            env_key = f"{cls._ENV_PREFIX}{f.name.upper()}"
+            val = os.getenv(env_key)
+            if val is not None:
+                if f.name in cls._BOOL_FIELDS:
+                    kwargs[f.name] = val.lower() in ("true", "1", "yes")
+                else:
+                    try:
+                        kwargs[f.name] = f.type(val) if callable(f.type) else val
+                    except (ValueError, TypeError):
+                        pass
+        return cls(**kwargs)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "OrderConfig":
-        """从字典创建配置 (用于测试)"""
-        return cls(
-            storage_path=data.get("storage_path", "data/trading/orders"),
-            storage_format=data.get("storage_format", "json"),
-            default_time_in_force=data.get("default_time_in_force", "DAY"),
-            default_order_type=data.get("default_order_type", "limit"),
-            max_price_deviation_pct=data.get("max_price_deviation_pct", 0.05),
-            max_retries=data.get("max_retries", 3),
-            retry_delay_seconds=data.get("retry_delay_seconds", 5),
-            notify_on_submit=data.get("notify_on_submit", True),
-            notify_on_fill=data.get("notify_on_fill", True),
-            notify_on_reject=data.get("notify_on_reject", True),
-            notify_on_cancel=data.get("notify_on_cancel", True),
-            execution_mode=data.get("execution_mode", "manual"),
-            require_confirm=data.get("require_confirm", True),
-        )
+        """从字典创建配置 (用于测试)
+
+        只覆盖字典中存在的字段，缺失字段使用 dataclass 默认值。
+        """
+        valid_fields = {f.name for f in fields(cls)}
+        kwargs = {k: v for k, v in data.items() if k in valid_fields}
+        return cls(**kwargs)
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典"""

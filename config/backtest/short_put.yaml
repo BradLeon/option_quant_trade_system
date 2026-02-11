@@ -1,0 +1,51 @@
+# Short Put Strategy Backtest Configuration
+#
+# 用于回测 SHORT_PUT 策略在历史数据上的表现
+#
+# Usage:
+#   optrade backtest --config config/backtest/short_put.yaml
+
+name: SHORT_PUT_2020_2024
+description: |
+  SHORT_PUT 策略回测：在 IV Rank 高位卖出 OTM Put，
+  Delta 0.15-0.30，DTE 30-45 天。
+
+# 时间范围
+start_date: "2020-01-01"
+end_date: "2024-12-31"
+
+# 标的池 (高流动性美股)
+symbols:
+  - AAPL
+  - MSFT
+  - NVDA
+  - GOOG
+  - AMZN
+  - META
+  - TSLA
+  - AMD
+  - NFLX
+  - QQQ
+
+market: US
+
+# 策略配置 (复用现有配置)
+strategy_type: SHORT_PUT
+screening_config: config/screening/short_put.yaml
+monitoring_config: config/monitoring/thresholds.yaml
+
+# 资金配置
+initial_capital: 100000.0
+max_margin_utilization: 0.70    # 最大保证金使用率 70%
+max_position_pct: 0.10          # 单标的最大仓位 10%
+max_positions: 10               # 最大持仓数量
+
+# 执行配置
+slippage_pct: 0.001             # 滑点 0.1%
+commission_per_contract: 0.65   # 每张合约手续费 $0.65
+
+# 数据配置
+data_dir: /Volumes/TradingData/processed
+
+# 其他
+verbose: false

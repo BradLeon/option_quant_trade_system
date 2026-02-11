@@ -8,33 +8,16 @@ Risk Configuration - 风控配置
 - Layer 2: Position-Level (持仓级别) - 限制单标的暴露
 - Layer 3: Order-Level (订单级别) - 验证单笔订单
 - Emergency: 紧急平仓触发阈值
+
+配置模式:
+- LIVE: 使用严格的生产环境默认值
+- BACKTEST: 应用 _BACKTEST_OVERRIDES 放宽某些参数
 """
 
-import os
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, fields
+from typing import Any, ClassVar
 
-
-def _env_float(key: str, default: float) -> float:
-    """从环境变量获取 float，支持覆盖默认值"""
-    val = os.getenv(key)
-    if val is not None:
-        try:
-            return float(val)
-        except ValueError:
-            pass
-    return default
-
-
-def _env_int(key: str, default: int) -> int:
-    """从环境变量获取 int，支持覆盖默认值"""
-    val = os.getenv(key)
-    if val is not None:
-        try:
-            return int(val)
-        except ValueError:
-            pass
-    return default
+from src.business.config.config_mode import ConfigMode
 
 
 @dataclass
@@ -42,11 +25,20 @@ class RiskConfig:
     """风控配置
 
     所有风控参数的唯一配置源。
-    支持通过环境变量覆盖默认值 (前缀: RISK_)
+
+    配置来源 (优先级高→低):
+    - LIVE 模式: dataclass 默认值
+    - BACKTEST 模式: _BACKTEST_OVERRIDES > dataclass 默认值
 
     示例:
-        export RISK_MAX_MARGIN_UTILIZATION=0.60
-        export RISK_KELLY_FRACTION=0.20
+        # Live 模式 (严格默认值)
+        config = RiskConfig.load()
+
+        # Backtest 模式 (放宽参数)
+        config = RiskConfig.load(mode=ConfigMode.BACKTEST)
+
+        # 从字典加载 (可覆盖任意字段)
+        config = RiskConfig.from_dict({"max_notional_pct_per_underlying": 0.70})
     """
 
     # =========================================================================
@@ -65,8 +57,8 @@ class RiskConfig:
     # =========================================================================
 
     max_contracts_per_underlying: int = 10  # 单标的最大合约数
-    max_notional_pct_per_underlying: float = 0.10  # 5% of NLV - 单标的最大名义价值占比
-    max_total_option_positions: int = 20  # 期权持仓总数上限
+    max_notional_pct_per_underlying: float = 0.05  # 5% of NLV - 单标的最大名义价值占比
+    max_total_option_positions: int = 100  # 期权持仓总数上限
     max_concentration_pct: float = 0.20  # 20% - 单标的最大集中度
 
     # =========================================================================
@@ -102,93 +94,61 @@ class RiskConfig:
 
     kelly_fraction: float = 0.25  # 1/4 Kelly - 保守策略
 
+    # =========================================================================
+    # Backtest Overrides (回测模式覆盖值)
+    # 这些值在 BACKTEST 模式下会覆盖上面的默认值
+    # =========================================================================
+
+    _BACKTEST_OVERRIDES: ClassVar[dict[str, Any]] = {
+        # 放宽单标的敞口限制，便于回测测试
+        "max_notional_pct_per_underlying": 0.50,  # 50% (live: 5%)
+    }
+
     @classmethod
-    def load(cls) -> "RiskConfig":
+    def load(cls, mode: ConfigMode = ConfigMode.LIVE) -> "RiskConfig":
         """加载配置
 
-        优先级: 环境变量 > 默认值
+        Args:
+            mode: 配置模式 (LIVE 或 BACKTEST)
+
+        Returns:
+            RiskConfig 实例
         """
-        return cls(
-            # Layer 1
-            max_margin_utilization=_env_float(
-                "RISK_MAX_MARGIN_UTILIZATION", 0.70
-            ),
-            min_cash_ratio=_env_float("RISK_MIN_CASH_RATIO", 0.10),
-            max_gross_leverage=_env_float("RISK_MAX_GROSS_LEVERAGE", 4.0),
-            max_stress_test_loss=_env_float("RISK_MAX_STRESS_TEST_LOSS", 0.20),
-            # Layer 2
-            max_contracts_per_underlying=_env_int(
-                "RISK_MAX_CONTRACTS_PER_UNDERLYING", 10
-            ),
-            max_notional_pct_per_underlying=_env_float(
-                "RISK_MAX_NOTIONAL_PCT_PER_UNDERLYING", 0.05
-            ),
-            max_total_option_positions=_env_int(
-                "RISK_MAX_TOTAL_OPTION_POSITIONS", 20
-            ),
-            max_concentration_pct=_env_float("RISK_MAX_CONCENTRATION_PCT", 0.20),
-            # Layer 3
-            max_projected_margin_utilization=_env_float(
-                "RISK_MAX_PROJECTED_MARGIN_UTILIZATION", 0.80
-            ),
-            max_price_deviation_pct=_env_float(
-                "RISK_MAX_PRICE_DEVIATION_PCT", 0.05
-            ),
-            max_order_value_pct=_env_float("RISK_MAX_ORDER_VALUE_PCT", 0.10),
-            # Margin
-            margin_rate_stock_option=_env_float(
-                "RISK_MARGIN_RATE_STOCK_OPTION", 0.20
-            ),
-            margin_rate_index_option=_env_float(
-                "RISK_MARGIN_RATE_INDEX_OPTION", 0.15
-            ),
-            margin_rate_minimum=_env_float("RISK_MARGIN_RATE_MINIMUM", 0.10),
-            margin_safety_buffer=_env_float("RISK_MARGIN_SAFETY_BUFFER", 0.80),
-            # Emergency
-            emergency_margin_utilization=_env_float(
-                "RISK_EMERGENCY_MARGIN_UTILIZATION", 0.85
-            ),
-            emergency_cash_ratio=_env_float("RISK_EMERGENCY_CASH_RATIO", 0.05),
-            # Kelly
-            kelly_fraction=_env_float("RISK_KELLY_FRACTION", 0.25),
-        )
+        if mode == ConfigMode.LIVE:
+            # Live 模式: 使用 dataclass 默认值 (严格)
+            return cls()
+        else:
+            # Backtest 模式: 应用 backtest 覆盖
+            return cls(**cls._BACKTEST_OVERRIDES)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "RiskConfig":
-        """从字典创建配置 (用于测试)"""
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+        mode: ConfigMode = ConfigMode.LIVE,
+    ) -> "RiskConfig":
+        """从字典创建配置
+
+        Args:
+            data: 配置字典 (支持嵌套 risk_limits 或扁平结构)
+            mode: 配置模式
+
+        Returns:
+            RiskConfig 实例
+        """
+        # 先获取基础配置
+        base = cls.load(mode)
+
         # 支持嵌套结构 (risk_limits) 和扁平结构
         risk_limits = data.get("risk_limits", data)
 
-        return cls(
-            max_margin_utilization=risk_limits.get("max_margin_utilization", 0.70),
-            min_cash_ratio=risk_limits.get("min_cash_ratio", 0.10),
-            max_gross_leverage=risk_limits.get("max_gross_leverage", 4.0),
-            max_stress_test_loss=risk_limits.get("max_stress_test_loss", 0.20),
-            max_contracts_per_underlying=risk_limits.get(
-                "max_contracts_per_underlying", 10
-            ),
-            max_notional_pct_per_underlying=risk_limits.get(
-                "max_notional_pct_per_underlying", 0.05
-            ),
-            max_total_option_positions=risk_limits.get(
-                "max_total_option_positions", 20
-            ),
-            max_concentration_pct=risk_limits.get("max_concentration_pct", 0.20),
-            max_projected_margin_utilization=risk_limits.get(
-                "max_projected_margin_utilization", 0.80
-            ),
-            max_price_deviation_pct=risk_limits.get("max_price_deviation_pct", 0.05),
-            max_order_value_pct=risk_limits.get("max_order_value_pct", 0.10),
-            margin_rate_stock_option=risk_limits.get("margin_rate_stock_option", 0.20),
-            margin_rate_index_option=risk_limits.get("margin_rate_index_option", 0.15),
-            margin_rate_minimum=risk_limits.get("margin_rate_minimum", 0.10),
-            margin_safety_buffer=risk_limits.get("margin_safety_buffer", 0.80),
-            emergency_margin_utilization=risk_limits.get(
-                "emergency_margin_utilization", 0.85
-            ),
-            emergency_cash_ratio=risk_limits.get("emergency_cash_ratio", 0.05),
-            kelly_fraction=risk_limits.get("kelly_fraction", 0.25),
-        )
+        # 用字典中的值覆盖
+        valid_fields = {f.name for f in fields(cls) if not f.name.startswith("_")}
+        for key, value in risk_limits.items():
+            if key in valid_fields:
+                setattr(base, key, value)
+
+        return base
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典"""

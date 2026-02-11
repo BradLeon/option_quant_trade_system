@@ -354,7 +354,7 @@ def main():
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    account_type = AccountType.PAPER if args.account_type == "paper" else AccountType.REAL
+    account_type = AccountType.PAPER if args.account_type == "paper" else AccountType.LIVE
 
     print("\n" + "=" * 70)
     print("  Portfolio Calculation Verification")

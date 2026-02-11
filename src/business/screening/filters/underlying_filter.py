@@ -32,6 +32,7 @@ from src.business.screening.models import (
 )
 from src.data.models.stock import KlineType
 from src.data.models.technical import TechnicalData
+from src.data.providers.base import DataProvider
 from src.data.providers.unified_provider import UnifiedDataProvider
 from src.engine.position.technical.metrics import (
     calc_technical_score,
@@ -70,16 +71,26 @@ class UnderlyingFilter:
     def __init__(
         self,
         config: ScreeningConfig,
-        provider: UnifiedDataProvider | None = None,
+        provider: DataProvider | None = None,
     ) -> None:
         """初始化标的过滤器
 
         Args:
             config: 筛选配置
-            provider: 统一数据提供者，默认创建新实例
+            provider: 数据提供者 (DataProvider 或其子类)，默认创建 UnifiedDataProvider
         """
         self.config = config
-        self.provider = provider or UnifiedDataProvider()
+        self.provider: DataProvider = provider or UnifiedDataProvider()
+
+    def _get_reference_date(self) -> date:
+        """获取参考日期（回测兼容）
+
+        在回测模式下，provider 会有 as_of_date 属性，表示当前模拟的日期。
+        实盘模式下，使用 date.today()。
+        """
+        if hasattr(self.provider, "as_of_date"):
+            return self.provider.as_of_date
+        return date.today()
 
     def evaluate(
         self,
@@ -355,9 +366,8 @@ class UnderlyingFilter:
             当前 VIX 值或 None
         """
         try:
-            from datetime import timedelta
-
-            end_date = date.today()
+            # 使用统一的参考日期（回测兼容）
+            end_date = self._get_reference_date()
             start_date = end_date - timedelta(days=5)
 
             macro_data = self.provider.get_macro_data(symbol, start_date, end_date)
@@ -430,7 +440,7 @@ class UnderlyingFilter:
         指标计算：engine.position.technical.metrics 模块
         """
         try:
-            end_date = date.today()
+            end_date = self._get_reference_date()
             start_date = end_date - timedelta(days=300)  # 足够计算技术指标
 
             # 从 data_layer 获取 K 线数据
@@ -740,7 +750,7 @@ class UnderlyingFilter:
 
             fundamental = fundamental_data
 
-            today = date.today()
+            today = self._get_reference_date()
 
             # P1: 检查财报日期（阻塞）
             if hasattr(fundamental, "earnings_date") and fundamental.earnings_date:

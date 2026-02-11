@@ -35,6 +35,7 @@ from src.business.screening.models import (
     UnderlyingScore,
 )
 from src.data.models.option import OptionContract, OptionType
+from src.data.providers.base import DataProvider
 from src.data.providers.unified_provider import UnifiedDataProvider
 from src.engine.models.enums import StrategyType
 
@@ -60,16 +61,16 @@ class ScreeningPipeline:
     def __init__(
         self,
         config: ScreeningConfig,
-        provider: UnifiedDataProvider | None = None,
+        provider: DataProvider | None = None,
     ) -> None:
         """初始化筛选管道
 
         Args:
             config: 筛选配置
-            provider: 统一数据提供者，默认创建新实例
+            provider: 数据提供者 (DataProvider 或其子类)，默认创建 UnifiedDataProvider
         """
         self.config = config
-        self.provider = provider or UnifiedDataProvider()
+        self.provider: DataProvider = provider or UnifiedDataProvider()
 
         # 初始化各层过滤器，共享同一个 provider
         self.market_filter = MarketFilter(config, self.provider)
@@ -412,13 +413,13 @@ class ScreeningPipeline:
 # 便捷函数
 def create_pipeline(
     strategy: StrategyType | str = StrategyType.SHORT_PUT,
-    provider: UnifiedDataProvider | None = None,
+    provider: DataProvider | None = None,
 ) -> ScreeningPipeline:
     """创建筛选管道
 
     Args:
         strategy: 策略类型 (StrategyType 枚举或字符串，如 "short_put")
-        provider: 统一数据提供者，如果为 None 则创建默认实例
+        provider: 数据提供者 (DataProvider 或其子类)，默认创建 UnifiedDataProvider
 
     Returns:
         ScreeningPipeline 实例

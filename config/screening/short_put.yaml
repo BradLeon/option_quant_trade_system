@@ -1,5 +1,9 @@
 # Short Put 策略筛选配置
 # 卖出看跌期权策略
+#
+# 配置模式:
+# - LIVE: 使用下方主配置 (严格的生产环境值)
+# - BACKTEST: 自动合并 backtest_overrides (放宽参数)
 
 market_filter:
   # 美股市场指标
@@ -32,8 +36,8 @@ market_filter:
     trend_required: "bullish_or_neutral"
 
 underlying_filter:
-  min_iv_rank: 10                # 最低 IV Rank
-  max_iv_hv_ratio: 2.0            # IV/HV 上限
+  min_iv_rank: 10                 # 最低 IV Rank
+  max_iv_hv_ratio: 1.5            # IV/HV 上限 (LIVE: 严格)
   min_iv_hv_ratio: 0.8            # IV/HV 下限
   technical:
     min_rsi: 30                   # RSI 下限（避免接飞刀）
@@ -47,4 +51,25 @@ underlying_filter:
     max_pe_percentile: 0.7        # PE 历史百分位上限
     min_recommendation: "hold"    # 最低分析师评级
 
-# contract_filter 和 output 使用 screening_config.py 默认值
+contract_filter:
+  liquidity:
+    min_open_interest: 100        # 最低持仓量 (LIVE)
+    max_bid_ask_spread: 0.10      # 最大买卖价差 (LIVE: 严格)
+  metrics:
+    min_expected_roc: 0.10        # 最低预期收益率 (LIVE: 10%)
+    min_tgr: 0.50                 # 最低 TGR 阈值 (LIVE: 50%)
+
+# ============================================================
+# 回测模式覆盖 (仅在 BACKTEST 模式下生效)
+# 这些值会覆盖上面的主配置
+# ============================================================
+backtest_overrides:
+  underlying_filter:
+    max_iv_hv_ratio: 3.0          # 放宽 IV/HV 上限 (回测数据可能有偏差)
+  contract_filter:
+    liquidity:
+      min_open_interest: 0        # 回测数据可能无 OI
+      max_bid_ask_spread: 0.30    # 放宽 spread 限制
+    metrics:
+      min_expected_roc: -0.50     # 允许负值 (测试极端情况)
+      min_tgr: 0.20               # 放宽 TGR 阈值
