@@ -591,12 +591,12 @@ Pipeline 运行后生成的 HTML 报告包含以下图表 (按顺序排列):
 | 3 | Drawdown | `create_drawdown_chart()` | 回撤区域图，标注最大回撤点 |
 | 4 | Monthly Returns | `create_monthly_returns_heatmap()` | 月度收益热力图 (红=亏损, 绿=盈利) |
 | 5 | Asset Volume | `create_asset_volume()` | Treemap 展示各标的敞口分布和盈亏 |
-| 6 | Position Timeline | `create_trade_timeline()` | Gantt 风格持仓时间线，按 position_id 配对 |
-| 7 | Symbol K-lines | `create_symbol_kline(symbol)` | 每个标的的日 K 线 (OHLC + Volume) + 交易标记叠加 |
-| 8 | SPY K-line | `create_spy_kline()` | SPY 日 K 线 (OHLC + Volume) |
-| 9 | VIX K-line | `create_vix_kline()` | VIX 日 K 线 |
-| 10 | Events Calendar | `create_events_calendar()` | 重大经济事件日历 (FOMC/CPI/NFP/GDP/PPI) |
-| 11 | Attribution Charts | `AttributionCharts` | 累计归因面积图 + 每日柱状图 + Greeks 2×2 子图 + 切片对比 |
+| 6 | Symbol K-lines | `create_symbol_kline(symbol)` | 每个标的的日 K 线 (OHLC + Volume) + 交易标记叠加 |
+| 7 | SPY K-line | `create_spy_kline()` | SPY 日 K 线 (OHLC + Volume) |
+| 8 | VIX K-line | `create_vix_kline()` | VIX 日 K 线 |
+| 9 | Events Calendar | `create_events_calendar()` | 重大经济事件日历 (FOMC/CPI/NFP/GDP/PPI) |
+| 10 | Attribution Charts | `AttributionCharts` | 累计归因面积图 + 每日柱状图 + Greeks 2×2 子图 + 切片对比 |
+| 11 | Position Timeline | `create_trade_timeline()` | Gantt 风格持仓时间线，按 position_id 配对 |
 | 12 | Trade Records | `create_trade_records_table()` | 交易记录明细表 |
 
 可通过 `include_charts` 参数选择性生成:

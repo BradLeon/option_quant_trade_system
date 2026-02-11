@@ -1422,9 +1422,9 @@ class BacktestDashboard:
         # 默认包含所有图表
         if include_charts is None:
             include_charts = [
-                "equity", "benchmark", "drawdown", "monthly", "asset", "timeline",
+                "equity", "benchmark", "drawdown", "monthly", "asset",
                 "symbol_klines", "spy_kline", "vix_kline", "events_calendar",
-                "attribution",
+                "attribution", "timeline",
             ]
 
         # 生成图表 HTML
@@ -1449,10 +1449,6 @@ class BacktestDashboard:
 
         if "asset" in include_charts:
             fig = self.create_asset_breakdown()
-            chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
-
-        if "timeline" in include_charts:
-            fig = self.create_trade_timeline()
             chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
 
         # Symbol K-lines (每个标的一张)
@@ -1522,6 +1518,11 @@ class BacktestDashboard:
                         chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
             except Exception:
                 pass
+
+        # Position Timeline (放在最后，紧接 Trade Records 表格)
+        if "timeline" in include_charts:
+            fig = self.create_trade_timeline()
+            chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
 
         # 生成指标面板
         metrics_html = self.create_metrics_panel()
