@@ -573,16 +573,9 @@ class AttributionCharts:
 
         labels = [_make_label(t, i) for i, t in enumerate(evaluated)]
 
-        summary_text = (
-            f"Good Exit Rate: {exit_report.good_exit_rate:.0%}"
-            f"  |  Net Exit Value: ${exit_report.net_exit_value:,.0f}"
-            f"  |  Saved: ${exit_report.total_saved_by_exit:,.0f}"
-            f"  |  Lost: ${exit_report.total_lost_by_exit:,.0f}"
-        )
-
         # 交易数多时用表格
         if len(evaluated) > 20:
-            return self._exit_quality_table(evaluated, ta_map, summary_text)
+            return self._exit_quality_table(evaluated, ta_map, exit_report)
 
         # 交易数少时用分组柱状图
         actual_pnls = [t.actual_pnl for t in evaluated]
@@ -627,18 +620,24 @@ class AttributionCharts:
             hovertemplate="%{y}<br>If Held: $%{x:,.0f}<extra></extra>",
         ))
 
+        # 构建统计结论 — 嵌入 title 副标题行
+        summary_line = (
+            f"Good Exit Rate: {exit_report.good_exit_rate:.0%}"
+            f"  |  Avg Benefit: ${exit_report.avg_exit_benefit:+,.0f}/trade"
+            f"  |  Saved: ${exit_report.total_saved_by_exit:,.0f}"
+            f"  |  Lost: ${exit_report.total_lost_by_exit:,.0f}"
+            f"  |  Net Exit Value: ${exit_report.net_exit_value:+,.0f}"
+        )
+        title_html = (
+            "Exit Quality Analysis (Actual vs Hold-to-Expiry)"
+            f"<br><span style='font-size:12px;color:#666'>{summary_line}</span>"
+        )
+
         fig.update_layout(
-            title="Exit Quality Analysis (Actual vs Hold-to-Expiry)",
+            title=dict(text=title_html),
             xaxis_title="PnL ($)",
             barmode="group",
             height=max(400, 60 + 35 * len(evaluated)),
-            annotations=[dict(
-                text=summary_text,
-                xref="paper", yref="paper",
-                x=0.5, y=1.05,
-                showarrow=False,
-                font=dict(size=11, color="#666"),
-            )],
         )
 
         return fig
@@ -647,7 +646,7 @@ class AttributionCharts:
         self,
         evaluated: list,
         ta_map: dict,
-        summary_text: str,
+        exit_report: "ExitQualityReport | None" = None,
     ) -> go.Figure:
         """出场质量表格 (交易数多时使用)"""
         # Build columns
@@ -699,11 +698,39 @@ class AttributionCharts:
             else:
                 verdicts.append("Bad")
 
+        # 添加汇总行
+        total_actual = sum(t.actual_pnl for t in evaluated)
+        total_held = sum(
+            t.pnl_if_held_to_expiry for t in evaluated
+            if t.pnl_if_held_to_expiry is not None
+        )
+        total_benefit = sum((t.exit_benefit or 0) for t in evaluated)
+        good_count = sum(1 for t in evaluated if t.was_good_exit)
+
+        underlyings.append(f"TOTAL ({len(evaluated)} trades)")
+        opt_types.append("")
+        strikes.append("")
+        entry_dates.append("")
+        exit_dates.append("")
+        expire_dates.append("")
+        exit_reasons.append("")
+        actual_pnls.append(f"${total_actual:,.0f}")
+        held_pnls.append(f"${total_held:,.0f}")
+        benefits.append(f"${total_benefit:+,.0f}")
+        verdicts.append(f"{good_count}/{len(evaluated)} Good")
+
         row_colors = [
             "rgba(46, 204, 113, 0.15)" if t.was_good_exit
             else "rgba(231, 76, 60, 0.15)"
             for t in evaluated
         ]
+        # 汇总行使用加粗背景
+        row_colors.append("rgba(52, 73, 94, 0.12)")
+
+        # 字体：汇总行加粗
+        n = len(evaluated)
+        font_sizes = [[10] * n + [11]] * 11
+        font_colors = [["#333"] * n + ["#222"]] * 11
 
         fig = go.Figure(go.Table(
             header=dict(
@@ -722,7 +749,7 @@ class AttributionCharts:
                 fill_color=[row_colors] * 11,
                 align=["left", "center", "right", "center", "center", "center",
                        "left", "right", "right", "right", "center"],
-                font=dict(size=10),
+                font=dict(size=font_sizes[0], color=font_colors[0]),
                 line_color="#dee2e6",
                 height=25,
             ),
@@ -736,15 +763,26 @@ class AttributionCharts:
             footnotes.append("* Same PnL as hold-to-expiry, but freed capital & time earlier")
         if has_ann:
             footnotes.append("\u2020 Negative benefit, but higher annualized return (more efficient capital use)")
-        footnote_text = "<br>".join(footnotes)
 
-        annotations = [dict(
-            text=summary_text,
-            xref="paper", yref="paper",
-            x=0.5, y=1.03,
-            showarrow=False,
-            font=dict(size=11, color="#666"),
-        )]
+        # 构建统计结论 — 嵌入 title 副标题行（annotation 在 Table 中容易被裁剪）
+        if exit_report:
+            summary_line = (
+                f"Good Exit Rate: {exit_report.good_exit_rate:.0%}"
+                f"  |  Avg Benefit: ${exit_report.avg_exit_benefit:+,.0f}/trade"
+                f"  |  Saved: ${exit_report.total_saved_by_exit:,.0f}"
+                f"  |  Lost: ${exit_report.total_lost_by_exit:,.0f}"
+                f"  |  Net Exit Value: ${exit_report.net_exit_value:+,.0f}"
+            )
+        else:
+            summary_line = f"Good Exit Rate: {good_count}/{len(evaluated)}"
+
+        title_html = (
+            "Exit Quality Analysis"
+            f"<br><span style='font-size:12px;color:#666'>{summary_line}</span>"
+        )
+
+        footnote_text = "<br>".join(footnotes)
+        annotations = []
         if footnote_text:
             annotations.append(dict(
                 text=footnote_text,
@@ -758,10 +796,10 @@ class AttributionCharts:
             ))
 
         fig.update_layout(
-            title="Exit Quality Analysis",
-            height=max(400, 60 + 25 * len(evaluated)),
-            margin=dict(l=20, r=20, t=60, b=40 if footnotes else 20),
-            annotations=annotations,
+            title=dict(text=title_html),
+            height=max(400, 80 + 25 * (len(evaluated) + 1)),
+            margin=dict(l=20, r=20, t=70, b=40 if footnotes else 20),
+            annotations=annotations if annotations else None,
         )
 
         return fig
