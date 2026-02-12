@@ -111,6 +111,7 @@ class BacktestConfig:
     # ========== 其他选项 ==========
     random_seed: int | None = None  # 随机种子 (用于可重复性)
     verbose: bool = False  # 详细日志
+    skip_market_check: bool = False  # 跳过筛选的市场环境检查
 
     # ========== 配置模式 (始终为 BACKTEST) ==========
     # BacktestConfig 始终使用 BACKTEST 模式
@@ -242,6 +243,7 @@ class BacktestConfig:
             "price_mode": self.price_mode,
             "random_seed": self.random_seed,
             "verbose": self.verbose,
+            "skip_market_check": self.skip_market_check,
             # 配置覆盖
             "risk_overrides": self.risk_overrides,
             "screening_overrides": self.screening_overrides,

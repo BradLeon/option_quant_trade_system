@@ -638,7 +638,7 @@ class BacktestExecutor:
                     symbols=self._config.symbols,
                     market_type=MarketType.US,  # TODO: 支持 HK
                     strategy_type=strategy_type,
-                    skip_market_check=True,  # 回测中跳过市场环境检查
+                    skip_market_check=self._config.skip_market_check,
                 )
 
                 if result and result.opportunities:
