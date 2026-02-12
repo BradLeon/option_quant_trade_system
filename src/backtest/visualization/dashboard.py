@@ -31,6 +31,7 @@ except ImportError:
 
 if TYPE_CHECKING:
     from src.backtest.analysis.metrics import BacktestMetrics
+    from src.backtest.attribution.models import EntryQualityReport, ExitQualityReport
     from src.backtest.engine.backtest_executor import BacktestResult
     from src.backtest.optimization.benchmark import BenchmarkResult
     from src.backtest.visualization.attribution_charts import AttributionCharts
@@ -73,6 +74,8 @@ class BacktestDashboard:
         benchmark_result: "BenchmarkResult | None" = None,
         attribution_charts: "AttributionCharts | None" = None,
         market_context=None,
+        entry_report: "EntryQualityReport | None" = None,
+        exit_report: "ExitQualityReport | None" = None,
     ) -> None:
         """初始化仪表盘
 
@@ -82,6 +85,8 @@ class BacktestDashboard:
             benchmark_result: 基准比较结果 (可选)
             attribution_charts: 归因图表实例 (可选)
             market_context: 市场上下文数据 (可选，用于 K 线/事件图表)
+            entry_report: 入场质量分析报告 (可选)
+            exit_report: 出场质量分析报告 (可选)
         """
         _check_plotly()
 
@@ -90,6 +95,8 @@ class BacktestDashboard:
         self._benchmark_result = benchmark_result
         self._attribution_charts: "AttributionCharts | None" = attribution_charts
         self._market_context = market_context
+        self._entry_report: "EntryQualityReport | None" = entry_report
+        self._exit_report: "ExitQualityReport | None" = exit_report
 
         # 如果没有提供指标，自动计算
         if self._metrics is None:
@@ -1494,6 +1501,10 @@ class BacktestDashboard:
                 fig = self._attribution_charts.create_greeks_exposure_timeline()
                 chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
 
+                # Per-Trade Attribution Table
+                fig = self._attribution_charts.create_trade_attribution_table()
+                chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
+
                 # 切片归因图表
                 if slice_engine is not None:
                     by_underlying = slice_engine.by_underlying()
@@ -1516,6 +1527,20 @@ class BacktestDashboard:
                             by_type, title="Attribution by Option Type"
                         )
                         chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
+
+                # Entry Quality Analysis
+                if self._entry_report is not None:
+                    fig = self._attribution_charts.create_entry_quality_chart(
+                        self._entry_report
+                    )
+                    chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
+
+                # Exit Quality Analysis
+                if self._exit_report is not None:
+                    fig = self._attribution_charts.create_exit_quality_chart(
+                        self._exit_report
+                    )
+                    chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
             except Exception:
                 pass
 

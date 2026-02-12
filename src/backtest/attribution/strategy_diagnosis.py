@@ -245,9 +245,58 @@ class StrategyDiagnosis:
 
             exit_benefit = None
             was_good_exit = None
+            verdict_reason = ""
+            actual_ann_return = None
+            held_ann_return = None
+
             if pnl_if_held is not None:
                 exit_benefit = actual_pnl - pnl_if_held
-                was_good_exit = exit_benefit > 0
+
+                if exit_benefit > 0:
+                    # 明确收益：提前退出比持有到期赚更多
+                    was_good_exit = True
+                    verdict_reason = "benefit"
+                elif exit_benefit == 0:
+                    # 收益相同但释放了资金和时间
+                    was_good_exit = True
+                    verdict_reason = "freed_capital"
+                else:
+                    # exit_benefit < 0: 检查是否为止盈退出且年化更优
+                    if actual_pnl > 0 and pnl_if_held > 0:
+                        entry_date = info.get("entry_date")
+                        expiration = info.get("expiration")
+                        entry_price = info.get("entry_price", 0.0)
+                        entry_snap = self._get_entry_snap(ta.trade_id)
+                        lot_size = entry_snap.lot_size if entry_snap else 100
+
+                        actual_days = (
+                            (ta.exit_date - entry_date).days
+                            if ta.exit_date and entry_date else 0
+                        )
+                        total_days = (
+                            (expiration - entry_date).days
+                            if expiration and entry_date else 0
+                        )
+                        cost_basis = (
+                            entry_price * abs(ta.quantity) * lot_size
+                        )
+
+                        if cost_basis > 0 and actual_days > 0 and total_days > 0:
+                            actual_ann_return = (
+                                (actual_pnl / cost_basis) * (365 / actual_days)
+                            )
+                            held_ann_return = (
+                                (pnl_if_held / cost_basis) * (365 / total_days)
+                            )
+                            if actual_ann_return >= held_ann_return:
+                                was_good_exit = True
+                                verdict_reason = "better_ann_return"
+                            else:
+                                was_good_exit = False
+                        else:
+                            was_good_exit = False
+                    else:
+                        was_good_exit = False
 
             trades.append(TradeExitQuality(
                 trade_id=ta.trade_id,
@@ -257,6 +306,11 @@ class StrategyDiagnosis:
                 pnl_if_held_to_expiry=pnl_if_held,
                 exit_benefit=exit_benefit,
                 was_good_exit=was_good_exit,
+                entry_date=info.get("entry_date"),
+                expiration=info.get("expiration"),
+                actual_ann_return=actual_ann_return,
+                held_ann_return=held_ann_return,
+                verdict_reason=verdict_reason,
             ))
 
         # 汇总

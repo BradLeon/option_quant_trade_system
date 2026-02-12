@@ -69,6 +69,12 @@ class PnLAttributionEngine:
         self._snap_by_pos: dict[str, list[PositionSnapshot]] = defaultdict(list)
         self._dates: list[date] = []
 
+        # 平仓/到期记录索引 (position_id → TradeRecord)
+        self._close_records: dict[str, TradeRecord] = {}
+        for rec in self._trade_records:
+            if rec.action in ("close", "expire") and rec.position_id:
+                self._close_records[rec.position_id] = rec
+
         self._build_indexes()
 
     def _build_indexes(self) -> None:
@@ -96,7 +102,7 @@ class PnLAttributionEngine:
         # 构建前一日快照索引: date -> {position_id -> PositionSnapshot}
         prev_date_snaps: dict[str, PositionSnapshot] = {}
 
-        for i, current_date in enumerate(self._dates):
+        for current_date in self._dates:
             current_snaps = self._snap_by_date[current_date]
 
             pos_attrs: list[PositionDailyAttribution] = []
@@ -104,11 +110,37 @@ class PnLAttributionEngine:
             for snap in current_snaps:
                 prev_snap = prev_date_snaps.get(snap.position_id)
                 if prev_snap is None:
-                    # 首日持仓：无前日 Greeks，无法归因，跳过
+                    # 开仓首日：用 entry_price 构造初始市值，计算 entry → 首日收盘 PnL
+                    if snap.entry_price > 0:
+                        initial_mv = snap.entry_price * snap.quantity * snap.lot_size
+                        actual_pnl = snap.market_value - initial_mv
+                        attr = PositionDailyAttribution(
+                            position_id=snap.position_id,
+                            underlying=snap.underlying,
+                            actual_pnl=actual_pnl,
+                            residual=actual_pnl,  # 无前日 Greeks，全入 residual
+                        )
+                        pos_attrs.append(attr)
                     continue
 
                 attr = self._attribute_position_daily(prev_snap, snap)
                 pos_attrs.append(attr)
+
+            # 检测消失的持仓（到期日/平仓日 PnL）
+            current_ids = {s.position_id for s in current_snaps}
+            for pid, prev in prev_date_snaps.items():
+                if pid not in current_ids:
+                    close_rec = self._close_records.get(pid)
+                    if close_rec and close_rec.trade_date == current_date:
+                        closing_mv = close_rec.price * prev.quantity * prev.lot_size
+                        actual_pnl = closing_mv - prev.market_value
+                        attr = PositionDailyAttribution(
+                            position_id=pid,
+                            underlying=prev.underlying,
+                            actual_pnl=actual_pnl,
+                            residual=actual_pnl,
+                        )
+                        pos_attrs.append(attr)
 
             # 聚合为组合级别（跳过无归因数据的日期）
             if pos_attrs:

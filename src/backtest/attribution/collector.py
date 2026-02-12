@@ -115,18 +115,23 @@ class AttributionCollector:
         iv_percentile = pd.iv_percentile
         iv_hv_ratio = pd.iv_hv_ratio
 
-        if data_provider is not None and hv is None:
+        if data_provider is not None and (hv is None or iv_rank is None):
             try:
                 vol = data_provider.get_stock_volatility(pd.underlying or pd.symbol)
                 if vol is not None:
-                    hv = vol.hv
-                    if pd.iv is not None and hv is not None and hv > 0:
+                    if hv is None:
+                        hv = vol.hv
+                    if iv_rank is None and vol.iv_rank is not None:
+                        iv_rank = vol.iv_rank
+                    if iv_percentile is None and vol.iv_percentile is not None:
+                        iv_percentile = vol.iv_percentile
+                    if pd.iv is not None and hv is not None and hv > 0 and iv_hv_ratio is None:
                         from src.engine.position.volatility.implied import (
                             calc_iv_hv_ratio,
                         )
                         iv_hv_ratio = calc_iv_hv_ratio(pd.iv, hv)
             except Exception as e:
-                logger.debug(f"Failed to get HV for {pd.underlying}: {e}")
+                logger.debug(f"Failed to get volatility for {pd.underlying}: {e}")
 
         # 解析 expiration
         expiration_date = current_date

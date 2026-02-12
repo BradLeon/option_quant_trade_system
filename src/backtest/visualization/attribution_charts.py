@@ -31,6 +31,8 @@ except ImportError:
 if TYPE_CHECKING:
     from src.backtest.attribution.models import (
         DailyAttribution,
+        EntryQualityReport,
+        ExitQualityReport,
         PortfolioSnapshot,
         RegimeStats,
         SliceStats,
@@ -129,6 +131,7 @@ class AttributionCharts:
         cum_gamma = _cumsum([d.gamma_pnl for d in self._daily])
         cum_theta = _cumsum([d.theta_pnl for d in self._daily])
         cum_vega = _cumsum([d.vega_pnl for d in self._daily])
+        cum_residual = _cumsum([d.residual for d in self._daily])
         cum_total = _cumsum([d.total_pnl for d in self._daily])
 
         fig = go.Figure()
@@ -155,6 +158,12 @@ class AttributionCharts:
             x=dates, y=cum_vega,
             mode="lines", name="Vega PnL",
             line=dict(color=COLORS["vega"]),
+            stackgroup="one",
+        ))
+        fig.add_trace(go.Scatter(
+            x=dates, y=cum_residual,
+            mode="lines", name="Residual PnL",
+            line=dict(color=COLORS["residual"]),
             stackgroup="one",
         ))
         fig.add_trace(go.Scatter(
@@ -290,6 +299,10 @@ class AttributionCharts:
             x=labels, y=[s.vega_pnl for s in stats],
             name="Vega", marker_color=COLORS["vega"],
         ))
+        fig.add_trace(go.Bar(
+            x=labels, y=[s.residual for s in stats],
+            name="Residual", marker_color=COLORS["residual"],
+        ))
 
         fig.update_layout(
             title=title,
@@ -333,6 +346,422 @@ class AttributionCharts:
             xaxis_title="Regime",
             yaxis_title="Average Daily PnL ($)",
             height=450,
+        )
+
+        return fig
+
+
+    def create_trade_attribution_table(self) -> go.Figure:
+        """Per-Trade 归因表 (Plotly Table)
+
+        显示每笔交易的归因分解，按 total_pnl 降序排列。
+        盈利行绿色，亏损行红色。
+        """
+        if not self._trades:
+            fig = go.Figure()
+            fig.add_annotation(
+                text="No trade attribution data",
+                xref="paper", yref="paper", x=0.5, y=0.5,
+                showarrow=False, font=dict(size=14, color="gray"),
+            )
+            fig.update_layout(title="Per-Trade Attribution")
+            return fig
+
+        sorted_trades = sorted(self._trades, key=lambda t: t.total_pnl, reverse=True)
+
+        # Build columns
+        underlyings = [t.underlying for t in sorted_trades]
+        opt_types = [t.option_type.upper() if t.option_type else "" for t in sorted_trades]
+        strikes = [f"${t.strike:.0f}" for t in sorted_trades]
+        entry_dates = [t.entry_date.isoformat() for t in sorted_trades]
+        exit_dates = [t.exit_date.isoformat() if t.exit_date else "-" for t in sorted_trades]
+        holding = [t.holding_days for t in sorted_trades]
+        total_pnls = [f"${t.total_pnl:,.0f}" for t in sorted_trades]
+        delta_pnls = [f"${t.delta_pnl:,.0f}" for t in sorted_trades]
+        gamma_pnls = [f"${t.gamma_pnl:,.0f}" for t in sorted_trades]
+        theta_pnls = [f"${t.theta_pnl:,.0f}" for t in sorted_trades]
+        vega_pnls = [f"${t.vega_pnl:,.0f}" for t in sorted_trades]
+        residuals = [f"${t.residual:,.0f}" for t in sorted_trades]
+        entry_ivs = [f"{t.entry_iv:.1%}" if t.entry_iv else "-" for t in sorted_trades]
+        exit_ivs = [f"{t.exit_iv:.1%}" if t.exit_iv else "-" for t in sorted_trades]
+        exit_reasons = [t.exit_reason or "-" for t in sorted_trades]
+
+        # Row colors: green for profit, red for loss
+        row_colors = [
+            "rgba(46, 204, 113, 0.15)" if t.total_pnl >= 0 else "rgba(231, 76, 60, 0.15)"
+            for t in sorted_trades
+        ]
+
+        fig = go.Figure(go.Table(
+            header=dict(
+                values=["Underlying", "Type", "Strike", "Entry", "Exit",
+                        "Days", "Total PnL", "Delta", "Gamma", "Theta",
+                        "Vega", "Residual", "Entry IV", "Exit IV", "Exit Reason"],
+                fill_color="#f8f9fa",
+                align="center",
+                font=dict(size=11, color="#333"),
+                line_color="#dee2e6",
+            ),
+            cells=dict(
+                values=[underlyings, opt_types, strikes, entry_dates, exit_dates,
+                        holding, total_pnls, delta_pnls, gamma_pnls, theta_pnls,
+                        vega_pnls, residuals, entry_ivs, exit_ivs, exit_reasons],
+                fill_color=[row_colors] * 15,
+                align=["left", "center", "right", "center", "center",
+                       "right", "right", "right", "right", "right",
+                       "right", "right", "right", "right", "left"],
+                font=dict(size=10),
+                line_color="#dee2e6",
+                height=25,
+            ),
+        ))
+
+        fig.update_layout(
+            title="Per-Trade Attribution",
+            height=max(400, 60 + 25 * len(sorted_trades)),
+            margin=dict(l=20, r=20, t=40, b=20),
+        )
+
+        return fig
+
+    def create_entry_quality_chart(
+        self,
+        entry_report: "EntryQualityReport",
+    ) -> go.Figure:
+        """入场质量散点图
+
+        优先 X = Entry IV Rank；若 IV Rank 全部不可用，fallback 到 Entry IV。
+        Y = Trade PnL，颜色区分正/负 VRP (IV-RV spread)。
+        """
+        # 优先使用 iv_rank
+        trades_with_rank = [
+            t for t in entry_report.trades if t.entry_iv_rank is not None
+        ]
+        # fallback: 用 entry_iv
+        trades_with_iv = [
+            t for t in entry_report.trades if t.entry_iv is not None
+        ]
+
+        if trades_with_rank:
+            trades_with_data = trades_with_rank
+            x_values = [t.entry_iv_rank for t in trades_with_data]
+            x_label = "Entry IV Rank (0-100)"
+            vline_x = 50
+        elif trades_with_iv:
+            trades_with_data = trades_with_iv
+            x_values = [t.entry_iv * 100 for t in trades_with_data]  # 转为百分比显示
+            x_label = "Entry IV (%)"
+            vline_x = None
+        else:
+            fig = go.Figure()
+            fig.add_annotation(
+                text="No entry quality data (IV unavailable)",
+                xref="paper", yref="paper", x=0.5, y=0.5,
+                showarrow=False, font=dict(size=14, color="gray"),
+            )
+            fig.update_layout(title="Entry Quality Analysis")
+            return fig
+
+        # Match trades to trade_attributions for PnL
+        pnl_map = {t.trade_id: t.total_pnl for t in self._trades}
+
+        pnls = [pnl_map.get(t.trade_id, 0.0) for t in trades_with_data]
+        colors = [
+            COLORS["positive"] if (t.iv_rv_spread is not None and t.iv_rv_spread > 0)
+            else COLORS["negative"] if (t.iv_rv_spread is not None and t.iv_rv_spread <= 0)
+            else COLORS["residual"]
+            for t in trades_with_data
+        ]
+
+        def _hover(t):
+            parts = [t.underlying]
+            if t.entry_iv_rank is not None:
+                parts.append(f"IV Rank: {t.entry_iv_rank:.0f}")
+            if t.entry_iv is not None:
+                parts.append(f"Entry IV: {t.entry_iv:.1%}")
+            if t.realized_vol is not None:
+                parts.append(f"RV: {t.realized_vol:.1%}")
+            if t.iv_rv_spread is not None:
+                parts.append(f"VRP: {t.iv_rv_spread:+.1%}")
+            return "<br>".join(parts)
+
+        hover_texts = [_hover(t) for t in trades_with_data]
+
+        fig = go.Figure()
+
+        fig.add_trace(go.Scatter(
+            x=x_values,
+            y=pnls,
+            mode="markers",
+            marker=dict(
+                size=10,
+                color=colors,
+                line=dict(width=1, color="white"),
+            ),
+            text=hover_texts,
+            hovertemplate="%{text}<br>PnL: $%{y:,.0f}<extra></extra>",
+        ))
+
+        fig.add_hline(y=0, line_dash="dot", line_color="gray", opacity=0.5)
+        if vline_x is not None:
+            fig.add_vline(x=vline_x, line_dash="dot", line_color="gray", opacity=0.5)
+
+        # Summary annotations
+        summary_parts = []
+        if entry_report.avg_entry_iv_rank is not None:
+            summary_parts.append(f"Avg IV Rank: {entry_report.avg_entry_iv_rank:.0f}")
+            summary_parts.append(f"High IV Entry: {entry_report.high_iv_entry_pct:.0%}")
+        if entry_report.avg_iv_rv_spread is not None:
+            summary_parts.append(f"Avg VRP: {entry_report.avg_iv_rv_spread:+.1%}")
+        summary_parts.append(f"Positive VRP: {entry_report.positive_vrp_pct:.0%}")
+        summary_text = "  |  ".join(summary_parts)
+
+        fig.update_layout(
+            title="Entry Quality Analysis",
+            xaxis_title=x_label,
+            yaxis_title="Trade PnL ($)",
+            height=450,
+            annotations=[dict(
+                text=summary_text,
+                xref="paper", yref="paper",
+                x=0.5, y=1.05,
+                showarrow=False,
+                font=dict(size=11, color="#666"),
+            )],
+        )
+
+        return fig
+
+    def create_exit_quality_chart(
+        self,
+        exit_report: "ExitQualityReport",
+    ) -> go.Figure:
+        """出场质量分析
+
+        交易数 <= 20: 水平分组柱状图 (Actual PnL vs If Held PnL per trade)
+        交易数 > 20: 交互式表格 + 汇总结论
+
+        每条 Y 轴为一笔被 CLOSE 的交易，标签为 per-trade 标识。
+        """
+        evaluated = [t for t in exit_report.trades if t.pnl_if_held_to_expiry is not None]
+
+        if not evaluated:
+            fig = go.Figure()
+            fig.add_annotation(
+                text="No exit quality data (no counterfactual available)",
+                xref="paper", yref="paper", x=0.5, y=0.5,
+                showarrow=False, font=dict(size=14, color="gray"),
+            )
+            fig.update_layout(title="Exit Quality Analysis")
+            return fig
+
+        # 关联 trade_attributions 获取 option_type / strike
+        ta_map = {t.trade_id: t for t in self._trades}
+
+        # Sort by exit_benefit descending
+        evaluated.sort(key=lambda t: (t.exit_benefit or 0), reverse=True)
+
+        # Per-trade labels: "SPY PUT $550 (03-15)"
+        def _make_label(t, idx: int) -> str:
+            ta = ta_map.get(t.trade_id)
+            if ta:
+                opt = ta.option_type.upper() if ta.option_type else ""
+                strike = f"${ta.strike:.0f}" if ta.strike else ""
+                exit_dt = ta.exit_date.strftime("%m-%d") if ta.exit_date else ""
+                return f"{t.underlying} {opt} {strike} ({exit_dt})"
+            return f"Trade #{idx + 1} {t.underlying}"
+
+        labels = [_make_label(t, i) for i, t in enumerate(evaluated)]
+
+        summary_text = (
+            f"Good Exit Rate: {exit_report.good_exit_rate:.0%}"
+            f"  |  Net Exit Value: ${exit_report.net_exit_value:,.0f}"
+            f"  |  Saved: ${exit_report.total_saved_by_exit:,.0f}"
+            f"  |  Lost: ${exit_report.total_lost_by_exit:,.0f}"
+        )
+
+        # 交易数多时用表格
+        if len(evaluated) > 20:
+            return self._exit_quality_table(evaluated, ta_map, summary_text)
+
+        # 交易数少时用分组柱状图
+        actual_pnls = [t.actual_pnl for t in evaluated]
+        held_pnls = [t.pnl_if_held_to_expiry for t in evaluated]
+
+        # Build verdict hover text
+        verdict_hovers = []
+        for t in evaluated:
+            reason = getattr(t, "verdict_reason", "")
+            if t.was_good_exit:
+                if reason == "freed_capital":
+                    verdict_hovers.append("Good (freed capital)")
+                elif reason == "better_ann_return":
+                    verdict_hovers.append("Good (better ann. return)")
+                else:
+                    verdict_hovers.append("Good")
+            else:
+                verdict_hovers.append("Bad")
+
+        fig = go.Figure()
+
+        fig.add_trace(go.Bar(
+            y=labels,
+            x=actual_pnls,
+            name="Actual PnL",
+            orientation="h",
+            marker_color=[
+                COLORS["positive"] if p >= 0 else COLORS["negative"]
+                for p in actual_pnls
+            ],
+            opacity=0.9,
+            customdata=verdict_hovers,
+            hovertemplate="%{y}<br>Actual PnL: $%{x:,.0f}<br>Verdict: %{customdata}<extra></extra>",
+        ))
+        fig.add_trace(go.Bar(
+            y=labels,
+            x=held_pnls,
+            name="If Held to Expiry",
+            orientation="h",
+            marker_color="#95a5a6",
+            opacity=0.6,
+            hovertemplate="%{y}<br>If Held: $%{x:,.0f}<extra></extra>",
+        ))
+
+        fig.update_layout(
+            title="Exit Quality Analysis (Actual vs Hold-to-Expiry)",
+            xaxis_title="PnL ($)",
+            barmode="group",
+            height=max(400, 60 + 35 * len(evaluated)),
+            annotations=[dict(
+                text=summary_text,
+                xref="paper", yref="paper",
+                x=0.5, y=1.05,
+                showarrow=False,
+                font=dict(size=11, color="#666"),
+            )],
+        )
+
+        return fig
+
+    def _exit_quality_table(
+        self,
+        evaluated: list,
+        ta_map: dict,
+        summary_text: str,
+    ) -> go.Figure:
+        """出场质量表格 (交易数多时使用)"""
+        # Build columns
+        underlyings = []
+        opt_types = []
+        strikes = []
+        entry_dates = []
+        expire_dates = []
+        exit_dates = []
+        exit_reasons = []
+        actual_pnls = []
+        held_pnls = []
+        benefits = []
+        verdicts = []
+
+        for t in evaluated:
+            ta = ta_map.get(t.trade_id)
+            underlyings.append(t.underlying)
+            opt_types.append(
+                (ta.option_type.upper() if ta and ta.option_type else "")
+            )
+            strikes.append(f"${ta.strike:.0f}" if ta and ta.strike else "-")
+            entry_dates.append(
+                t.entry_date.isoformat() if t.entry_date else
+                (ta.entry_date.isoformat() if ta and ta.entry_date else "-")
+            )
+            expire_dates.append(
+                t.expiration.isoformat() if t.expiration else "-"
+            )
+            exit_dates.append(
+                ta.exit_date.isoformat() if ta and ta.exit_date else "-"
+            )
+            exit_reasons.append(t.exit_reason[:30] if t.exit_reason else "-")
+            actual_pnls.append(f"${t.actual_pnl:,.0f}")
+            held_pnls.append(
+                f"${t.pnl_if_held_to_expiry:,.0f}"
+                if t.pnl_if_held_to_expiry is not None else "-"
+            )
+            eb = t.exit_benefit or 0
+            benefits.append(f"${eb:+,.0f}")
+            reason = getattr(t, "verdict_reason", "")
+            if t.was_good_exit:
+                if reason == "freed_capital":
+                    verdicts.append("Good*")
+                elif reason == "better_ann_return":
+                    verdicts.append("Good\u2020")
+                else:
+                    verdicts.append("Good")
+            else:
+                verdicts.append("Bad")
+
+        row_colors = [
+            "rgba(46, 204, 113, 0.15)" if t.was_good_exit
+            else "rgba(231, 76, 60, 0.15)"
+            for t in evaluated
+        ]
+
+        fig = go.Figure(go.Table(
+            header=dict(
+                values=["Underlying", "Type", "Strike", "Entry Date",
+                        "Exit Date", "Expire Date",
+                        "Exit Reason", "Actual PnL", "If Held", "Benefit", "Verdict"],
+                fill_color="#f8f9fa",
+                align="center",
+                font=dict(size=11, color="#333"),
+                line_color="#dee2e6",
+            ),
+            cells=dict(
+                values=[underlyings, opt_types, strikes, entry_dates,
+                        exit_dates, expire_dates,
+                        exit_reasons, actual_pnls, held_pnls, benefits, verdicts],
+                fill_color=[row_colors] * 11,
+                align=["left", "center", "right", "center", "center", "center",
+                       "left", "right", "right", "right", "center"],
+                font=dict(size=10),
+                line_color="#dee2e6",
+                height=25,
+            ),
+        ))
+
+        # 检查是否需要脚注
+        has_freed = any(getattr(t, "verdict_reason", "") == "freed_capital" for t in evaluated)
+        has_ann = any(getattr(t, "verdict_reason", "") == "better_ann_return" for t in evaluated)
+        footnotes = []
+        if has_freed:
+            footnotes.append("* Same PnL as hold-to-expiry, but freed capital & time earlier")
+        if has_ann:
+            footnotes.append("\u2020 Negative benefit, but higher annualized return (more efficient capital use)")
+        footnote_text = "<br>".join(footnotes)
+
+        annotations = [dict(
+            text=summary_text,
+            xref="paper", yref="paper",
+            x=0.5, y=1.03,
+            showarrow=False,
+            font=dict(size=11, color="#666"),
+        )]
+        if footnote_text:
+            annotations.append(dict(
+                text=footnote_text,
+                xref="paper", yref="paper",
+                x=0.0, y=-0.02,
+                showarrow=False,
+                font=dict(size=9, color="#999"),
+                align="left",
+                xanchor="left",
+                yanchor="top",
+            ))
+
+        fig.update_layout(
+            title="Exit Quality Analysis",
+            height=max(400, 60 + 25 * len(evaluated)),
+            margin=dict(l=20, r=20, t=60, b=40 if footnotes else 20),
+            annotations=annotations,
         )
 
         return fig
