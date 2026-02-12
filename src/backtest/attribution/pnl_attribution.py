@@ -33,6 +33,7 @@ from src.backtest.attribution.models import (
     PositionSnapshot,
     TradeAttribution,
 )
+from src.backtest.data.greeks_calculator import GreeksCalculator
 
 if TYPE_CHECKING:
     from src.backtest.attribution.models import PortfolioSnapshot
@@ -47,10 +48,12 @@ class PnLAttributionEngine:
     使用前一日快照的 Greeks 和当日价格变动进行归因分解。
 
     关键约定:
-    - PositionSnapshot.delta/gamma/theta/vega 为 position-level 值
-      (已乘 quantity 或 abs(quantity))
+    - PositionSnapshot 继承 PositionData 的 Greeks 符号约定:
+      - delta, theta: 乘以 qty（带方向符号）
+      - gamma, vega: 乘以 abs(qty)（永远为正，不含方向）
+    - 归因计算时 gamma/vega 需额外乘 sign(qty) 恢复持仓方向
     - 归因公式中需再乘 lot_size 转为美元金额
-    - theta 为 daily theta，dt = 1 天
+    - theta 为 daily theta，dt = 实际日历天数（自动处理周末/假期）
     - vega 为 per 1% IV change，dIV 以百分点为单位 (decimal * 100)
     """
 
@@ -75,6 +78,14 @@ class PnLAttributionEngine:
             if rec.action in ("close", "expire") and rec.position_id:
                 self._close_records[rec.position_id] = rec
 
+        # 开仓记录索引 (position_id → TradeRecord)
+        self._open_records: dict[str, TradeRecord] = {}
+        for rec in self._trade_records:
+            if rec.action == "open" and rec.position_id:
+                self._open_records[rec.position_id] = rec
+
+        self._greeks_calc = GreeksCalculator()
+
         self._build_indexes()
 
     def _build_indexes(self) -> None:
@@ -87,6 +98,91 @@ class PnLAttributionEngine:
         self._dates = sorted(self._snap_by_date.keys())
         for pos_id in self._snap_by_pos:
             self._snap_by_pos[pos_id].sort(key=lambda s: s.date)
+
+    def _synthesize_entry_snapshot(
+        self,
+        first_snap: PositionSnapshot,
+    ) -> PositionSnapshot | None:
+        """为开仓首日合成入场快照
+
+        用 open TradeRecord 的 fill_price + underlying_price 调用 GreeksCalculator
+        计算入场时 Greeks，构造合成 PositionSnapshot 作为 prev_snap。
+
+        Args:
+            first_snap: 该持仓首次出现的快照（次日采集）
+
+        Returns:
+            合成的入场快照，或 None（无法合成时）
+        """
+        open_rec = self._open_records.get(first_snap.position_id)
+        if open_rec is None:
+            return None
+
+        # 需要入场时标的价格
+        if open_rec.underlying_price is None or open_rec.underlying_price <= 0:
+            return None
+
+        entry_price = open_rec.price  # fill_price
+        if entry_price <= 0:
+            return None
+
+        spot = open_rec.underlying_price
+        strike = open_rec.strike
+        expiration = open_rec.expiration
+        trade_date = open_rec.trade_date
+
+        dte = (expiration - trade_date).days
+        if dte <= 0:
+            return None
+
+        tte = dte / 365.0
+        is_call = open_rec.option_type.value.lower() == "call"
+
+        result = self._greeks_calc.calculate(
+            option_price=entry_price,
+            spot=spot,
+            strike=strike,
+            tte=tte,
+            rate=0.045,
+            is_call=is_call,
+        )
+
+        if not result.is_valid:
+            logger.debug(
+                f"Entry snapshot synthesis failed for {first_snap.position_id}: "
+                f"{result.error_msg}"
+            )
+            return None
+
+        # 转换 per-share Greeks → position-level
+        qty = first_snap.quantity
+        abs_qty = abs(qty)
+
+        # 入场市值 = entry_price * qty * lot_size
+        entry_mv = entry_price * qty * first_snap.lot_size
+
+        return PositionSnapshot(
+            date=trade_date,
+            position_id=first_snap.position_id,
+            underlying=first_snap.underlying,
+            symbol=first_snap.symbol,
+            option_type=first_snap.option_type,
+            strike=strike,
+            expiration=expiration,
+            quantity=qty,
+            lot_size=first_snap.lot_size,
+            underlying_price=spot,
+            option_mid_price=entry_price,
+            iv=result.iv,
+            delta=result.delta * qty,
+            gamma=result.gamma * abs_qty,
+            theta=result.theta * qty,
+            vega=result.vega * abs_qty,
+            market_value=entry_mv,
+            entry_price=first_snap.entry_price,
+            entry_date=trade_date,
+            dte=dte,
+        )
 
     def compute_all_daily(self) -> list[DailyAttribution]:
         """计算所有交易日的组合级别归因
@@ -110,35 +206,43 @@ class PnLAttributionEngine:
             for snap in current_snaps:
                 prev_snap = prev_date_snaps.get(snap.position_id)
                 if prev_snap is None:
-                    # 开仓首日：用 entry_price 构造初始市值，计算 entry → 首日收盘 PnL
+                    # 开仓首日：尝试合成入场快照进行 Greeks 归因
                     if snap.entry_price > 0:
-                        initial_mv = snap.entry_price * snap.quantity * snap.lot_size
-                        actual_pnl = snap.market_value - initial_mv
-                        attr = PositionDailyAttribution(
-                            position_id=snap.position_id,
-                            underlying=snap.underlying,
-                            actual_pnl=actual_pnl,
-                            residual=actual_pnl,  # 无前日 Greeks，全入 residual
-                        )
-                        pos_attrs.append(attr)
+                        synthetic = self._synthesize_entry_snapshot(snap)
+                        if synthetic is not None:
+                            # 用合成入场快照 → 首日快照进行归因
+                            attr = self._attribute_position_daily(synthetic, snap)
+                            pos_attrs.append(attr)
+                        else:
+                            # 回退到现有逻辑：全部归入 residual
+                            initial_mv = snap.entry_price * snap.quantity * snap.lot_size
+                            actual_pnl = snap.market_value - initial_mv
+                            attr = PositionDailyAttribution(
+                                position_id=snap.position_id,
+                                underlying=snap.underlying,
+                                actual_pnl=actual_pnl,
+                                residual=actual_pnl,
+                            )
+                            pos_attrs.append(attr)
                     continue
 
                 attr = self._attribute_position_daily(prev_snap, snap)
                 pos_attrs.append(attr)
 
             # 检测消失的持仓（到期日/平仓日 PnL）
+            # 到期：step 2 移除持仓 → step 3.5 快照已无此持仓
+            # 平仓：step 3.5 快照有此持仓 → step 5 移除 → 次日消失
             current_ids = {s.position_id for s in current_snaps}
             for pid, prev in prev_date_snaps.items():
                 if pid not in current_ids:
                     close_rec = self._close_records.get(pid)
-                    if close_rec and close_rec.trade_date == current_date:
+                    if close_rec and close_rec.trade_date >= prev.date:
                         closing_mv = close_rec.price * prev.quantity * prev.lot_size
                         actual_pnl = closing_mv - prev.market_value
-                        attr = PositionDailyAttribution(
-                            position_id=pid,
-                            underlying=prev.underlying,
-                            actual_pnl=actual_pnl,
-                            residual=actual_pnl,
+
+                        # 使用前日 Greeks 归因（而非全部放入 residual）
+                        attr = self._attribute_disappeared_position(
+                            prev, actual_pnl, close_rec, current_date, current_snaps,
                         )
                         pos_attrs.append(attr)
 
@@ -161,11 +265,21 @@ class PnLAttributionEngine:
 
         使用前日 Greeks + 当日价格变动:
             delta_pnl = prev.delta * lot_size * ΔS
-            gamma_pnl = 0.5 * prev.gamma * lot_size * (ΔS)²
-            theta_pnl = prev.theta * lot_size * 1  (dt=1天)
-            vega_pnl  = prev.vega * lot_size * (ΔIV_decimal * 100)
+            gamma_pnl = 0.5 * prev.gamma * qty_sign * lot_size * (ΔS)²
+            theta_pnl = prev.theta * lot_size * dt  (dt=实际日历天数)
+            vega_pnl  = prev.vega * qty_sign * lot_size * (ΔIV_decimal * 100)
+
+        注意 PositionData 的 Greeks 符号约定:
+        - delta, theta: 乘以 qty（已带方向符号）
+        - gamma, vega: 乘以 abs(qty)（永远为正，丢失了方向信息）
+        因此 gamma 和 vega 需要额外乘 qty_sign 恢复方向:
+        short position (qty<0) → gamma_pnl 为负（凸性成本）
+        short position (qty<0) → vega_pnl 在 IV 上升时为负
         """
         lot_size = prev.lot_size
+
+        # 持仓方向符号：gamma/vega 使用 abs(qty) 约定，需要恢复方向
+        qty_sign = 1 if prev.quantity >= 0 else -1
 
         # 价格变动
         dS = curr.underlying_price - prev.underlying_price
@@ -180,23 +294,30 @@ class PnLAttributionEngine:
         actual_pnl = curr.market_value - prev.market_value
 
         # Greeks 归因
+        # delta/theta: PositionData 已乘 qty，自带方向符号，直接使用
         delta_pnl = 0.0
         if prev.delta is not None:
             delta_pnl = prev.delta * lot_size * dS
 
+        # gamma: PositionData 乘 abs(qty)，永远为正，需乘 qty_sign 恢复方向
+        # short gamma → gamma_pnl 永远为负（凸性成本）
         gamma_pnl = 0.0
         if prev.gamma is not None:
-            gamma_pnl = 0.5 * prev.gamma * lot_size * dS * dS
+            gamma_pnl = 0.5 * prev.gamma * qty_sign * lot_size * dS * dS
 
+        # theta: 使用实际日历天数（Fri→Mon = 3天，含周末/假期的 theta 衰减）
+        dt = (curr.date - prev.date).days
         theta_pnl = 0.0
         if prev.theta is not None:
-            theta_pnl = prev.theta * lot_size  # dt = 1 day
+            theta_pnl = prev.theta * lot_size * dt
 
+        # vega: PositionData 乘 abs(qty)，永远为正，需乘 qty_sign 恢复方向
+        # short vega → IV 上升时 vega_pnl 为负
         vega_pnl = 0.0
         if prev.vega is not None and dIV != 0.0:
             # vega 是 per 1% IV change, dIV 是 decimal
             # 需要转为百分点: dIV * 100
-            vega_pnl = prev.vega * lot_size * (dIV * 100)
+            vega_pnl = prev.vega * qty_sign * lot_size * (dIV * 100)
 
         residual = actual_pnl - (delta_pnl + gamma_pnl + theta_pnl + vega_pnl)
 
@@ -212,6 +333,61 @@ class PnLAttributionEngine:
             underlying_move=dS,
             underlying_move_pct=dS_pct,
             iv_change=dIV,
+        )
+
+    def _attribute_disappeared_position(
+        self,
+        prev: PositionSnapshot,
+        actual_pnl: float,
+        close_rec: TradeRecord,
+        current_date: date,
+        current_snaps: list[PositionSnapshot],
+    ) -> PositionDailyAttribution:
+        """归因消失持仓（到期/平仓）的最后一日 PnL
+
+        使用前日 Greeks 进行归因分解，而非全部归入 residual。
+        标的价格优先从 TradeRecord（到期记录含 underlying_price），
+        其次从同日其他持仓的快照获取，最后回退到 prev 价格（dS=0）。
+        """
+        lot_size = prev.lot_size
+        qty_sign = 1 if prev.quantity >= 0 else -1
+        dt = (current_date - prev.date).days or 1
+
+        # 获取标的价格：TradeRecord > 同日其他持仓 > 前日价格
+        current_underlying_price = prev.underlying_price
+        if close_rec.underlying_price is not None:
+            current_underlying_price = close_rec.underlying_price
+        else:
+            for snap in current_snaps:
+                if snap.underlying == prev.underlying and snap.underlying_price > 0:
+                    current_underlying_price = snap.underlying_price
+                    break
+
+        dS = current_underlying_price - prev.underlying_price
+        dS_pct = dS / prev.underlying_price if prev.underlying_price != 0 else 0.0
+
+        # Greeks 归因
+        delta_pnl = prev.delta * lot_size * dS if prev.delta else 0.0
+        gamma_pnl = (
+            0.5 * prev.gamma * qty_sign * lot_size * dS * dS
+            if prev.gamma else 0.0
+        )
+        theta_pnl = prev.theta * lot_size * dt if prev.theta else 0.0
+        vega_pnl = 0.0  # 无当日 IV 数据，无法计算 vega 归因
+
+        residual = actual_pnl - (delta_pnl + gamma_pnl + theta_pnl + vega_pnl)
+
+        return PositionDailyAttribution(
+            position_id=prev.position_id,
+            underlying=prev.underlying,
+            delta_pnl=delta_pnl,
+            gamma_pnl=gamma_pnl,
+            theta_pnl=theta_pnl,
+            vega_pnl=vega_pnl,
+            residual=residual,
+            actual_pnl=actual_pnl,
+            underlying_move=dS,
+            underlying_move_pct=dS_pct,
         )
 
     @staticmethod
