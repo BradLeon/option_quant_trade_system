@@ -293,6 +293,7 @@ class SliceStats:
     gamma_pnl: float = 0.0
     theta_pnl: float = 0.0
     vega_pnl: float = 0.0
+    residual: float = 0.0
 
     # 其他统计
     avg_holding_days: float = 0.0
@@ -311,6 +312,7 @@ class SliceStats:
             "gamma_pnl": self.gamma_pnl,
             "theta_pnl": self.theta_pnl,
             "vega_pnl": self.vega_pnl,
+            "residual": self.residual,
             "avg_holding_days": self.avg_holding_days,
             "max_win": self.max_win,
             "max_loss": self.max_loss,
@@ -411,6 +413,11 @@ class TradeExitQuality:
     pnl_if_held_to_expiry: float | None = None
     exit_benefit: float | None = None  # actual - if_held (正=正确退出)
     was_good_exit: bool | None = None  # exit_benefit > 0
+    entry_date: date | None = None
+    expiration: date | None = None
+    actual_ann_return: float | None = None  # 实际年化收益率
+    held_ann_return: float | None = None  # 持有到期年化收益率
+    verdict_reason: str = ""  # "benefit" / "freed_capital" / "better_ann_return" / ""
 
 
 @dataclass

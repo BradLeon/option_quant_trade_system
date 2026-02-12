@@ -85,6 +85,11 @@ logger = logging.getLogger(__name__)
     help="跳过数据下载检查",
 )
 @click.option(
+    "--skip-market-check",
+    is_flag=True,
+    help="跳过市场环境检查（默认不跳过）",
+)
+@click.option(
     "--no-report",
     is_flag=True,
     help="不生成 HTML 报告",
@@ -116,6 +121,7 @@ def run(
     strategy: str,
     max_positions: int,
     skip_download: bool,
+    skip_market_check: bool,
     no_report: bool,
     report_dir: str,
     check_only: bool,
@@ -180,6 +186,7 @@ def run(
         initial_capital=capital,
         max_positions=max_positions,
         strategy_types=strategy_types,
+        skip_market_check=skip_market_check,
     )
 
     # 创建 Pipeline

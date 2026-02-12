@@ -638,7 +638,7 @@ class BacktestExecutor:
                     symbols=self._config.symbols,
                     market_type=MarketType.US,  # TODO: 支持 HK
                     strategy_type=strategy_type,
-                    skip_market_check=True,  # 回测中跳过市场环境检查
+                    skip_market_check=self._config.skip_market_check,
                 )
 
                 if result and result.opportunities:
@@ -726,6 +726,14 @@ class BacktestExecutor:
                 lot_size=decision.contract_multiplier,  # 直接传入，None 时使用默认值
             )
 
+            # 1.5. Trade 层：回填 underlying_price 到交易记录
+            try:
+                stock_quote = self._data_provider.get_stock_quote(underlying)
+                if stock_quote and stock_quote.close:
+                    self._trade_simulator.trade_records[-1].underlying_price = stock_quote.close
+            except Exception:
+                pass  # 非关键路径，失败不影响回测
+
             # 2. Position 层：基于 TradeExecution 创建持仓对象
             position = self._position_manager.create_position(execution)
 
@@ -782,6 +790,14 @@ class BacktestExecutor:
                 trade_date=trade_date,
                 reason=decision.reason or "monitor_signal",
             )
+
+            # 1.5. Trade 层：回填 underlying_price 到交易记录
+            try:
+                stock_quote = self._data_provider.get_stock_quote(position.underlying)
+                if stock_quote and stock_quote.close:
+                    self._trade_simulator.trade_records[-1].underlying_price = stock_quote.close
+            except Exception:
+                pass
 
             # 2. Position 层：计算已实现盈亏
             pnl = self._position_manager.calculate_realized_pnl(
@@ -875,6 +891,14 @@ class BacktestExecutor:
                 reason=f"roll_close: {decision.reason or 'rolling to new expiry'}",
             )
 
+            # 1.5. Trade 层：回填 underlying_price 到平仓记录
+            try:
+                stock_quote = self._data_provider.get_stock_quote(position.underlying)
+                if stock_quote and stock_quote.close:
+                    self._trade_simulator.trade_records[-1].underlying_price = stock_quote.close
+            except Exception:
+                pass
+
             # 2. Position 层：计算已实现盈亏
             pnl = self._position_manager.calculate_realized_pnl(
                 position=position,
@@ -949,6 +973,14 @@ class BacktestExecutor:
                 reason=f"roll_open: new expiry {decision.roll_to_expiry}",
                 lot_size=position.lot_size,  # 保持与原持仓相同
             )
+
+            # 开仓 Trade 层：回填 underlying_price 到开仓记录
+            try:
+                stock_quote = self._data_provider.get_stock_quote(position.underlying)
+                if stock_quote and stock_quote.close:
+                    self._trade_simulator.trade_records[-1].underlying_price = stock_quote.close
+            except Exception:
+                pass
 
             # Position 层: 创建持仓对象
             new_position = self._position_manager.create_position(open_execution)

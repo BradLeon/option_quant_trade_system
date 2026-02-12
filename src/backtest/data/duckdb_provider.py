@@ -1463,13 +1463,19 @@ class DuckDBProvider(DataProvider):
         # 2. 获取 ATM 期权的 IV
         iv = self._get_atm_implied_volatility(symbol)
 
+        # 3. 计算 IV Rank 和 IV Percentile
+        iv_rank = None
+        iv_percentile = None
+        if iv is not None:
+            iv_rank, iv_percentile = self._calculate_iv_rank(symbol, iv)
+
         return StockVolatility(
             symbol=symbol,
             timestamp=datetime.combine(self._as_of_date, datetime.min.time()),
             iv=iv,
             hv=hv,
-            iv_rank=None,  # 需要更多历史数据计算
-            iv_percentile=None,
+            iv_rank=iv_rank,
+            iv_percentile=iv_percentile,
             pcr=None,  # 需要成交量数据计算
             source="duckdb",
         )
@@ -1590,3 +1596,89 @@ class DuckDBProvider(DataProvider):
         except Exception as e:
             logger.error(f"Failed to get ATM IV for {symbol}: {e}")
             return None
+
+    def _calculate_iv_rank(
+        self,
+        symbol: str,
+        current_iv: float,
+        lookback_days: int = 252,
+    ) -> tuple[float | None, float | None]:
+        """计算 IV Rank 和 IV Percentile
+
+        基于标的股票的每日 ATM IV 历史计算:
+        - IV Rank = (current - min) / (max - min) * 100
+        - IV Percentile = 过去 N 天中 IV < current 的天数占比 * 100
+
+        使用 underlying_price 列让每天的 ATM 范围基于当天实际股价。
+
+        Args:
+            symbol: 股票代码
+            current_iv: 当前 IV (小数形式)
+            lookback_days: 回溯天数 (默认 252)
+
+        Returns:
+            (iv_rank, iv_percentile) 元组，不可用时返回 (None, None)
+        """
+        option_dir = self._data_dir / "option_daily" / symbol
+        if not option_dir.exists():
+            return None, None
+
+        parquet_files = sorted(option_dir.glob("*.parquet"))
+        if not parquet_files:
+            return None, None
+
+        try:
+            conn = self._get_conn()
+            from datetime import timedelta
+
+            lookback_start = self._as_of_date - timedelta(days=int(lookback_days * 1.5))
+
+            # 从所有相关 parquet 文件查询，用 underlying_price 动态计算每天的 ATM 范围
+            union_parts = []
+            for pf in parquet_files:
+                union_parts.append(
+                    f"SELECT date, implied_vol FROM read_parquet('{pf}') "
+                    f"WHERE date >= '{lookback_start}' AND date < '{self._as_of_date}' "
+                    f"AND strike >= underlying_price * 0.95 "
+                    f"AND strike <= underlying_price * 1.05 "
+                    f"AND implied_vol > 0 AND implied_vol < 5"
+                )
+
+            if not union_parts:
+                return None, None
+
+            union_sql = " UNION ALL ".join(union_parts)
+            rows = conn.execute(
+                f"SELECT date, MEDIAN(implied_vol) as daily_iv "
+                f"FROM ({union_sql}) "
+                f"GROUP BY date ORDER BY date"
+            ).fetchall()
+
+            if len(rows) < 20:
+                logger.debug(
+                    f"Not enough IV history for {symbol}: {len(rows)} days, need >= 20"
+                )
+                return None, None
+
+            historical_ivs = [row[1] for row in rows if row[1] is not None]
+            if len(historical_ivs) < 20:
+                return None, None
+
+            iv_min = min(historical_ivs)
+            iv_max = max(historical_ivs)
+
+            # IV Rank
+            iv_rank = None
+            if iv_max > iv_min:
+                iv_rank = (current_iv - iv_min) / (iv_max - iv_min) * 100
+                iv_rank = max(0.0, min(100.0, iv_rank))
+
+            # IV Percentile
+            lower_count = sum(1 for h in historical_ivs if h < current_iv)
+            iv_percentile = lower_count / len(historical_ivs) * 100
+
+            return iv_rank, iv_percentile
+
+        except Exception as e:
+            logger.debug(f"Failed to calculate IV rank for {symbol}: {e}")
+            return None, None

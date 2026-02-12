@@ -228,6 +228,8 @@ class BacktestPipeline:
         attribution_charts_obj = None
         slice_engine = None
         attr_engine = None
+        entry_report = None
+        exit_report = None
         if attribution_collector.position_snapshots:
             logger.info("\n[Step 3.5/4] Computing attribution...")
             from src.backtest.attribution.pnl_attribution import PnLAttributionEngine
@@ -255,6 +257,27 @@ class BacktestPipeline:
                 f"Attribution: {len(daily_attrs)} days, {len(trade_attrs)} trades"
             )
 
+            # Strategy diagnosis (entry/exit quality)
+            try:
+                from src.backtest.attribution.strategy_diagnosis import StrategyDiagnosis
+                from src.backtest.data.duckdb_provider import DuckDBProvider
+
+                diag_provider = DuckDBProvider(str(self._data_dir))
+                diagnosis = StrategyDiagnosis(
+                    trade_attributions=trade_attrs,
+                    position_snapshots=attribution_collector.position_snapshots,
+                    trade_records=backtest_result.trade_records,
+                    data_provider=diag_provider,
+                )
+                entry_report = diagnosis.analyze_entry_quality()
+                exit_report = diagnosis.analyze_exit_quality()
+                logger.info(
+                    f"Diagnosis: entry={len(entry_report.trades)} trades, "
+                    f"exit={len(exit_report.trades)} trades"
+                )
+            except Exception as e:
+                logger.warning(f"Strategy diagnosis failed: {e}")
+
         # Step 4: 生成报告
         report_path = None
         if generate_report:
@@ -268,6 +291,8 @@ class BacktestPipeline:
                 attribution_charts=attribution_charts_obj,
                 slice_engine=slice_engine,
                 market_context=market_context,
+                entry_report=entry_report,
+                exit_report=exit_report,
             )
             logger.info(f"Report: {report_path}")
         else:
@@ -511,6 +536,8 @@ class BacktestPipeline:
         attribution_charts=None,
         slice_engine=None,
         market_context: MarketContext | None = None,
+        entry_report=None,
+        exit_report=None,
     ) -> Path:
         """生成 HTML 报告"""
         from src.backtest.visualization.dashboard import BacktestDashboard
@@ -524,6 +551,8 @@ class BacktestPipeline:
             benchmark_result=benchmark_result,
             attribution_charts=attribution_charts,
             market_context=market_context,
+            entry_report=entry_report,
+            exit_report=exit_report,
         )
 
         # 使用回测名称作为文件名

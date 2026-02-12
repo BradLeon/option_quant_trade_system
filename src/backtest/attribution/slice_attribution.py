@@ -172,6 +172,7 @@ class SliceAttributionEngine:
                 gamma_pnl=sum(t.gamma_pnl for t in trades),
                 theta_pnl=sum(t.theta_pnl for t in trades),
                 vega_pnl=sum(t.vega_pnl for t in trades),
+                residual=sum(t.residual for t in trades),
                 avg_holding_days=(
                     sum(t.holding_days for t in trades) / count if count > 0 else 0.0
                 ),

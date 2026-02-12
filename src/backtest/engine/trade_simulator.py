@@ -93,6 +93,7 @@ class TradeRecord:
     reason: str | None = None
     close_reason_type: CloseReasonType | None = None  # 结构化平仓原因
     position_id: str | None = None  # 可选，由 Position 层填充
+    underlying_price: float | None = None  # 交易时标的价格（到期时为结算价格）
 
 
 @dataclass
@@ -675,6 +676,7 @@ class TradeSimulator:
                 CloseReasonType.EXPIRED_ITM if is_itm
                 else CloseReasonType.EXPIRED_WORTHLESS
             ),
+            underlying_price=final_underlying_price,
         )
         self._trade_records.append(trade_record)
 
