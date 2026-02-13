@@ -413,7 +413,7 @@ class BacktestExecutor:
         self._position_manager.set_date(current_date)
 
         # 显示当前回测日期
-        logger.info(f"{'='*60}  {current_date}  {'='*7}")
+        logger.info(f"{'='*60}  📅 {current_date}  {'='*5}")
 
         # 更新数据提供者日期
         self._data_provider.set_as_of_date(current_date)
