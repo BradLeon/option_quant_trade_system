@@ -73,11 +73,12 @@ backtest_overrides:
       vix_percentile_range: [0.0, 1.0] # 禁用 VIX percentile 过滤
       term_structure_threshold: 999    # 禁用期限结构过滤
   underlying_filter:
+    min_iv_rank: 0                # 禁用 IV Rank 过滤
     max_iv_hv_ratio: 3.0          # 放宽 IV/HV 上限 (回测数据可能有偏差)
   contract_filter:
     liquidity:
       min_open_interest: 0        # 回测数据可能无 OI
       max_bid_ask_spread: 0.30    # 放宽 spread 限制
     metrics:
-      min_expected_roc: 0.01        # 最低预期收益率 (LIVE: 10%)
-      min_tgr: 0.20                 # 最低 TGR 阈值 (LIVE: 50%)
+      min_expected_roc: -0.50        # 最低预期收益率 (LIVE: 10%)
+      min_tgr: 0.00                 # 最低 TGR 阈值 (LIVE: 50%)
