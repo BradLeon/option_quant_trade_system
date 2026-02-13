@@ -175,6 +175,13 @@ class MarketFilter:
                 is_favorable = False
                 unfavorable_reasons.append("大盘趋势非多头")
 
+        # 检查多头趋势对 neutral_or_bearish 策略的限制
+        if overall_trend in [TrendStatus.STRONG_BULLISH, TrendStatus.BULLISH]:
+            trend_required = us_config.trend_required
+            if trend_required == "neutral_or_bearish":
+                is_favorable = False
+                unfavorable_reasons.append(f"大盘趋势为多头 ({overall_trend.value})，不适合 Covered Call")
+
         # 期限结构检查
         if term_structure and term_structure.filter_status == FilterStatus.UNFAVORABLE:
             is_favorable = False
@@ -491,9 +498,15 @@ class MarketFilter:
                     else:
                         trend = TrendStatus.BEARISH
                         score = -1.0
-                else:
+                else:  # NEUTRAL
                     trend = TrendStatus.NEUTRAL
-                    score = 0.0
+                    # 用 SMA200 位置区分方向倾向
+                    if sma200 and current_price > sma200:
+                        score = 0.3  # 偏多
+                    elif sma200 and current_price < sma200:
+                        score = -0.3  # 偏空
+                    else:
+                        score = 0.0
 
                 index_statuses.append(
                     IndexStatus(

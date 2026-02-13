@@ -143,6 +143,7 @@ from typing import Any
 import yaml
 
 from src.business.config.config_mode import ConfigMode
+from src.business.config.config_utils import merge_overrides
 from src.engine.models.enums import StrategyType
 
 
@@ -335,14 +336,14 @@ class PositionThresholds:
     # |Delta| (方向性风险) - 使用绝对值
     delta: ThresholdRange = field(
         default_factory=lambda: ThresholdRange(
-            green=(0, 0.20),               # |Delta| ≤ 0.20
-            yellow=(0.20, 0.40),           # 0.20 ~ 0.40
-            red_above=0.50,                # |Delta| > 0.50
+            green=(0, 0.30),               # |Delta| ≤ 0.30
+            yellow=(0.30, 0.65),           # 0.30 ~ 0.65
+            red_above=0.65,                # |Delta| > 0.65
             hysteresis=0.03,
             alert_type="DELTA_CHANGE",
-            red_above_message="|Delta| 过大: {value:.2f}，方向性风险高",
-            yellow_message="|Delta| 偏大: {value:.2f}",
-            red_above_action="必须行动：对冲正股或平仓，不要等到 0.7",
+            red_above_message="|Delta| 过大: {value:.2f}(>0.65)，方向性风险高",
+            yellow_message="|Delta| 偏大: {value:.2f}(>0.30)",
+            red_above_action="必须行动：对冲正股或平仓，不要等到 0.8",
             yellow_action="关注方向性风险，准备对冲",
         )
     )
@@ -854,7 +855,7 @@ class MonitoringConfig:
         """
         # 如果是 BACKTEST 模式，合并 backtest_overrides
         if mode == ConfigMode.BACKTEST and "backtest_overrides" in data:
-            data = cls._merge_backtest_overrides(data, data["backtest_overrides"])
+            data = merge_overrides(data, data["backtest_overrides"])
 
         config = cls()
 
@@ -923,28 +924,3 @@ class MonitoringConfig:
             return cls.from_yaml(config_file, mode=mode)
         return cls()
 
-    @staticmethod
-    def _merge_backtest_overrides(
-        base: dict[str, Any],
-        overrides: dict[str, Any],
-    ) -> dict[str, Any]:
-        """递归合并 backtest_overrides 到基础配置
-
-        Args:
-            base: 基础配置字典
-            overrides: 覆盖字典
-
-        Returns:
-            合并后的配置字典
-        """
-        result = base.copy()
-        for key, value in overrides.items():
-            if key == "backtest_overrides":
-                continue  # 跳过 backtest_overrides 本身
-            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-                # 递归合并嵌套字典
-                result[key] = MonitoringConfig._merge_backtest_overrides(result[key], value)
-            else:
-                # 直接覆盖
-                result[key] = value
-        return result

@@ -28,8 +28,10 @@ from src.business.screening.models import (
     FundamentalScore,
     MarketType,
     TechnicalScore,
+    TrendStatus,
     UnderlyingScore,
 )
+from src.engine.models.enums import StrategyType
 from src.data.models.stock import KlineType
 from src.data.models.technical import TechnicalData
 from src.data.providers.base import DataProvider
@@ -96,12 +98,16 @@ class UnderlyingFilter:
         self,
         symbols: list[str],
         market_type: MarketType,
+        trend_status: TrendStatus | None = None,
+        strategy_type: StrategyType | None = None,
     ) -> list[UnderlyingScore]:
         """批量评估标的
 
         Args:
             symbols: 标的列表
             market_type: 市场类型
+            trend_status: 市场趋势状态（用于 IV Rank 趋势修正）
+            strategy_type: 策略类型（用于 IV Rank 趋势修正）
 
         Returns:
             UnderlyingScore 列表
@@ -111,7 +117,7 @@ class UnderlyingFilter:
         for idx, symbol in enumerate(symbols, 1):
             try:
                 logger.info(f"正在评估标的 {idx}/{len(symbols)}: {symbol}")
-                score = self._evaluate_single(symbol, market_type)
+                score = self._evaluate_single(symbol, market_type, trend_status, strategy_type)
                 results.append(score)
 
                 # 输出详细评估结果
@@ -190,22 +196,28 @@ class UnderlyingFilter:
         self,
         symbol: str,
         market_type: MarketType,
+        trend_status: TrendStatus | None = None,
+        strategy_type: StrategyType | None = None,
     ) -> UnderlyingScore:
         """评估单个标的
 
         Args:
             symbol: 标的代码
             market_type: 市场类型
+            trend_status: 市场趋势状态（用于 IV Rank 趋势修正）
+            strategy_type: 策略类型（用于 IV Rank 趋势修正）
 
         Returns:
             UnderlyingScore: 评估结果
         """
-        return self._evaluate_single(symbol, market_type)
+        return self._evaluate_single(symbol, market_type, trend_status, strategy_type)
 
     def _evaluate_single(
         self,
         symbol: str,
         market_type: MarketType,
+        trend_status: TrendStatus | None = None,
+        strategy_type: StrategyType | None = None,
     ) -> UnderlyingScore:
         """评估单个标的（内部实现）
 
@@ -252,7 +264,9 @@ class UnderlyingFilter:
 
             # P1: IV Rank 检查（阻塞，卖方策略必须卖"贵"的东西）
             # 使用动态阈值（与 VIX 挂钩）
-            iv_rank_threshold = self._get_dynamic_iv_rank_threshold(market_type)
+            iv_rank_threshold = self._get_dynamic_iv_rank_threshold(
+                market_type, trend_status, strategy_type
+            )
             if iv_rank is not None and iv_rank < iv_rank_threshold:
                 disqualify_reasons.append(
                     f"[P1] IV Rank={iv_rank:.1f}% 不足（<{iv_rank_threshold:.0f}%），"
@@ -378,44 +392,16 @@ class UnderlyingFilter:
             logger.warning(f"获取 {symbol} VIX 失败: {e}")
             return None
 
-    def _get_dynamic_iv_rank_threshold(self, market_type: MarketType) -> float:
-        """计算动态 IV Rank 阈值（与波动率指数挂钩）
-
-        规则：
-        - VIX < 15: 返回 20%（低波环境，降低门槛以捕捉机会）
-        - VIX 15-20: 返回 25%
-        - VIX 20-25: 返回 30%（默认）
-        - VIX > 25: 返回 35%（高波环境，提高门槛以保证质量）
-
-        Args:
-            market_type: 市场类型
-
-        Returns:
-            动态 IV Rank 阈值（0-100 scale）
-        """
-        # 获取当前波动率指数
-        if market_type == MarketType.US:
-            vix = self._get_current_vix("^VIX")
-        else:
-            vix = self._get_current_vix("^HSIL")  # 恒生波幅指数
-
-        if vix is None:
-            # 无法获取 VIX，使用配置的默认值
-            default_threshold = self.config.underlying_filter.min_iv_rank
-            logger.debug(f"无法获取 VIX，使用默认阈值 {default_threshold}%")
-            return default_threshold
-
-        # 动态阈值计算
-        if vix < 15:
-            threshold = 20.0
-        elif vix < 20:
-            threshold = 25.0
-        elif vix < 25:
-            threshold = 30.0
-        else:
-            threshold = 35.0
-
-        logger.debug(f"VIX={vix:.1f} → 动态 IV Rank 阈值={threshold}%")
+    def _get_dynamic_iv_rank_threshold(
+        self,
+        market_type: MarketType,  # noqa: ARG002
+        trend_status: TrendStatus | None = None,
+        strategy_type: StrategyType | None = None,  # noqa: ARG002
+    ) -> float:
+        """返回当前趋势下的 IV Rank 阈值，委托给 config 的 override 优先级逻辑。"""
+        trend_key = trend_status.value if trend_status else None
+        threshold = self.config.underlying_filter.get_min_iv_rank(trend_key)
+        logger.debug(f"trend={trend_key} → IV Rank 阈值={threshold}%")
         return threshold
 
     def _get_volatility_data(self, symbol: str) -> object | None:

@@ -77,6 +77,7 @@ from typing import Any
 import yaml
 
 from src.business.config.config_mode import ConfigMode
+from src.business.config.config_utils import merge_overrides
 
 
 @dataclass
@@ -200,14 +201,56 @@ class EventCalendarConfig:
 
 @dataclass
 class UnderlyingFilterConfig:
-    """标的过滤器配置"""
+    """标的过滤器配置
+
+    趋势覆盖 (trend_override):
+        根据市场趋势自动调整 min_iv_rank。
+        YAML 示例:
+            trend_override:
+              bullish:  { min_iv_rank: 15 }
+              bearish:  { min_iv_rank: 40 }
+        strong_bullish / strong_bearish 自动回退到 bullish / bearish。
+    """
 
     min_iv_rank: float = 30.0  # P1: IV Rank 阻塞条件，卖方必须卖"贵"的东西
     max_iv_hv_ratio: float = 2.0
     min_iv_hv_ratio: float = 0.8
+    trend_override: dict[str, dict[str, float]] = field(default_factory=dict)
     technical: TechnicalConfig = field(default_factory=TechnicalConfig)
     fundamental: FundamentalConfig = field(default_factory=FundamentalConfig)
     event_calendar: EventCalendarConfig = field(default_factory=EventCalendarConfig)
+
+    # -- 趋势 fallback 映射 --
+    _TREND_FALLBACK: dict[str, str] = field(
+        default_factory=lambda: {
+            "strong_bullish": "bullish",
+            "strong_bearish": "bearish",
+        },
+        init=False,
+        repr=False,
+    )
+
+    def get_min_iv_rank(self, trend: str | None = None) -> float:
+        """返回考虑趋势覆盖后的有效 min_iv_rank。
+
+        Args:
+            trend: TrendStatus.value，如 "bullish" / "strong_bearish" / None
+
+        Returns:
+            有效的 min_iv_rank 阈值
+        """
+        if trend is None or not self.trend_override:
+            return self.min_iv_rank
+
+        override = self.trend_override.get(trend)
+        if override is None:
+            fallback_key = self._TREND_FALLBACK.get(trend)
+            if fallback_key:
+                override = self.trend_override.get(fallback_key)
+
+        if override is not None:
+            return override.get("min_iv_rank", self.min_iv_rank)
+        return self.min_iv_rank
 
 
 @dataclass
@@ -346,7 +389,7 @@ class ScreeningConfig:
         """
         # 如果是 BACKTEST 模式，合并 backtest_overrides
         if mode == ConfigMode.BACKTEST and "backtest_overrides" in data:
-            data = cls._merge_backtest_overrides(data, data["backtest_overrides"])
+            data = merge_overrides(data, data["backtest_overrides"])
 
         config = cls()
 
@@ -386,6 +429,7 @@ class ScreeningConfig:
                 min_iv_rank=uf.get("min_iv_rank", 50),
                 max_iv_hv_ratio=uf.get("max_iv_hv_ratio", 2.0),
                 min_iv_hv_ratio=uf.get("min_iv_hv_ratio", 0.8),
+                trend_override=uf.get("trend_override", {}),
                 technical=TechnicalConfig(
                     min_rsi=tech.get("min_rsi", 30),
                     max_rsi=tech.get("max_rsi", 70),
@@ -460,28 +504,3 @@ class ScreeningConfig:
             return cls.from_yaml(config_file, mode=mode)
         return cls()
 
-    @staticmethod
-    def _merge_backtest_overrides(
-        base: dict[str, Any],
-        overrides: dict[str, Any],
-    ) -> dict[str, Any]:
-        """递归合并 backtest_overrides 到基础配置
-
-        Args:
-            base: 基础配置字典
-            overrides: 覆盖字典
-
-        Returns:
-            合并后的配置字典
-        """
-        result = base.copy()
-        for key, value in overrides.items():
-            if key == "backtest_overrides":
-                continue  # 跳过 backtest_overrides 本身
-            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-                # 递归合并嵌套字典
-                result[key] = ScreeningConfig._merge_backtest_overrides(result[key], value)
-            else:
-                # 直接覆盖
-                result[key] = value
-        return result

@@ -73,15 +73,18 @@ class ContractFilter:
         self,
         config: ScreeningConfig,
         provider: DataProvider | None = None,
+        kelly_fraction: float = 0.25,
     ) -> None:
         """初始化合约过滤器
 
         Args:
             config: 筛选配置
             provider: 数据提供者 (DataProvider 或其子类)，默认创建 UnifiedDataProvider
+            kelly_fraction: Kelly 仓位系数 (默认 0.25 = 1/4 Kelly)
         """
         self.config = config
         self.provider: DataProvider = provider or UnifiedDataProvider()
+        self.kelly_fraction = kelly_fraction
 
     def _get_reference_date(self) -> date:
         """获取参考日期（回测兼容）
@@ -647,10 +650,10 @@ class ContractFilter:
             if open_interest is not None:
                 pass_reasons.append(f"OI={open_interest}")
 
-            # 推荐仓位: 1/4 Kelly（保守策略）
+            # 推荐仓位: kelly_fraction * Kelly
             kelly = metrics.get("kelly_fraction")
             if kelly is not None and kelly > 0:
-                recommended_position = kelly / 4
+                recommended_position = kelly * self.kelly_fraction
             else:
                 recommended_position = 0.0
 
@@ -1051,7 +1054,8 @@ class ContractFilter:
             if opp.pass_reasons:
                 logger.info(f"       Pass: {', '.join(opp.pass_reasons)}")
             if opp.recommended_position is not None:
-                logger.info(f"       推荐仓位: {opp.recommended_position:.1%} (1/4 Kelly)")
+                kelly_label = f"{self.kelly_fraction:.0%}" if self.kelly_fraction in (0.25, 0.5, 0.75, 1.0) else f"{self.kelly_fraction:.2f}"
+                logger.info(f"       推荐仓位: {opp.recommended_position:.1%} ({kelly_label} Kelly)")
             if opp.warnings:
                 # 只显示前2个警告
                 warnings_str = "; ".join(opp.warnings[:2])

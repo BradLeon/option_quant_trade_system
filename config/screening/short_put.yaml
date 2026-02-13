@@ -36,7 +36,12 @@ market_filter:
     trend_required: "bullish_or_neutral"
 
 underlying_filter:
-  min_iv_rank: 10                 # 最低 IV Rank
+  min_iv_rank: 10                 # 最低 IV Rank (基准值)
+  trend_override:                 # 根据市场趋势调整 IV Rank 阈值
+    bullish:
+      min_iv_rank: 15             # 牛市顺势：适度放宽
+    bearish:
+      min_iv_rank: 40             # 熊市逆势：收紧，只卖贵的
   max_iv_hv_ratio: 1.5            # IV/HV 上限 (LIVE: 严格)
   min_iv_hv_ratio: 0.8            # IV/HV 下限
   technical:
@@ -64,6 +69,11 @@ contract_filter:
 # 这些值会覆盖上面的主配置
 # ============================================================
 backtest_overrides:
+  market_filter:
+    us_market:
+      vix_range: [0, 999]              # 禁用 VIX 范围过滤
+      vix_percentile_range: [0.0, 1.0] # 禁用 VIX percentile 过滤
+      term_structure_threshold: 999    # 禁用期限结构过滤
   underlying_filter:
     max_iv_hv_ratio: 3.0          # 放宽 IV/HV 上限 (回测数据可能有偏差)
   contract_filter:

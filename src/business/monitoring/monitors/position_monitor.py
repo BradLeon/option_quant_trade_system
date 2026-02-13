@@ -131,9 +131,14 @@ class PositionMonitor:
             position=pos,
         ))
 
-        # 2. 检查 |Delta|（使用绝对值）
+        # 2. 检查 |Delta|（使用 per-contract 绝对值）
+        # PositionData.delta 在回测中是 position-level（raw_delta × qty），需归一化
+        per_contract_delta = None
+        if pos.delta is not None:
+            qty = abs(pos.quantity) if pos.quantity else 1
+            per_contract_delta = abs(pos.delta / qty)
         alerts.extend(self._check_threshold(
-            value=abs(pos.delta) if pos.delta is not None else None,
+            value=per_contract_delta,
             threshold=thresholds.delta,
             metric_name="delta",
             position=pos,
@@ -416,6 +421,22 @@ class PositionMonitor:
                     threshold_range=threshold_range,
                     suggested_action="强制展期到下月",
                 )]
+
+        # DTE 进入 yellow 区域 + 盈利达标 → 止盈
+        pnl_take_profit = thresholds.pnl.green[0] if thresholds.pnl.green else 0.50
+        dte_yellow_boundary = threshold.green[0] if threshold.green else 14
+        if pos.dte < dte_yellow_boundary and pnl_pct >= pnl_take_profit:
+            return [Alert(
+                alert_type=AlertType.DTE_PROFITABLE,
+                level=AlertLevel.GREEN,
+                message=f"DTE={pos.dte:.0f} 天(<{dte_yellow_boundary})且盈利 {pnl_pct:.1%}(≥{pnl_take_profit:.0%})，建议止盈",
+                symbol=pos.symbol,
+                position_id=pos.position_id,
+                current_value=float(pos.dte),
+                threshold_value=dte_yellow_boundary,
+                threshold_range=threshold_range,
+                suggested_action="止盈平仓，避免临近到期的 Gamma 风险",
+            )]
 
         # 非红色区域，走原有逻辑
         return self._check_threshold(

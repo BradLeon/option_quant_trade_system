@@ -62,12 +62,14 @@ class ScreeningPipeline:
         self,
         config: ScreeningConfig,
         provider: DataProvider | None = None,
+        kelly_fraction: float = 0.25,
     ) -> None:
         """初始化筛选管道
 
         Args:
             config: 筛选配置
             provider: 数据提供者 (DataProvider 或其子类)，默认创建 UnifiedDataProvider
+            kelly_fraction: Kelly 仓位系数 (默认 0.25 = 1/4 Kelly)
         """
         self.config = config
         self.provider: DataProvider = provider or UnifiedDataProvider()
@@ -75,7 +77,7 @@ class ScreeningPipeline:
         # 初始化各层过滤器，共享同一个 provider
         self.market_filter = MarketFilter(config, self.provider)
         self.underlying_filter = UnderlyingFilter(config, self.provider)
-        self.contract_filter = ContractFilter(config, self.provider)
+        self.contract_filter = ContractFilter(config, self.provider, kelly_fraction=kelly_fraction)
 
     def run(
         self,
@@ -129,7 +131,12 @@ class ScreeningPipeline:
 
         # 2. 标的评估
         logger.info(f"Step 2: 评估标的 ({len(symbols)} 个)...")
-        underlying_scores = self.underlying_filter.evaluate(symbols, market_type)
+        overall_trend = market_status.overall_trend if market_status else None
+        underlying_scores = self.underlying_filter.evaluate(
+            symbols, market_type,
+            trend_status=overall_trend,
+            strategy_type=strategy_type,
+        )
 
         passed_underlyings = [s for s in underlying_scores if s.passed]
         logger.info(

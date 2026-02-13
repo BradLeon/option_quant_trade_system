@@ -260,6 +260,26 @@ class BacktestExecutor:
         使用 BACKTEST 模式加载所有配置，并应用 BacktestConfig 中的覆盖。
         为每个策略类型创建独立的 ScreeningPipeline。
         """
+        # Risk Config (用于 DecisionEngine 和 ScreeningPipeline)
+        try:
+            # 使用 BACKTEST 模式加载 RiskConfig
+            risk_config = RiskConfig.load(mode=ConfigMode.BACKTEST)
+            # 应用 BacktestConfig 中的自定义覆盖
+            if self._config.risk_overrides:
+                risk_config = RiskConfig.from_dict(
+                    self._config.risk_overrides,
+                    mode=ConfigMode.BACKTEST,
+                )
+            self._risk_config = risk_config
+            logger.info(
+                f"RiskConfig loaded with BACKTEST mode: "
+                f"max_notional_pct={risk_config.max_notional_pct_per_underlying:.0%}, "
+                f"kelly_fraction={risk_config.kelly_fraction}"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to load RiskConfig: {e}")
+            self._risk_config = RiskConfig()  # 使用默认值
+
         # Screening Pipelines (每个策略类型一个)
         # DuckDBProvider 实现了完整的 DataProvider 接口，可直接使用
         for strategy_type in self._config.strategy_types:
@@ -278,6 +298,7 @@ class BacktestExecutor:
                 pipeline = ScreeningPipeline(
                     config=screening_config,
                     provider=self._data_provider,  # DuckDBProvider 直接作为 DataProvider
+                    kelly_fraction=self._risk_config.kelly_fraction,
                 )
                 self._screening_pipelines[strategy_type] = pipeline
                 logger.info(f"ScreeningPipeline for {strategy_type.value} initialized with BACKTEST mode")
@@ -299,25 +320,6 @@ class BacktestExecutor:
         except Exception as e:
             logger.warning(f"Failed to initialize MonitoringPipeline: {e}")
             self._monitoring_pipeline = None
-
-        # Risk Config (用于 DecisionEngine)
-        try:
-            # 使用 BACKTEST 模式加载 RiskConfig
-            risk_config = RiskConfig.load(mode=ConfigMode.BACKTEST)
-            # 应用 BacktestConfig 中的自定义覆盖
-            if self._config.risk_overrides:
-                risk_config = RiskConfig.from_dict(
-                    self._config.risk_overrides,
-                    mode=ConfigMode.BACKTEST,
-                )
-            self._risk_config = risk_config
-            logger.info(
-                f"RiskConfig loaded with BACKTEST mode: "
-                f"max_notional_pct={risk_config.max_notional_pct_per_underlying:.0%}"
-            )
-        except Exception as e:
-            logger.warning(f"Failed to load RiskConfig: {e}")
-            self._risk_config = RiskConfig()  # 使用默认值
 
         # Decision Engine
         try:

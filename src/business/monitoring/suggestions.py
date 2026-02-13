@@ -129,6 +129,10 @@ ALERT_ACTION_MAP: dict[tuple[AlertType, AlertLevel], tuple[ActionType, UrgencyLe
         ActionType.TAKE_PROFIT,
         UrgencyLevel.SOON,
     ),
+    (AlertType.DTE_PROFITABLE, AlertLevel.GREEN): (
+        ActionType.TAKE_PROFIT,
+        UrgencyLevel.SOON,
+    ),
     (AlertType.IV_HV_CHANGE, AlertLevel.GREEN): (
         ActionType.HOLD,
         UrgencyLevel.MONITOR,
