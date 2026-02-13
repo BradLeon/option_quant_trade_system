@@ -375,7 +375,20 @@ class AttributionCharts:
         strikes = [f"${t.strike:.0f}" for t in sorted_trades]
         entry_dates = [t.entry_date.isoformat() for t in sorted_trades]
         exit_dates = [t.exit_date.isoformat() if t.exit_date else "-" for t in sorted_trades]
+        qtys = [t.quantity for t in sorted_trades]
         holding = [t.holding_days for t in sorted_trades]
+
+        # ROC Annual = (total_pnl / cost_basis) * (365 / holding_days)
+        # cost_basis = entry_price * abs(quantity) * lot_size
+        roc_annuals = []
+        for t in sorted_trades:
+            cost_basis = t.entry_price * abs(t.quantity) * t.lot_size
+            if cost_basis > 0 and t.holding_days > 0:
+                roc_ann = (t.total_pnl / cost_basis) * (365 / t.holding_days)
+                roc_annuals.append(f"{roc_ann:.0%}")
+            else:
+                roc_annuals.append("-")
+
         total_pnls = [f"${t.total_pnl:,.0f}" for t in sorted_trades]
         delta_pnls = [f"${t.delta_pnl:,.0f}" for t in sorted_trades]
         gamma_pnls = [f"${t.gamma_pnl:,.0f}" for t in sorted_trades]
@@ -392,10 +405,12 @@ class AttributionCharts:
             for t in sorted_trades
         ]
 
+        n_cols = 17
         fig = go.Figure(go.Table(
             header=dict(
                 values=["Underlying", "Type", "Strike", "Entry", "Exit",
-                        "Days", "Total PnL", "Delta", "Gamma", "Theta",
+                        "Qty", "Days", "ROC Ann.",
+                        "Total PnL", "Delta", "Gamma", "Theta",
                         "Vega", "Residual", "Entry IV", "Exit IV", "Exit Reason"],
                 fill_color="#f8f9fa",
                 align="center",
@@ -404,11 +419,13 @@ class AttributionCharts:
             ),
             cells=dict(
                 values=[underlyings, opt_types, strikes, entry_dates, exit_dates,
-                        holding, total_pnls, delta_pnls, gamma_pnls, theta_pnls,
+                        qtys, holding, roc_annuals,
+                        total_pnls, delta_pnls, gamma_pnls, theta_pnls,
                         vega_pnls, residuals, entry_ivs, exit_ivs, exit_reasons],
-                fill_color=[row_colors] * 15,
+                fill_color=[row_colors] * n_cols,
                 align=["left", "center", "right", "center", "center",
-                       "right", "right", "right", "right", "right",
+                       "right", "right", "right",
+                       "right", "right", "right", "right",
                        "right", "right", "right", "right", "left"],
                 font=dict(size=10),
                 line_color="#dee2e6",
@@ -654,6 +671,7 @@ class AttributionCharts:
         opt_types = []
         strikes = []
         entry_dates = []
+        qtys = []
         expire_dates = []
         exit_dates = []
         exit_reasons = []
@@ -673,6 +691,7 @@ class AttributionCharts:
                 t.entry_date.isoformat() if t.entry_date else
                 (ta.entry_date.isoformat() if ta and ta.entry_date else "-")
             )
+            qtys.append(ta.quantity if ta else 0)
             expire_dates.append(
                 t.expiration.isoformat() if t.expiration else "-"
             )
@@ -711,6 +730,7 @@ class AttributionCharts:
         opt_types.append("")
         strikes.append("")
         entry_dates.append("")
+        qtys.append("")
         exit_dates.append("")
         expire_dates.append("")
         exit_reasons.append("")
@@ -729,13 +749,14 @@ class AttributionCharts:
 
         # 字体：汇总行加粗
         n = len(evaluated)
-        font_sizes = [[10] * n + [11]] * 11
-        font_colors = [["#333"] * n + ["#222"]] * 11
+        n_cols = 12
+        font_sizes = [[10] * n + [11]] * n_cols
+        font_colors = [["#333"] * n + ["#222"]] * n_cols
 
         fig = go.Figure(go.Table(
             header=dict(
                 values=["Underlying", "Type", "Strike", "Entry Date",
-                        "Exit Date", "Expire Date",
+                        "Qty", "Exit Date", "Expire Date",
                         "Exit Reason", "Actual PnL", "If Held", "Benefit", "Verdict"],
                 fill_color="#f8f9fa",
                 align="center",
@@ -744,10 +765,11 @@ class AttributionCharts:
             ),
             cells=dict(
                 values=[underlyings, opt_types, strikes, entry_dates,
-                        exit_dates, expire_dates,
+                        qtys, exit_dates, expire_dates,
                         exit_reasons, actual_pnls, held_pnls, benefits, verdicts],
-                fill_color=[row_colors] * 11,
-                align=["left", "center", "right", "center", "center", "center",
+                fill_color=[row_colors] * n_cols,
+                align=["left", "center", "right", "center",
+                       "right", "center", "center",
                        "left", "right", "right", "right", "center"],
                 font=dict(size=font_sizes[0], color=font_colors[0]),
                 line_color="#dee2e6",

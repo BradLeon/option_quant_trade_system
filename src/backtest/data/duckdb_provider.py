@@ -1557,8 +1557,8 @@ class DuckDBProvider(DataProvider):
         if cache_key in self._stock_volatility_cache:
             return self._stock_volatility_cache[cache_key]
 
-        # 1. 计算 20 日历史波动率
-        hv = self._calculate_historical_volatility(symbol, lookback_days=20)
+        # 1. 计算 60 日历史波动率
+        hv = self._calculate_historical_volatility(symbol, lookback_days=60)
         if hv is None:
             logger.debug(f"Cannot calculate HV for {symbol}, insufficient data")
             self._stock_volatility_cache[cache_key] = None

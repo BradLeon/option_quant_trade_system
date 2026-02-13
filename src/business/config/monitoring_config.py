@@ -474,6 +474,33 @@ class PositionThresholds:
 
     # 注意: PREI、SAS 和 Dividend Risk 已移除
 
+    # Early Take Profit — DTE + 盈利联合止盈（独立规则）
+    early_take_profit: "EarlyTakeProfitConfig" = field(
+        default_factory=lambda: EarlyTakeProfitConfig()
+    )
+
+
+@dataclass
+class EarlyTakeProfitRule:
+    """单条 DTE+PnL 联合止盈规则"""
+    dte_below: int          # DTE < 此值
+    pnl_above: float        # PnL ≥ 此值 (0.50 = 50%)
+    level: str = "red"      # red / yellow / green
+
+
+@dataclass
+class EarlyTakeProfitConfig:
+    """DTE + 盈利联合止盈配置
+
+    独立于 DTE 和 PnL 检查，按优先级从高到低匹配：
+    rules 列表中先匹配的先返回。
+    """
+    enabled: bool = True
+    rules: list[EarlyTakeProfitRule] = field(default_factory=lambda: [
+        EarlyTakeProfitRule(dte_below=14, pnl_above=0.50, level="red"),
+        EarlyTakeProfitRule(dte_below=21, pnl_above=0.50, level="yellow"),
+        EarlyTakeProfitRule(dte_below=30, pnl_above=0.65, level="green"),
+    ])
 
 
 @dataclass
@@ -498,6 +525,7 @@ class StrategyPositionThresholds:
     gamma_risk_pct: ThresholdRange | None = None
     tgr: ThresholdRange | None = None
     pnl: ThresholdRange | None = None
+    early_take_profit: EarlyTakeProfitConfig | None = None
 
     def merge_with_base(self, base: "PositionThresholds") -> "PositionThresholds":
         """与基础配置合并，返回新的 PositionThresholds
@@ -525,6 +553,8 @@ class StrategyPositionThresholds:
             merged.tgr = self.tgr
         if self.pnl is not None:
             merged.pnl = self.pnl
+        if self.early_take_profit is not None:
+            merged.early_take_profit = self.early_take_profit
 
         return merged
 

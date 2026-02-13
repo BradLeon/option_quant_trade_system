@@ -11,8 +11,8 @@ class StockVolatility:
     """Stock-level volatility metrics.
 
     Contains aggregate volatility data for a stock, including:
-    - IV: Implied Volatility (30-day, from option prices)
-    - HV: Historical Volatility (30-day, from price history)
+    - IV: Implied Volatility (ATM, from option prices)
+    - HV: Historical Volatility (60-day, from price history)
     - IV Rank: Where current IV falls in 52-week range (0-100)
     - IV Percentile: % of days IV was lower than current (0-100)
     - PCR: Put/Call Ratio (total put volume / call volume)
@@ -22,8 +22,8 @@ class StockVolatility:
 
     symbol: str
     timestamp: datetime
-    iv: float | None = None  # 30-day Implied Volatility
-    hv: float | None = None  # 30-day Historical Volatility
+    iv: float | None = None  # ATM Implied Volatility
+    hv: float | None = None  # 60-day Historical Volatility
     iv_rank: float | None = None  # IV Rank (0-100)
     iv_percentile: float | None = None  # IV Percentile (0-100)
     pcr: float | None = None  # Put/Call Ratio

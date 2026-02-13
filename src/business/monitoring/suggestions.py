@@ -109,6 +109,7 @@ ALERT_ACTION_MAP: dict[tuple[AlertType, AlertLevel], tuple[ActionType, UrgencyLe
     (AlertType.VEGA_EXPOSURE, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
     (AlertType.THETA_EXPOSURE, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
     # === YELLOW Alerts → 仅警告，不执行交易 ===
+    (AlertType.DTE_PROFITABLE, AlertLevel.YELLOW): (ActionType.TAKE_PROFIT, UrgencyLevel.SOON),
     (AlertType.DTE_WARNING, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
     (AlertType.MONEYNESS, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
     (AlertType.DELTA_CHANGE, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),

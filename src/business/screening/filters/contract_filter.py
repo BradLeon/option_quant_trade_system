@@ -1044,24 +1044,24 @@ class ContractFilter:
         )
 
         # 输出日志
-        logger.info(f"[{status}] {contract_id}")
-        logger.info(f"       {delta_str} | {iv_str} | {oi_str} | {vol_str}")
-        logger.info(f"       {tgr_str} | {sharpe_str} | {roc_str} | {rate_str}")
+        logger.debug(f"[{status}] {contract_id}")
+        logger.debug(f"       {delta_str} | {iv_str} | {oi_str} | {vol_str}")
+        logger.debug(f"       {tgr_str} | {sharpe_str} | {roc_str} | {rate_str}")
 
         if not opp.passed and opp.disqualify_reasons:
-            logger.info(f"       Rejected: {'; '.join(opp.disqualify_reasons)}")
+            logger.debug(f"       Rejected: {'; '.join(opp.disqualify_reasons)}")
         elif opp.passed:
             if opp.pass_reasons:
-                logger.info(f"       Pass: {', '.join(opp.pass_reasons)}")
+                logger.debug(f"       Pass: {', '.join(opp.pass_reasons)}")
             if opp.recommended_position is not None:
                 kelly_label = f"{self.kelly_fraction:.0%}" if self.kelly_fraction in (0.25, 0.5, 0.75, 1.0) else f"{self.kelly_fraction:.2f}"
-                logger.info(f"       推荐仓位: {opp.recommended_position:.1%} ({kelly_label} Kelly)")
+                logger.debug(f"       推荐仓位: {opp.recommended_position:.1%} ({kelly_label} Kelly)")
             if opp.warnings:
                 # 只显示前2个警告
                 warnings_str = "; ".join(opp.warnings[:2])
                 if len(opp.warnings) > 2:
                     warnings_str += f"... (+{len(opp.warnings) - 2} more)"
-                logger.info(f"       Warnings: {warnings_str}")
+                logger.debug(f"       Warnings: {warnings_str}")
 
     def _sort_opportunities(
         self,

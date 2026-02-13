@@ -117,6 +117,21 @@ position_level:
     take_profit_pct: 0.50         # 止盈：50% 权利金
     stop_loss_pct: -2.00          # 止损：200% 权利金
 
+  # DTE + 盈利联合止盈（独立规则）
+  # 按优先级从高到低匹配，先命中先返回
+  early_take_profit:
+    enabled: true
+    rules:
+      - dte_below: 14             # DTE < 14 天
+        pnl_above: 0.50           # 盈利 ≥ 50%
+        level: red                # 必须立即止盈（Gamma 加速区）
+      - dte_below: 21             # DTE < 21 天
+        pnl_above: 0.50           # 盈利 ≥ 50%
+        level: yellow             # 建议止盈（即将进入 Gamma 加速区）
+      - dte_below: 30             # DTE < 30 天
+        pnl_above: 0.65           # 盈利 ≥ 65%
+        level: green              # 可止盈（高盈利，不必等 Theta 加速）
+
 # 资金级监控阈值
 capital_level:
   sharpe_ratio:

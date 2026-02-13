@@ -93,28 +93,43 @@ class ShortPutStrategy(OptionStrategy):
             is_call=False,
         )
 
-        # Cache B-S parameters
+        # Cache B-S parameters (IV-based, for variance/greeks)
         self._d1 = calc_d1(bs_params)
         self._d2 = calc_d2(bs_params, self._d1) if self._d1 else None
         self._d3 = calc_d3(bs_params, self._d2) if self._d2 else None
 
-    def calc_expected_return(self) -> float:
-        """Calculate expected return for short put.
+        # Cache HV-based d1/d2 for expected return (physical measure)
+        # Using HV captures volatility risk premium that option sellers earn
+        sigma_real = hv if hv and hv > 0 else volatility
+        if sigma_real != volatility:
+            bs_params_hv = BSParams(
+                spot_price=spot_price,
+                strike_price=strike_price,
+                risk_free_rate=risk_free_rate,
+                volatility=sigma_real,
+                time_to_expiry=time_to_expiry,
+                is_call=False,
+            )
+            self._d1_hv = calc_d1(bs_params_hv)
+            self._d2_hv = calc_d2(bs_params_hv, self._d1_hv) if self._d1_hv else None
+        else:
+            self._d1_hv = self._d1
+            self._d2_hv = self._d2
 
-        E[π] = C - N(-d2) * [K - e^(rT) * S * N(-d1) / N(-d2)]
-        
-        Where:
-        - C: Premium received
-        - N(-d2): Exercise probability
-        - K: Strike price
-        - S: Spot price
-        - r: Risk-free rate
-        - T: Time to expiry
+    def calc_expected_return(self) -> float:
+        """Calculate expected return for short put (physical measure).
+
+        Uses HV-based d1/d2 to reflect real-world exercise probability,
+        capturing the volatility risk premium (IV > HV) that option sellers earn.
+
+        E[π] = C - N(-d2_hv) * [K - e^(rT) * S * N(-d1_hv) / N(-d2_hv)]
+
+        Where d1_hv, d2_hv use HV (historical volatility) instead of IV.
 
         Returns:
             Expected return in dollar amount per share.
         """
-        if self._d1 is None or self._d2 is None:
+        if self._d1_hv is None or self._d2_hv is None:
             return 0.0
 
         c = self.leg.premium
@@ -123,8 +138,8 @@ class ShortPutStrategy(OptionStrategy):
         r = self.params.risk_free_rate
         t = self.params.time_to_expiry
 
-        n_minus_d1 = calc_n(-self._d1)
-        n_minus_d2 = calc_n(-self._d2)
+        n_minus_d1 = calc_n(-self._d1_hv)
+        n_minus_d2 = calc_n(-self._d2_hv)
 
         if n_minus_d2 == 0:
             # No exercise probability, expected return = premium

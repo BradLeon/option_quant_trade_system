@@ -486,6 +486,8 @@ class PnLAttributionEngine:
                 ),
                 entry_iv_rank=entry_snap.iv_rank if entry_snap else None,
                 quantity=entry_snap.quantity if entry_snap else 0,
+                entry_price=entry_snap.entry_price if entry_snap else 0.0,
+                lot_size=entry_snap.lot_size if entry_snap else 100,
             )
             results.append(ta)
 

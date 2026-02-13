@@ -205,7 +205,7 @@ class ScreeningPipeline:
                     for x in confirmed
                 )
                 status = "✅" if is_confirmed else "❌"
-                logger.info(
+                logger.debug(
                     f"   {status} {c.symbol} {c.option_type.upper()} {c.strike} "
                     f"@{c.expiry} (E[ROC]={c.expected_roc:.1%})"
                 )

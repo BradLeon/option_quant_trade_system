@@ -116,7 +116,7 @@ class ShortStrangleStrategy(OptionStrategy):
         r = self.params.risk_free_rate
         t = self.params.time_to_expiry
 
-        # Put leg
+        # Put leg (IV-based, for variance/greeks)
         put_vol = self.get_leg_volatility(self.put_leg)
         put_params = BSParams(
             spot_price=s,
@@ -129,7 +129,7 @@ class ShortStrangleStrategy(OptionStrategy):
         self._put_d1 = calc_d1(put_params)
         self._put_d2 = calc_d2(put_params, self._put_d1) if self._put_d1 else None
 
-        # Call leg
+        # Call leg (IV-based, for variance/greeks)
         call_vol = self.get_leg_volatility(self.call_leg)
         call_params = BSParams(
             spot_price=s,
@@ -142,21 +142,53 @@ class ShortStrangleStrategy(OptionStrategy):
         self._call_d1 = calc_d1(call_params)
         self._call_d2 = calc_d2(call_params, self._call_d1) if self._call_d1 else None
 
+        # HV-based d1/d2 for expected return (physical measure)
+        # Using HV captures volatility risk premium that option sellers earn
+        hv = self.params.hv
+        sigma_real = hv if hv and hv > 0 else put_vol
+
+        if sigma_real != put_vol:
+            put_params_hv = BSParams(
+                spot_price=s,
+                strike_price=self.put_leg.strike,
+                risk_free_rate=r,
+                volatility=sigma_real,
+                time_to_expiry=t,
+                is_call=False,
+            )
+            self._put_d1_hv = calc_d1(put_params_hv)
+            self._put_d2_hv = calc_d2(put_params_hv, self._put_d1_hv) if self._put_d1_hv else None
+        else:
+            self._put_d1_hv = self._put_d1
+            self._put_d2_hv = self._put_d2
+
+        if sigma_real != call_vol:
+            call_params_hv = BSParams(
+                spot_price=s,
+                strike_price=self.call_leg.strike,
+                risk_free_rate=r,
+                volatility=sigma_real,
+                time_to_expiry=t,
+                is_call=True,
+            )
+            self._call_d1_hv = calc_d1(call_params_hv)
+            self._call_d2_hv = calc_d2(call_params_hv, self._call_d1_hv) if self._call_d1_hv else None
+        else:
+            self._call_d1_hv = self._call_d1
+            self._call_d2_hv = self._call_d2
+
     @property
     def total_premium(self) -> float:
         """Total premium received."""
         return self.put_leg.premium + self.call_leg.premium
 
     def calc_expected_return(self) -> float:
-        """Calculate expected return for short strangle.
+        """Calculate expected return for short strangle (physical measure).
+
+        Uses HV-based d1/d2 to reflect real-world exercise probability,
+        capturing the volatility risk premium (IV > HV) that option sellers earn.
 
         E[π] = E[π_put] + E[π_call]
-
-        For short put:
-        E[π_put] = C_p - N(-d2_p) * [K_p - e^(rT) * S * N(-d1_p) / N(-d2_p)]
-
-        For short call:
-        E[π_call] = C_c - N(d2_c) * [e^(rT) * S * N(d1_c) / N(d2_c) - K_c]
 
         Returns:
             Expected return in dollar amount per share.
@@ -167,8 +199,8 @@ class ShortStrangleStrategy(OptionStrategy):
         return e_put + e_call
 
     def _calc_put_expected_return(self) -> float:
-        """Calculate expected return for the put leg."""
-        if self._put_d1 is None or self._put_d2 is None:
+        """Calculate expected return for the put leg (physical measure)."""
+        if self._put_d1_hv is None or self._put_d2_hv is None:
             return 0.0
 
         c = self.put_leg.premium
@@ -177,8 +209,8 @@ class ShortStrangleStrategy(OptionStrategy):
         r = self.params.risk_free_rate
         t = self.params.time_to_expiry
 
-        n_minus_d1 = calc_n(-self._put_d1)
-        n_minus_d2 = calc_n(-self._put_d2)
+        n_minus_d1 = calc_n(-self._put_d1_hv)
+        n_minus_d2 = calc_n(-self._put_d2_hv)
 
         if n_minus_d2 == 0:
             return c
@@ -189,8 +221,8 @@ class ShortStrangleStrategy(OptionStrategy):
         return c - n_minus_d2 * (k - expected_stock_if_exercised)
 
     def _calc_call_expected_return(self) -> float:
-        """Calculate expected return for the call leg."""
-        if self._call_d1 is None or self._call_d2 is None:
+        """Calculate expected return for the call leg (physical measure)."""
+        if self._call_d1_hv is None or self._call_d2_hv is None:
             return 0.0
 
         c = self.call_leg.premium
@@ -199,8 +231,8 @@ class ShortStrangleStrategy(OptionStrategy):
         r = self.params.risk_free_rate
         t = self.params.time_to_expiry
 
-        n_d1 = calc_n(self._call_d1)
-        n_d2 = calc_n(self._call_d2)
+        n_d1 = calc_n(self._call_d1_hv)
+        n_d2 = calc_n(self._call_d2_hv)
 
         if n_d2 == 0:
             return c

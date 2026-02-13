@@ -103,7 +103,7 @@ class PositionMonitor:
 
         注意：Stock 类型持仓不在此监控器范围内，直接跳过。
 
-        检查 9 个指标，按重要性排序：
+        检查 10 个指标，按重要性排序：
         1. OTM% - 虚值百分比（核心风险指标）
         2. |Delta| - 方向性风险
         3. DTE - 到期日预警
@@ -113,6 +113,7 @@ class PositionMonitor:
         7. IV/HV - 波动率环境
         8. Expected ROC - 预期资本回报率
         9. Win Probability - 胜率
+        10. Early Take Profit - DTE+盈利联合止盈（独立规则）
         """
         # 跳过 Stock 类型持仓，PositionMonitor 只监控期权
         if pos.is_stock:
@@ -189,6 +190,9 @@ class PositionMonitor:
             metric_name="win_probability",
             position=pos,
         ))
+
+        # 10. Early Take Profit — DTE + 盈利联合止盈（独立于 DTE 和 P&L 检查）
+        alerts.extend(self._check_early_take_profit(pos, thresholds))
 
         return alerts
 
@@ -422,22 +426,6 @@ class PositionMonitor:
                     suggested_action="强制展期到下月",
                 )]
 
-        # DTE 进入 yellow 区域 + 盈利达标 → 止盈
-        pnl_take_profit = thresholds.pnl.green[0] if thresholds.pnl.green else 0.50
-        dte_yellow_boundary = threshold.green[0] if threshold.green else 14
-        if pos.dte < dte_yellow_boundary and pnl_pct >= pnl_take_profit:
-            return [Alert(
-                alert_type=AlertType.DTE_PROFITABLE,
-                level=AlertLevel.GREEN,
-                message=f"DTE={pos.dte:.0f} 天(<{dte_yellow_boundary})且盈利 {pnl_pct:.1%}(≥{pnl_take_profit:.0%})，建议止盈",
-                symbol=pos.symbol,
-                position_id=pos.position_id,
-                current_value=float(pos.dte),
-                threshold_value=dte_yellow_boundary,
-                threshold_range=threshold_range,
-                suggested_action="止盈平仓，避免临近到期的 Gamma 风险",
-            )]
-
         # 非红色区域，走原有逻辑
         return self._check_threshold(
             value=pos.dte,
@@ -445,6 +433,56 @@ class PositionMonitor:
             metric_name="dte",
             position=pos,
         )
+
+    def _check_early_take_profit(
+        self, pos: PositionData, thresholds: PositionThresholds,
+    ) -> list[Alert]:
+        """DTE + 盈利联合止盈检查（独立规则，配置驱动）
+
+        独立于 DTE 检查和 P&L 检查，专门捕捉"临近到期 + 已盈利"的止盈机会。
+        规则从 thresholds.early_take_profit.rules 读取，按优先级从高到低匹配。
+        """
+        config = thresholds.early_take_profit
+        if not config.enabled:
+            return []
+
+        if pos.dte is None or pos.unrealized_pnl_pct is None:
+            return []
+
+        dte = pos.dte
+        pnl_pct = pos.unrealized_pnl_pct
+
+        level_map = {
+            "red": AlertLevel.RED,
+            "yellow": AlertLevel.YELLOW,
+            "green": AlertLevel.GREEN,
+        }
+        action_map = {
+            "red": "立即平仓止盈，锁定利润",
+            "yellow": "建议平仓止盈，避免临近到期风险",
+            "green": "可平仓止盈，高盈利无需等到 Theta 加速",
+        }
+
+        for rule in config.rules:
+            if dte < rule.dte_below and pnl_pct >= rule.pnl_above:
+                level = level_map.get(rule.level, AlertLevel.RED)
+                return [Alert(
+                    alert_type=AlertType.DTE_PROFITABLE,
+                    level=level,
+                    message=(
+                        f"DTE={dte:.0f} 天(<{rule.dte_below})"
+                        f"且盈利 {pnl_pct:.1%}(≥{rule.pnl_above:.0%})，"
+                        f"{'必须' if rule.level == 'red' else '建议' if rule.level == 'yellow' else '可'}止盈"
+                    ),
+                    symbol=pos.symbol,
+                    position_id=pos.position_id,
+                    current_value=float(dte),
+                    threshold_value=rule.dte_below,
+                    threshold_range=f"DTE<{rule.dte_below} & PnL≥{rule.pnl_above:.0%}",
+                    suggested_action=action_map.get(rule.level, "止盈平仓"),
+                )]
+
+        return []
 
     def _check_pnl(self, pos: PositionData, thresholds: PositionThresholds) -> list[Alert]:
         """检查盈亏

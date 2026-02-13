@@ -81,5 +81,5 @@ backtest_overrides:
       min_open_interest: 0        # 回测数据可能无 OI
       max_bid_ask_spread: 0.30    # 放宽 spread 限制
     metrics:
-      min_expected_roc: -0.50     # 允许负值 (测试极端情况)
-      min_tgr: 0.20               # 放宽 TGR 阈值
+      min_expected_roc: 0.01        # 最低预期收益率 (LIVE: 10%)
+      min_tgr: 0.20                 # 最低 TGR 阈值 (LIVE: 50%)

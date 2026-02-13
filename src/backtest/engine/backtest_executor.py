@@ -301,7 +301,11 @@ class BacktestExecutor:
                     kelly_fraction=self._risk_config.kelly_fraction,
                 )
                 self._screening_pipelines[strategy_type] = pipeline
-                logger.info(f"ScreeningPipeline for {strategy_type.value} initialized with BACKTEST mode")
+                cf = screening_config.contract_filter
+                logger.info(
+                    f"ScreeningPipeline for {strategy_type.value} initialized with BACKTEST mode "
+                    f"(min_expected_roc={cf.metrics.min_expected_roc}, min_tgr={cf.metrics.min_tgr})"
+                )
             except Exception as e:
                 logger.warning(f"Failed to initialize ScreeningPipeline for {strategy_type.value}: {e}")
 
@@ -409,9 +413,7 @@ class BacktestExecutor:
         self._position_manager.set_date(current_date)
 
         # 显示当前回测日期
-        logger.info(f"{'='*60}")
-        logger.info(f"📅 回测日期: {current_date}")
-        logger.info(f"{'='*60}")
+        logger.info(f"{'='*60}  {current_date}  {'='*7}")
 
         # 更新数据提供者日期
         self._data_provider.set_as_of_date(current_date)
@@ -431,6 +433,7 @@ class BacktestExecutor:
         suggestions: list[PositionSuggestion] = []
         self._last_monitoring_position_data = []
         if self._account_simulator.position_count > 0 and self._monitoring_pipeline:
+            logger.info("── Monitoring ──────────────────────────────────────")
             suggestions = self._run_monitoring()
 
         # 3.5 采集归因快照 (复用 monitoring 的 PositionData, 避免重复计算 Greeks)
@@ -455,6 +458,7 @@ class BacktestExecutor:
         # 4. 运行筛选 (寻找新机会)
         screen_result: ScreeningResult | None = None
         if self._can_open_new_positions() and self._screening_pipelines:
+            logger.info("── Screening ───────────────────────────────────────")
             screen_result = self._run_screening(current_date)
 
         # 5. 生成并执行决策
@@ -462,6 +466,7 @@ class BacktestExecutor:
         trades_closed = 0
 
         if self._decision_engine:
+            logger.info("── Trading ─────────────────────────────────────────")
             account_state = self._account_simulator.get_account_state()
             decisions = self._decision_engine.process_batch(
                 screen_result=screen_result,
@@ -469,11 +474,27 @@ class BacktestExecutor:
                 suggestions=suggestions,
             )
 
+            # 构建 opportunity 查找表 (用于 trade 卡片日志)
+            opp_lookup: dict[tuple[str, float, str], ContractOpportunity] = {}
+            if screen_result and screen_result.confirmed:
+                for opp in screen_result.confirmed:
+                    opp_lookup[(opp.symbol, opp.strike, opp.expiry)] = opp
+
             # 执行决策
+            trade_index = 0
             for decision in decisions:
                 if decision.decision_type == DecisionType.OPEN:
+                    # 查找匹配的 opportunity
+                    opp_key = (
+                        decision.symbol,
+                        decision.strike or 0.0,
+                        decision.expiry or "",
+                    )
+                    opportunity = opp_lookup.get(opp_key)
                     if self._execute_open_decision(decision, current_date):
                         trades_opened += 1
+                        trade_index += 1
+                        self._log_trade_execution(decision, opportunity, trade_index)
                 elif decision.decision_type == DecisionType.CLOSE:
                     if self._execute_close_decision(decision, current_date):
                         trades_closed += 1
@@ -631,7 +652,7 @@ class BacktestExecutor:
         if not self._screening_pipelines:
             return None
 
-        all_opportunities: list[ContractOpportunity] = []
+        all_confirmed: list[ContractOpportunity] = []
 
         # 为每个策略类型运行筛选
         for strategy_type, pipeline in self._screening_pipelines.items():
@@ -643,17 +664,17 @@ class BacktestExecutor:
                     skip_market_check=self._config.skip_market_check,
                 )
 
-                if result and result.opportunities:
-                    all_opportunities.extend(result.opportunities)
+                if result and result.confirmed:
+                    all_confirmed.extend(result.confirmed)
                     logger.debug(
-                        f"[{strategy_type.value}] Found {len(result.opportunities)} opportunities"
+                        f"[{strategy_type.value}] Found {len(result.confirmed)} confirmed opportunities"
                     )
 
             except Exception as e:
                 logger.warning(f"Screening failed for {strategy_type.value}: {e}")
 
         # 如果没有机会，返回 None
-        if not all_opportunities:
+        if not all_confirmed:
             return None
 
         # 创建合并后的 ScreeningResult
@@ -662,10 +683,10 @@ class BacktestExecutor:
         return ScreeningResult(
             passed=True,
             strategy_type=primary_strategy,
-            opportunities=all_opportunities,
-            confirmed=all_opportunities,  # DecisionEngine 使用 confirmed 字段
+            opportunities=all_confirmed,
+            confirmed=all_confirmed,  # DecisionEngine 使用 confirmed 字段
             scanned_underlyings=len(self._config.symbols),
-            qualified_contracts=len(all_opportunities),
+            qualified_contracts=len(all_confirmed),
         )
 
     def _can_open_new_positions(self) -> bool:
@@ -753,6 +774,73 @@ class BacktestExecutor:
         except Exception as e:
             logger.error(f"Failed to execute open decision: {e}")
             return False
+
+    def _log_trade_execution(
+        self,
+        decision: TradingDecision,
+        opportunity: ContractOpportunity | None,
+        trade_index: int,
+    ) -> None:
+        """输出 trade 执行卡片日志
+
+        Args:
+            decision: 交易决策
+            opportunity: 匹配的筛选机会 (可能为 None)
+            trade_index: 当日第几笔交易
+        """
+        if opportunity is None:
+            return
+
+        opp = opportunity
+        opt_type = "PUT" if (opp.option_type or "").lower() == "put" else "CALL"
+        strike_str = f"{opp.strike:.0f}" if opp.strike == int(opp.strike) else f"{opp.strike}"
+        exp_str = opp.expiry or "N/A"
+
+        # 标题行
+        header = f"┌─ #{trade_index} {opp.symbol} {opt_type} {strike_str} @ {exp_str} (DTE={opp.dte}) | Qty={decision.quantity}"
+        sep = "├" + "─" * 65
+
+        # 收益指标
+        roc_str = f"{opp.expected_roc:.1%}" if opp.expected_roc is not None else "N/A"
+        ann_roc_str = f"{opp.annual_roc:.1%}" if opp.annual_roc is not None else "N/A"
+        win_str = f"{opp.win_probability:.1%}" if opp.win_probability is not None else "N/A"
+        kelly_str = f"{opp.kelly_fraction:.2f}" if opp.kelly_fraction is not None else "N/A"
+        profit_line = f"│ 收益: ExpROC={roc_str}  AnnROC={ann_roc_str}  WinP={win_str}  Kelly={kelly_str}"
+
+        # 效率指标
+        tgr_str = f"{opp.tgr:.2f}" if opp.tgr is not None else "N/A"
+        tm_str = f"{opp.theta_margin_ratio:.4f}" if opp.theta_margin_ratio is not None else "N/A"
+        sr_str = f"{opp.sharpe_ratio_annual:.2f}" if opp.sharpe_ratio_annual is not None else "N/A"
+        rate_str = f"{opp.premium_rate:.2%}" if opp.premium_rate is not None else "N/A"
+        eff_line = f"│ 效率: TGR={tgr_str}  Θ/Margin={tm_str}  Sharpe={sr_str}  PremRate={rate_str}"
+
+        # 行情
+        price_str = f"{opp.underlying_price:.2f}" if opp.underlying_price is not None else "N/A"
+        premium_str = f"{opp.mid_price:.2f}" if opp.mid_price is not None else "N/A"
+        bid_str = f"{opp.bid:.2f}" if opp.bid is not None else "N/A"
+        ask_str = f"{opp.ask:.2f}" if opp.ask is not None else "N/A"
+        iv_str = f"{opp.iv:.1%}" if opp.iv is not None else "N/A"
+        mkt_line = f"│ 行情: S={price_str}  Premium={premium_str}  Bid/Ask={bid_str}/{ask_str}  IV={iv_str}"
+
+        # Greeks
+        delta_str = f"{opp.delta:.3f}" if opp.delta is not None else "N/A"
+        gamma_str = f"{opp.gamma:.4f}" if opp.gamma is not None else "N/A"
+        theta_str = f"{opp.theta:.3f}" if opp.theta is not None else "N/A"
+        oi_str = f"{opp.open_interest}" if opp.open_interest is not None else "N/A"
+        otm_str = f"{opp.otm_percent:.1%}" if opp.otm_percent is not None else "N/A"
+        greeks_line = f"│ Greeks: Δ={delta_str}  Γ={gamma_str}  Θ={theta_str}  OI={oi_str}  OTM={otm_str}"
+
+        footer = "└" + "─" * 65
+
+        lines = [header, sep, profit_line, eff_line, mkt_line, greeks_line]
+
+        # 警告信息
+        if opp.warnings:
+            lines.append(f"│ ⚠️  {opp.warnings[0]}")
+
+        lines.append(footer)
+
+        logger.info("\n".join(lines))
 
     def _execute_close_decision(
         self,
