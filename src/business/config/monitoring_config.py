@@ -322,8 +322,8 @@ class PositionThresholds:
     otm_pct: ThresholdRange = field(
         default_factory=lambda: ThresholdRange(
             green=(0.10, float("inf")),    # OTM ≥ 10%
-            yellow=(0.05, 0.10),           # 5% ~ 10%
-            red_below=0.05,                # OTM < 5%
+            yellow=(0.005, 0.10),          # 0.5% ~ 10%
+            red_below=0.005,               # OTM < 0.5%
             hysteresis=0.01,
             alert_type="OTM_PCT",
             red_below_message="OTM% 过低: {value:.1%}，接近 ATM 或 ITM",

@@ -378,11 +378,23 @@ class AttributionCharts:
         qtys = [t.quantity for t in sorted_trades]
         holding = [t.holding_days for t in sorted_trades]
 
-        # ROC Annual = (total_pnl / cost_basis) * (365 / holding_days)
-        # cost_basis = entry_price * abs(quantity) * lot_size
+        # ROC Annual = (total_pnl / margin_cost) * (365 / holding_days)
+        # margin_cost uses IBKR Reg T margin formula (not premium)
         roc_annuals = []
         for t in sorted_trades:
-            cost_basis = t.entry_price * abs(t.quantity) * t.lot_size
+            # IBKR margin per share
+            s = t.entry_underlying or 0.0
+            k = t.strike
+            prem = t.entry_price
+            if t.option_type.lower() == "put" and s > 0:
+                otm = max(0, s - k)
+                margin_ps = prem + max(0.20 * s - otm, 0.10 * k)
+            elif t.option_type.lower() == "call" and s > 0:
+                otm = max(0, k - s)
+                margin_ps = prem + max(0.20 * s - otm, 0.10 * s)
+            else:
+                margin_ps = prem  # fallback
+            cost_basis = margin_ps * abs(t.quantity) * t.lot_size
             if cost_basis > 0 and t.holding_days > 0:
                 roc_ann = (t.total_pnl / cost_basis) * (365 / t.holding_days)
                 roc_annuals.append(f"{roc_ann:.0%}")
