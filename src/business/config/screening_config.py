@@ -420,6 +420,13 @@ class ScreeningConfig:
                     ],
                     trend_required=hk.get("trend_required", "bullish_or_neutral"),
                 )
+            if "macro_events" in mf:
+                me = mf["macro_events"]
+                config.market_filter.macro_events = MacroEventConfig(
+                    enabled=me.get("enabled", True),
+                    blackout_days=me.get("blackout_days", 2),
+                    blackout_events=me.get("blackout_events", ["FOMC", "CPI", "NFP"]),
+                )
 
         if "underlying_filter" in data:
             uf = data["underlying_filter"]
