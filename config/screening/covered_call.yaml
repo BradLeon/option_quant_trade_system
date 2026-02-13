@@ -74,6 +74,11 @@ backtest_overrides:
       term_structure_threshold: 999    # 禁用期限结构过滤
   underlying_filter:
     min_iv_rank: 0                # 禁用 IV Rank 过滤
+    trend_override:
+      bullish:
+        min_iv_rank: 0
+      bearish:
+        min_iv_rank: 0
     max_iv_hv_ratio: 3.0          # 放宽 IV/HV 上限 (回测数据可能有偏差)
   contract_filter:
     liquidity:
