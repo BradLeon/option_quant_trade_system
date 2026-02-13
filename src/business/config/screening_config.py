@@ -325,7 +325,7 @@ class OutputConfig:
     """输出配置"""
 
     max_opportunities: int = 10
-    sort_by: str = "tgr"
+    sort_by: str = "sharpe_ratio_annual"
     sort_order: str = "desc"
 
 
@@ -477,7 +477,7 @@ class ScreeningConfig:
             out = data["output"]
             config.output = OutputConfig(
                 max_opportunities=out.get("max_opportunities", 10),
-                sort_by=out.get("sort_by", "tgr"),
+                sort_by=out.get("sort_by", "sharpe_ratio_annual"),
                 sort_order=out.get("sort_order", "desc"),
             )
 
