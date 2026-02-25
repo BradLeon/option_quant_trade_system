@@ -180,16 +180,17 @@ class BacktestDashboard:
                     continue
 
                 option_type = getattr(record, "option_type", None)
-                option_type_str = option_type.name if hasattr(option_type, "name") else str(option_type)
-                strike = getattr(record, "strike", 0)
+                option_type_str = option_type.name if hasattr(option_type, "name") else str(option_type) if option_type else "STOCK"
+                strike = getattr(record, "strike", None)
+                strike_str = f"${strike:.0f}" if strike is not None else ""
                 qty = record.quantity
-                price = record.price
+                price = record.price or 0
                 pnl = record.pnl
 
                 if record.action in (TradeAction.OPEN, TradeAction.STOCK_BUY):
                     hover = (
                         f"<b>OPEN</b><br>"
-                        f"{record.underlying} {option_type_str} ${strike:.0f}<br>"
+                        f"{record.underlying} {option_type_str} {strike_str}<br>"
                         f"Qty: {qty} @ ${price:.2f}"
                     )
                     open_data.append((record.trade_date, nlv_by_date[record.trade_date], hover))
@@ -200,7 +201,7 @@ class BacktestDashboard:
                     pnl_color = "green" if pnl and pnl > 0 else "red" if pnl and pnl < 0 else "gray"
                     hover = (
                         f"<b>{action_label}</b><br>"
-                        f"{record.underlying} {option_type_str} ${strike:.0f}<br>"
+                        f"{record.underlying} {option_type_str} {strike_str}<br>"
                         f"Qty: {qty} @ ${price:.2f}<br>"
                         f"<span style='color:{pnl_color}'>PnL: {pnl_str}</span>"
                     )
@@ -437,8 +438,9 @@ class BacktestDashboard:
             close_rec = pos.get("close")
 
             underlying = getattr(open_rec, "underlying", "Unknown")
-            option_type = getattr(open_rec, "option_type", "").name if hasattr(getattr(open_rec, "option_type", ""), "name") else str(getattr(open_rec, "option_type", ""))
-            strike = getattr(open_rec, "strike", 0)
+            option_type_raw = getattr(open_rec, "option_type", None)
+            option_type = option_type_raw.name if hasattr(option_type_raw, "name") else str(option_type_raw) if option_type_raw else "STOCK"
+            strike = getattr(open_rec, "strike", None)
             quantity = open_rec.quantity
 
             start_date = open_rec.trade_date
@@ -449,8 +451,8 @@ class BacktestDashboard:
             pnl = close_rec.pnl if close_rec and close_rec.pnl else 0
             is_open = close_rec is None
 
-            # 构建标签: "GOOG PUT $325"
-            label = f"{underlying} {option_type} ${strike:.0f}"
+            # 构建标签: "GOOG PUT $325" 或 "SPY STOCK"
+            label = f"{underlying} {option_type} ${strike:.0f}" if strike is not None else f"{underlying} {option_type}"
 
             timeline_data.append({
                 "label": label,
@@ -1271,8 +1273,8 @@ class BacktestDashboard:
                 dte_str = "N/A"
 
             quantity = record.quantity
-            price = record.price
-            net_amount = getattr(record, "net_amount", 0)
+            price = record.price or 0
+            net_amount = getattr(record, "net_amount", 0) or 0
             pnl = record.pnl
 
             # PnL 颜色
