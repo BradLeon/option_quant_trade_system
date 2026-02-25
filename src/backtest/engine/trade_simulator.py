@@ -121,6 +121,32 @@ class TradeRecord:
     position_id: str | None = None  # 可选，由 Position 层填充
     underlying_price: float | None = None  # 交易时标的价格（到期时为结算价格）
 
+    def to_dict(self) -> dict:
+        """转换为字典 (用于 JSON 序列化)"""
+        return {
+            "trade_id": self.trade_id,
+            "execution_id": self.execution_id,
+            "symbol": self.symbol,
+            "underlying": self.underlying,
+            "option_type": self.option_type.value,
+            "strike": self.strike,
+            "expiration": self.expiration.isoformat(),
+            "trade_date": self.trade_date.isoformat(),
+            "action": self.action,
+            "quantity": self.quantity,
+            "price": self.price,
+            "commission": self.commission,
+            "gross_amount": self.gross_amount,
+            "net_amount": self.net_amount,
+            "pnl": self.pnl,
+            "reason": self.reason,
+            "close_reason_type": (
+                self.close_reason_type.value if self.close_reason_type else None
+            ),
+            "position_id": self.position_id,
+            "underlying_price": self.underlying_price,
+        }
+
 
 @dataclass
 class TradeExecution:

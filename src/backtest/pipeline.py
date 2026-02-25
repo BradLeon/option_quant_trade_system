@@ -24,6 +24,7 @@ Usage:
     print(f"报告: {result.report_path}")
 """
 
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -111,6 +112,7 @@ class PipelineResult:
     metrics: "BacktestMetrics"
     benchmark_result: "BenchmarkResult | None" = None
     report_path: Path | None = None
+    json_report_path: Path | None = None
     data_status: DataStatus = field(default_factory=DataStatus)
     attribution_summary: dict | None = None
 
@@ -280,6 +282,7 @@ class BacktestPipeline:
 
         # Step 4: 生成报告
         report_path = None
+        json_report_path = None
         if generate_report:
             logger.info("\n[Step 4/4] Generating report...")
             market_context = self._fetch_market_context(backtest_result)
@@ -294,7 +297,16 @@ class BacktestPipeline:
                 entry_report=entry_report,
                 exit_report=exit_report,
             )
-            logger.info(f"Report: {report_path}")
+            logger.info(f"HTML Report: {report_path}")
+
+            # 同时生成 JSON 报告（方便程序化分析）
+            json_report_path = self._generate_json_report(
+                backtest_result,
+                metrics,
+                benchmark_result,
+                report_dir,
+            )
+            logger.info(f"JSON Report: {json_report_path}")
         else:
             logger.info("\n[Step 4/4] Skipping report generation (--no-report)")
 
@@ -307,6 +319,7 @@ class BacktestPipeline:
             metrics=metrics,
             benchmark_result=benchmark_result,
             report_path=report_path,
+            json_report_path=json_report_path,
             data_status=data_status,
             attribution_summary=(
                 attr_engine.attribution_summary() if attr_engine else None
@@ -560,6 +573,43 @@ class BacktestPipeline:
         report_path = report_dir / report_name
 
         return dashboard.generate_report(report_path, slice_engine=slice_engine)
+
+    def _generate_json_report(
+        self,
+        result,
+        metrics,
+        benchmark_result,
+        report_dir: Path | str,
+    ) -> Path:
+        """生成 JSON 格式报告（方便程序化分析）
+
+        JSON 包含完整的结构化数据:
+        - summary: 回测概览
+        - metrics: 详细绩效指标
+        - benchmark: 基准比较
+        - trade_records: 所有交易记录
+        - daily_snapshots: 每日快照
+        """
+        report_dir = Path(report_dir)
+        report_dir.mkdir(parents=True, exist_ok=True)
+
+        report_name = f"{self.config.name.lower().replace(' ', '_')}_report.json"
+        json_path = report_dir / report_name
+
+        report_data = {
+            "summary": result.to_dict(include_details=False),
+            "metrics": metrics.to_dict(),
+            "benchmark": (
+                benchmark_result.to_dict() if benchmark_result else None
+            ),
+            "trade_records": [t.to_dict() for t in result.trade_records],
+            "daily_snapshots": [s.to_dict() for s in result.daily_snapshots],
+        }
+
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(report_data, f, ensure_ascii=False, indent=2)
+
+        return json_path
 
     def check_data(self) -> DataStatus:
         """仅检查数据缺口（不下载）

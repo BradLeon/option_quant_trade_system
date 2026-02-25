@@ -332,19 +332,20 @@ class PositionManager:
             expiration=position.expiration,
         )
 
-        if option_price is not None:
+        if option_price is not None and option_price > 0:
             position.update_market_value(option_price, underlying_price)
         else:
-            # 期权价格缺失时使用内在价值
+            # 期权价格缺失或为0时使用内在价值 (期权如果是虚值，内在价值为0)
+            # 如果是到期日前，给一个极小的非零值避免算作100%盈利
             if position.option_type == OptionType.PUT:
-                intrinsic = max(0, position.strike - underlying_price)
+                intrinsic = max(0.01, position.strike - underlying_price)
             else:
-                intrinsic = max(0, underlying_price - position.strike)
+                intrinsic = max(0.01, underlying_price - position.strike)
 
             logger.warning(
-                f"Option price not found for {position.underlying} "
+                f"Option price invalid or missing for {position.underlying} "
                 f"{position.option_type.value} K={position.strike} exp={position.expiration} "
-                f"on {self._current_date}, using intrinsic value: {intrinsic:.2f}"
+                f"on {self._current_date} (quote price: {option_price}), using intrinsic/minimum value: {intrinsic:.2f}"
             )
             position.update_market_value(intrinsic, underlying_price)
 
@@ -397,11 +398,13 @@ class PositionManager:
                     quote.contract.strike_price == strike
                     and quote.contract.expiry_date == expiration
                 ):
+                    price = None
                     if self._price_mode == PriceMode.OPEN:
                         open_price = getattr(quote, "open", None)
                         if open_price is not None and open_price > 0:
-                            return open_price
-                        return quote.last_price
+                            price = open_price
+                        else:
+                            price = quote.last_price or quote.close
 
                     elif self._price_mode == PriceMode.MID:
                         if (
@@ -410,14 +413,23 @@ class PositionManager:
                             and quote.bid > 0
                             and quote.ask > 0
                         ):
-                            return (quote.bid + quote.ask) / 2
-                        return quote.last_price
+                            price = (quote.bid + quote.ask) / 2
+                        else:
+                            price = getattr(quote, "close", None) or quote.last_price
 
                     else:  # CLOSE
                         close_price = getattr(quote, "close", None)
                         if close_price is not None and close_price > 0:
-                            return close_price
-                        return quote.last_price
+                            price = close_price
+                        else:
+                            price = quote.last_price
+                    
+                    # 如果获取到的价格 <= 0，认为无效，返回 None 以触发内在价值兜底
+                    if price is not None and price <= 0:
+                        # 除非是到期日当天，可以等于0
+                        price = None
+                    
+                    return price
 
             return None
 

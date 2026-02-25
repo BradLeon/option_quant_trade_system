@@ -35,12 +35,12 @@ Monitoring Configuration - 监控配置管理
 
 | 指标            | 绿色（正常）  | 黄色（关注）  | 红色（风险）  | 说明                    | RED 建议操作                              |
 |-----------------|---------------|---------------|---------------|-------------------------|-------------------------------------------|
-| OTM%            | ≥10%          | 5%~10%        | <5%           | 虚值百分比（统一公式）  | 立即 Roll 到下个月或更远行权价            |
+| OTM%            | ≥10%          | 0%~10%        | <0%(仅ITM)    | 虚值百分比（统一公式）  | 仅 ITM 时强制平仓，近 ATM 由 TGR 判断       |
 | |Delta|         | ≤0.20         | 0.20~0.40     | >0.50         | 方向性风险（绝对值）    | 必须行动：对冲正股或平仓                  |
-| DTE             | ≥14 天        | 4~14 天       | <4 天         | 到期天数                | 强制平仓或展期，绝不持有进入最后 4 天     |
-| P&L%            | ≥50%          | -100%~50%     | <-100%        | 持仓盈亏                | 无条件止损，不要抗单                      |
+| DTE             | ≥14 天        | 0~14 天       | <0 天(禁用)    | 到期天数                | 不因 DTE 强制平仓，允许合约自然到期       |
+| P&L%            | ≥50%          | -200%~50%     | <-200%        | 持仓盈亏                | 极端兆底止损（TGR 应先触发）             |
 | Gamma Risk%     | ≤0.5%         | 0.5%~1%       | >1%           | Gamma/Margin 百分比     | 减仓或平仓，降低 Gamma 风险敞口           |
-| TGR             | ≥1.5          | 1.0~1.5       | <1.0          | 标准化 Theta/Gamma 比   | 平仓，换到更高效的合约                    |
+| TGR             | ≥1.5          | 0.5~1.5       | <0.5          | 标准化 Theta/Gamma 比   | **主动平仓**，Gamma 风险超过 Theta 收益     |
 | IV/HV           | ≥1.2          | 0.8~1.2       | <0.8          | 期权定价质量            | 如盈利可提前止盈，避免继续卖出            |
 | Expected ROC    | ≥10%          | 0%~10%        | <0%           | 预期资本回报率          | 立即平仓，策略已失效                      |
 | Win Probability | ≥70%          | 55%~70%       | <55%          | 理论胜率                | 考虑平仓，寻找更高效策略                  |
@@ -174,6 +174,7 @@ class ThresholdRange:
     red_above: float | None = None
     red_below: float | None = None
     hysteresis: float = 0.0
+    enabled: bool = True  # 是否启用此指标检查（False=跳过）
 
     # 配置化消息
     alert_type: str = ""
@@ -318,18 +319,18 @@ class PositionThresholds:
     - Gamma Risk%: 相对 Margin 的百分比
     """
 
-    # OTM% (虚值百分比) - 新公式: Put=(S-K)/S, Call=(K-S)/S
+    # OTM% (虚值百分比) - Gamma 策略：仅 ITM 时强制平仓，近 ATM 由 TGR 判断
     otm_pct: ThresholdRange = field(
         default_factory=lambda: ThresholdRange(
             green=(0.10, float("inf")),    # OTM ≥ 10%
-            yellow=(0.005, 0.10),          # 0.5% ~ 10%
-            red_below=0.005,               # OTM < 0.5%
+            yellow=(0.0, 0.10),            # 0% ~ 10%
+            red_below=0.0,                 # OTM < 0% (已 ITM)
             hysteresis=0.01,
             alert_type="OTM_PCT",
-            red_below_message="OTM% 过低: {value:.1%}，接近 ATM 或 ITM",
-            yellow_message="OTM% 偏低: {value:.1%}",
-            red_below_action="立即 Roll 到下个月或更远行权价，或直接平仓",
-            yellow_action="准备调整，关注标的走势",
+            red_below_message="已进入 ITM: OTM%={value:.1%}，必须平仓",
+            yellow_message="OTM% 偏低: {value:.1%}，接近 ATM",
+            red_below_action="ITM 强制平仓",
+            yellow_action="关注方向性风险，TGR 将判断是否退出",
         )
     )
 
@@ -348,34 +349,34 @@ class PositionThresholds:
         )
     )
 
-    # DTE (Days to Expiration) - 绿色提高到14天
+    # DTE (Days to Expiration) - 不因 DTE 强制平仓，允许合约自然到期
     dte: ThresholdRange = field(
         default_factory=lambda: ThresholdRange(
             green=(14, float("inf")),      # DTE ≥ 14 天
-            yellow=(4, 14),                # 4 ~ 14 天
-            red_below=4,                   # DTE < 4 天
+            yellow=(0, 14),                # 0 ~ 14 天
+            red_below=0,                   # DTE < 0 天（等同禁用）
             hysteresis=1,
             alert_type="DTE_WARNING",
-            red_below_message="DTE < 4 天: {value:.0f} 天，Short Gamma 风险极高",
+            red_below_message="DTE 已过期: {value:.0f} 天",
             yellow_message="DTE 进入两周内: {value:.0f} 天",
-            red_below_action="强制平仓或展期，绝不持有 Short Gamma 进入最后 4 天",
-            yellow_action="准备展期或平仓计划",
+            red_below_action="合约已过期，检查持仓状态",
+            yellow_action="关注到期日，准备到期处理",
         )
     )
 
     # P&L% (持仓未实现收益率)
-    # 新规范: 绿色 ≥50% (止盈), 黄色 -100%~50%, 红色 < -100% (亏损超过原始权利金)
+    # Gamma 策略：止损放宽到 -200%，TGR 会在此之前触发主动退出
     pnl: ThresholdRange = field(
         default_factory=lambda: ThresholdRange(
             green=(0.50, float("inf")),    # 盈利 ≥ 50% (止盈目标)
-            yellow=(-1.0, 0.50),           # -100% ~ 50%
-            red_below=-1.0,                # 亏损 < -100% (亏损超过原始权利金)
+            yellow=(-2.0, 0.50),           # -200% ~ 50%
+            red_below=-2.0,                # 亏损 < -200% (极端兆底止损)
             hysteresis=0.05,
             alert_type="STOP_LOSS",
-            red_below_message="持仓亏损超过原始权利金: {value:.1%}，触发止损线",
+            red_below_message="持仓亏损极端: {value:.1%}，触发兆底止损线",
             yellow_message="持仓盈亏: {value:.1%}",
             green_message="持仓达到止盈目标: {value:.1%}",
-            red_below_action="无条件止损，不要抗单",
+            red_below_action="极端兆底止损，无条件平仓",
             yellow_action="关注盈亏变化",
             green_action="考虑止盈平仓，锁定利润",
         )
@@ -398,16 +399,17 @@ class PositionThresholds:
 
     # TGR (Theta/Gamma Ratio) - 标准化公式：|Theta| / (|Gamma| × S² × σ_daily) × 100
     # Position 级使用 POSITION_TGR，与 Portfolio 级 TGR_LOW 区分
+    # 持有到期策略：放宽红线到 0.5，避免临期 Gamma 加速时误触发
     tgr: ThresholdRange = field(
         default_factory=lambda: ThresholdRange(
             green=(1.5, float("inf")),     # 标准化 TGR ≥ 1.5
-            yellow=(1.0, 1.5),             # 1.0 ~ 1.5
-            red_below=1.0,                 # TGR < 1.0
+            yellow=(0.5, 1.5),             # 0.5 ~ 1.5
+            red_below=0.5,                 # TGR < 0.5
             hysteresis=0.1,
             alert_type="POSITION_TGR",     # Position 级使用单独的 AlertType
             red_below_message="TGR 过低: {value:.2f}，时间收益/波动风险比不足",
             yellow_message="TGR 偏低: {value:.2f}",
-            red_below_action="平仓，换到更高效的合约",
+            red_below_action="关注持仓效率，考虑调整",
             yellow_action="关注时间衰减效率",
         )
     )
@@ -495,11 +497,12 @@ class EarlyTakeProfitConfig:
     独立于 DTE 和 PnL 检查，按优先级从高到低匹配：
     rules 列表中先匹配的先返回。
     """
+    # 启用联合止盈，PnL 阈值提高到 70%（延长持有时间但保留利润锁定）
     enabled: bool = True
     rules: list[EarlyTakeProfitRule] = field(default_factory=lambda: [
-        EarlyTakeProfitRule(dte_below=14, pnl_above=0.50, level="red"),
-        EarlyTakeProfitRule(dte_below=21, pnl_above=0.50, level="yellow"),
-        EarlyTakeProfitRule(dte_below=30, pnl_above=0.65, level="green"),
+        EarlyTakeProfitRule(dte_below=14, pnl_above=0.70, level="red"),
+        EarlyTakeProfitRule(dte_below=21, pnl_above=0.70, level="yellow"),
+        EarlyTakeProfitRule(dte_below=30, pnl_above=0.80, level="green"),
     ])
 
 
@@ -848,6 +851,7 @@ class MonitoringConfig:
             red_above=data.get("red_above", default.red_above),
             red_below=data.get("red_below", default.red_below),
             hysteresis=data.get("hysteresis", default.hysteresis),
+            enabled=data.get("enabled", default.enabled),
             alert_type=data.get("alert_type", default.alert_type),
             red_above_message=data.get("red_above_message", default.red_above_message),
             red_below_message=data.get("red_below_message", default.red_below_message),
@@ -905,9 +909,44 @@ class MonitoringConfig:
                     PortfolioThresholds().concentration_hhi,
                 )
 
-        # Position level 和 Capital level 的 YAML 解析
-        # 所有阈值现已统一使用 ThresholdRange，可按需扩展此处解析逻辑
+        # Position level 的 YAML 解析
+        if "position_level" in data:
+            pos = data["position_level"]
+            defaults = PositionThresholds()
 
+            # ThresholdRange 字段映射：YAML key → PositionThresholds 属性名
+            _tr_fields = {
+                "otm_pct": "otm_pct",
+                "delta": "delta",
+                "dte": "dte",
+                "pnl": "pnl",
+                "gamma_risk_pct": "gamma_risk_pct",
+                "tgr": "tgr",
+                "iv_hv": "iv_hv",
+                "expected_roc": "expected_roc",
+                "win_probability": "win_probability",
+            }
+
+            for yaml_key, attr_name in _tr_fields.items():
+                if yaml_key in pos:
+                    default_range = getattr(defaults, attr_name)
+                    parsed = cls._parse_threshold_range(pos[yaml_key], default_range)
+                    setattr(config.position, attr_name, parsed)
+
+            # Early Take Profit（独立规则，非 ThresholdRange）
+            if "early_take_profit" in pos:
+                etp = pos["early_take_profit"]
+                config.position.early_take_profit = EarlyTakeProfitConfig(
+                    enabled=etp.get("enabled", True),
+                    rules=[
+                        EarlyTakeProfitRule(
+                            dte_below=r["dte_below"],
+                            pnl_above=r["pnl_above"],
+                            level=r["level"],
+                        )
+                        for r in etp.get("rules", [])
+                    ],
+                )
         if "dynamic_adjustment" in data:
             da = data["dynamic_adjustment"]
             if "high_volatility" in da:

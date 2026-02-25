@@ -157,8 +157,13 @@ class BacktestResult:
     trading_days: int = 0
     errors: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> dict:
-        return {
+    def to_dict(self, include_details: bool = False) -> dict:
+        """转换为字典 (用于序列化)
+
+        Args:
+            include_details: 是否包含 trade_records 和 daily_snapshots 详细数据
+        """
+        result = {
             "config_name": self.config_name,
             "start_date": self.start_date.isoformat(),
             "end_date": self.end_date.isoformat(),
@@ -179,6 +184,10 @@ class BacktestResult:
             "trading_days": self.trading_days,
             "errors": self.errors,
         }
+        if include_details:
+            result["trade_records"] = [t.to_dict() for t in self.trade_records]
+            result["daily_snapshots"] = [s.to_dict() for s in self.daily_snapshots]
+        return result
 
 
 class BacktestExecutor:
@@ -1580,7 +1589,12 @@ class BacktestExecutor:
                     and contract.expiry_date == position.expiration
                 ):
                     # 优先使用 close 价格，否则使用 last_price
-                    return quote.close if quote.close is not None else quote.last_price
+                    price = quote.close if quote.close is not None else quote.last_price
+                    
+                    if price is not None and price <= 0:
+                        price = None
+                    
+                    return price
 
             return None
 

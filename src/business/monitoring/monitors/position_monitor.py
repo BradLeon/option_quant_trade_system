@@ -243,6 +243,10 @@ class PositionMonitor:
         if value is None:
             return []
 
+        # 如果指标被禁用，跳过检查
+        if not threshold.enabled:
+            return []
+
         alerts: list[Alert] = []
 
         # 获取 AlertType
@@ -377,9 +381,9 @@ class PositionMonitor:
         """检查 DTE，结合 P&L 决定 Alert 类型
 
         规则：
-        - DTE < red_below 且 P&L > 0 → DTE_PROFITABLE (平仓止盈)
-        - DTE < red_below 且 P&L ≤ 0 → DTE_WARNING (展期)
-        - 其他情况走原有 DTE 检查逻辑
+        - DTE < red_below（默认 0，即已过期）且 P&L > 0 → DTE_PROFITABLE (平仓)
+        - DTE < red_below（默认 0，即已过期）且 P&L ≤ 0 → DTE_WARNING (处理)
+        - 其他情况走原有 DTE 检查逻辑（黄色区域仅提示关注）
 
         Args:
             pos: 持仓数据
@@ -397,7 +401,7 @@ class PositionMonitor:
         # 格式化阈值范围
         threshold_range = self._format_threshold_range(threshold, is_pct=False)
 
-        # DTE 进入红色区域
+        # DTE 进入红色区域（默认 < 2 天）
         if threshold.red_below is not None and pos.dte < threshold.red_below:
             if pnl_pct > 0:
                 # 盈利 → DTE_PROFITABLE（应平仓止盈）
@@ -413,20 +417,20 @@ class PositionMonitor:
                     suggested_action="平仓止盈，锁定利润",
                 )]
             else:
-                # 亏损或持平 → DTE_WARNING（应展期）
+                # 亏损或持平 → DTE_WARNING（应展期或平仓）
                 return [Alert(
                     alert_type=AlertType.DTE_WARNING,
                     level=AlertLevel.RED,
-                    message=f"DTE < {threshold.red_below} 天且亏损 ({pnl_pct:.1%})，应展期",
+                    message=f"DTE < {threshold.red_below} 天且亏损 ({pnl_pct:.1%})，应展期或平仓",
                     symbol=pos.symbol,
                     position_id=pos.position_id,
                     current_value=float(pos.dte),
                     threshold_value=threshold.red_below,
                     threshold_range=threshold_range,
-                    suggested_action="强制展期到下月",
+                    suggested_action="展期到下月或平仓止损",
                 )]
 
-        # 非红色区域，走原有逻辑
+        # 非红色区域，走原有逻辑（黄色区域仅提示关注）
         return self._check_threshold(
             value=pos.dte,
             threshold=threshold,
@@ -503,6 +507,10 @@ class PositionMonitor:
             return alerts
 
         threshold = thresholds.pnl
+
+        # 如果 P&L 检查被禁用，跳过
+        if not threshold.enabled:
+            return alerts
         threshold_range = self._format_threshold_range(threshold, is_pct=True)
 
         # 检查止损（red_below）

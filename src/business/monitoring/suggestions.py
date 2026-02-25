@@ -98,7 +98,7 @@ ALERT_ACTION_MAP: dict[tuple[AlertType, AlertLevel], tuple[ActionType, UrgencyLe
     (AlertType.MONEYNESS, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
     (AlertType.DELTA_CHANGE, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
     (AlertType.GAMMA_EXPOSURE, AlertLevel.RED): (ActionType.REDUCE, UrgencyLevel.IMMEDIATE),
-    (AlertType.TGR_LOW, AlertLevel.RED): (ActionType.ADJUST, UrgencyLevel.IMMEDIATE),
+    (AlertType.TGR_LOW, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.SOON),
     # Capital 级 - 核心风控四大支柱
     (AlertType.MARGIN_UTILIZATION, AlertLevel.RED): (ActionType.REDUCE, UrgencyLevel.IMMEDIATE),
     (AlertType.CASH_RATIO, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
@@ -221,18 +221,18 @@ STRATEGY_SPECIFIC_SUGGESTIONS: dict[
         "平仓亏损腿或整体止损"
     ),
 
-    # === TGR < 1.0 (RED) - 按策略区分 ===
+    # === TGR < 0.5 (RED) - Gamma 策略：TGR 作为主动退出触发器 ===
     (AlertType.POSITION_TGR, AlertLevel.RED, StrategyType.SHORT_PUT): (
-        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
-        "平仓换到更高效的合约"
+        ActionType.CLOSE, UrgencyLevel.SOON,
+        "TGR 过低，Gamma 风险超过 Theta 收益，主动退出"
     ),
     (AlertType.POSITION_TGR, AlertLevel.RED, StrategyType.COVERED_CALL): (
-        ActionType.CLOSE, UrgencyLevel.SOON,
-        "平仓换到更高效的合约"
+        ActionType.HOLD, UrgencyLevel.MONITOR,
+        "TGR 偏低，但有正股覆盖，继续持有"
     ),
     (AlertType.POSITION_TGR, AlertLevel.RED, StrategyType.SHORT_STRANGLE): (
-        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
-        "平仓换到更高效的合约"
+        ActionType.CLOSE, UrgencyLevel.SOON,
+        "TGR 过低，Gamma 风险超过 Theta 收益，主动退出"
     ),
 
     # === Gamma Risk > 1% (RED) - 统一平仓 ===
