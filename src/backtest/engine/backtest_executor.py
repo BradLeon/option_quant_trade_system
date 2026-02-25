@@ -51,13 +51,20 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from src.backtest.config.backtest_config import BacktestConfig, PriceMode
 from src.backtest.data.duckdb_provider import DuckDBProvider
 from src.backtest.engine.account_simulator import AccountSimulator, SimulatedPosition
 from src.backtest.engine.position_manager import PositionManager, DataNotFoundError
-from src.backtest.engine.trade_simulator import TradeSimulator, TradeExecution, TradeRecord
+from src.backtest.engine.trade_simulator import (
+    OrderSide,
+    TradeAction,
+    TradeExecution,
+    TradeRecord,
+    TradeSimulator,
+)
+from src.data.models.account import AssetType
 from src.business.config.config_mode import ConfigMode
 from src.business.config.monitoring_config import MonitoringConfig
 from src.business.config.screening_config import ScreeningConfig
@@ -533,11 +540,18 @@ class BacktestExecutor:
         )
 
         for position in expiring:
+            # 断言：到期持仓应该是期权持仓，期权字段非空
+            assert position.underlying is not None
+            assert position.option_type is not None
+            assert position.strike is not None
+            assert position.expiration is not None
+
             # 获取标的价格 - 数据缺失时抛出异常，不使用 strike 回退
-            quote = self._data_provider.get_stock_quote(position.underlying)
+            underlying = cast(str, position.underlying)
+            quote = self._data_provider.get_stock_quote(underlying)
             if quote is None:
                 raise DataNotFoundError(
-                    f"Stock quote not found for {position.underlying} "
+                    f"Stock quote not found for {underlying} "
                     f"on expiration date {current_date}"
                 )
 
@@ -556,42 +570,367 @@ class BacktestExecutor:
                     f"mode={price_mode.value}, quote={quote}"
                 )
 
-            # 1. Trade 层：执行到期处理
-            execution = self._trade_simulator.execute_expire(
-                symbol=position.symbol,
-                underlying=position.underlying,
-                option_type=position.option_type,
-                strike=position.strike,
-                expiration=position.expiration,
-                quantity=position.quantity,  # 有符号
-                final_underlying_price=final_price,
-                trade_date=current_date,
-                lot_size=position.lot_size,
-            )
+            # 判断是否 ITM
+            if position.option_type == OptionType.PUT:
+                is_itm = final_price < position.strike
+            else:  # OptionType.CALL
+                is_itm = final_price > position.strike
 
-            # 2. Position 层：计算已实现盈亏
-            pnl = self._position_manager.calculate_realized_pnl(position, execution)
-
-            # 2.5. Trade 层：回填 PnL 和 position_id 到交易记录
-            self._trade_simulator.update_last_trade_pnl(pnl)
-            self._trade_simulator.update_last_trade_position_id(position.position_id)
-
-            # 3. Account 层：移除持仓，更新现金
-            success = self._account_simulator.remove_position(
-                position_id=position.position_id,
-                cash_change=execution.net_amount,
-                realized_pnl=pnl,
-            )
-
-            if success:
-                # 完成持仓关闭 (更新持仓字段)
-                self._position_manager.finalize_close(position, execution, pnl)
-
-                logger.info(
-                    f"Position {position.position_id} expired on {current_date}: "
-                    f"entry_price=${position.entry_price:.4f} -> close_price=${position.close_price:.4f}, "
-                    f"reason={execution.reason}, PnL: ${pnl:.2f}"
+            # 根据是否 ITM 处理到期
+            if is_itm:
+                # ITM 到期：行权（需要处理期权和股票交易）
+                self._process_itm_expiration(
+                    position, final_price, current_date
                 )
+            else:
+                # OTM 到期：自然到期（仅处理期权交易）
+                self._process_otm_expiration(
+                    position, final_price, current_date
+                )
+
+    def _process_otm_expiration(
+        self,
+        position,
+        final_price: float,
+        current_date: date,
+    ) -> None:
+        """处理 OTM 到期（自然到期）
+
+        Args:
+            position: 到期的期权持仓
+            final_price: 到期时标的价格
+            current_date: 当前日期
+        """
+        # Trade 层：执行到期处理
+        execution = self._trade_simulator.execute_expire(
+            symbol=position.symbol,
+            underlying=position.underlying,  # type: ignore[arg-type]
+            option_type=position.option_type,  # type: ignore[arg-type]
+            strike=position.strike,  # type: ignore[arg-type]
+            expiration=position.expiration,  # type: ignore[arg-type]
+            quantity=position.quantity,
+            final_underlying_price=final_price,
+            trade_date=current_date,
+            lot_size=position.lot_size,
+        )
+
+        # Position 层：计算已实现盈亏
+        pnl = self._position_manager.calculate_realized_pnl(position, execution)
+
+        # Trade 层：更新 PnL 和 position_id
+        self._trade_simulator.update_last_trade_pnl(pnl)
+        self._trade_simulator.update_last_trade_position_id(position.position_id)
+
+        # Account 层：移除持仓，更新现金
+        success = self._account_simulator.remove_position(
+            position_id=position.position_id,
+            cash_change=execution.net_amount,
+            realized_pnl=pnl,
+        )
+
+        if success:
+            # 完成持仓关闭
+            self._position_manager.finalize_close(position, execution, pnl)
+
+            logger.info(
+                f"Position {position.position_id} expired OTM on {current_date}: "
+                f"entry_price=${position.entry_price:.4f} -> close_price=${position.close_price:.4f}, "
+                f"reason={execution.reason}, PnL: ${pnl:.2f}"
+            )
+
+    def _process_itm_expiration(
+        self,
+        position,
+        final_price: float,
+        current_date: date,
+    ) -> None:
+        """处理 ITM 到期（行权）
+
+        Args:
+            position: 到期的期权持仓
+            final_price: 到期时标的价格
+            current_date: 当前日期
+        """
+        # 1. Trade 层：执行到期处理（期权记录）
+        execution = self._trade_simulator.execute_expire(
+            symbol=position.symbol,
+            underlying=position.underlying,  # type: ignore[arg-type]
+            option_type=position.option_type,  # type: ignore[arg-type]
+            strike=position.strike,  # type: ignore[arg-type]
+            expiration=position.expiration,  # type: ignore[arg-type]
+            quantity=position.quantity,
+            final_underlying_price=final_price,
+            trade_date=current_date,
+            lot_size=position.lot_size,
+        )
+
+        # 2. Position 层：计算已实现盈亏
+        pnl = self._position_manager.calculate_realized_pnl(position, execution)
+
+        # 3. Trade 层：更新 PnL 和 position_id
+        # action 已在 execute_expire() 内部根据 ITM/OTM 判断并设置
+        self._trade_simulator.update_last_trade_pnl(pnl)
+        self._trade_simulator.update_last_trade_position_id(position.position_id)
+
+        # 4. Account 层：移除持仓，更新现金
+        success = self._account_simulator.remove_position(
+            position_id=position.position_id,
+            cash_change=execution.net_amount,
+            realized_pnl=pnl,
+        )
+
+        if success:
+            # 完成持仓关闭
+            self._position_manager.finalize_close(position, execution, pnl)
+
+            logger.info(
+                f"Position {position.position_id} assigned on {current_date}: "
+                f"entry_price=${position.entry_price:.4f} -> close_price=${position.close_price:.4f}, "
+                f"reason={execution.reason}, PnL: ${pnl:.2f}"
+            )
+
+        # 5. 处理股票交易
+        self._handle_option_assignment(position, final_price, current_date)
+
+    def _handle_option_assignment(
+        self,
+        position,
+        final_price: float,
+        current_date: date,
+    ) -> None:
+        """处理期权行权后的股票持仓
+
+        Args:
+            position: 到期的期权持仓
+            final_price: 到期时标的价格
+            current_date: 当前日期
+        """
+        shares_required = abs(position.quantity) * position.lot_size
+
+        if position.option_type == OptionType.PUT:
+            # Short Put ITM 到期：按行权价买入股票
+            self._handle_short_put_assignment(
+                position.underlying,
+                shares_required,
+                position.strike,
+                current_date,
+            )
+        else:  # OptionType.CALL
+            # Short Call ITM 到期：卖出股票
+            self._handle_short_call_assignment(
+                position.underlying,
+                shares_required,
+                position.strike,
+                final_price,
+                current_date,
+            )
+
+    def _handle_short_put_assignment(
+        self,
+        underlying: str,
+        shares: int,
+        strike: float,
+        trade_date: date,
+    ) -> None:
+        """处理 Short Put 行权：按行权价买入股票
+
+        Args:
+            underlying: 标的代码
+            shares: 需要买入的股数
+            strike: 行权价
+            trade_date: 交易日期
+        """
+        # 执行股票买入交易
+        execution = self._trade_simulator.execute_stock_trade(
+            symbol=underlying,
+            side=OrderSide.BUY,
+            quantity=shares,
+            price=strike,  # 按行权价买入
+            trade_date=trade_date,
+            reason="assigned_buy",
+        )
+
+        # 添加股票持仓到账户（传入现金变动）
+        self._account_simulator.add_stock_position(
+            symbol=underlying,
+            quantity=shares,
+            entry_price=strike,  # 成本为行权价
+            trade_date=trade_date,
+            cash_change=execution.net_amount,  # 现金变动（买入为负）
+        )
+
+        logger.info(
+            f"Short Put assignment on {trade_date}: "
+            f"Bought {shares} shares of {underlying} @ ${strike:.2f} "
+            f"(assignment), cash change: ${execution.net_amount:.2f}"
+        )
+
+        # 记录股票买入交易
+        stock_record = TradeRecord(
+            trade_id=f"ST-{underlying}-BUY-{execution.execution_id}",
+            execution_id=execution.execution_id,
+            symbol=underlying,
+            underlying=None,  # 股票交易无标的
+            option_type=None,
+            strike=None,
+            expiration=None,
+            trade_date=trade_date,
+            action=TradeAction.STOCK_BUY,
+            asset_type=AssetType.STOCK,  # 股票交易
+            quantity=shares,
+            price=strike,
+            commission=execution.commission,
+            gross_amount=execution.gross_amount,
+            net_amount=execution.net_amount,
+            pnl=None,  # 股票交易单独计算 PnL
+        )
+        self._trade_simulator.trade_records.append(stock_record)
+
+    def _handle_short_call_assignment(
+        self,
+        underlying: str,
+        shares_required: int,
+        strike: float,
+        market_price: float,
+        trade_date: date,
+    ) -> None:
+        """处理 Short Call 行权：卖出股票
+
+        Args:
+            underlying: 标的代码
+            shares_required: 需要卖出的股数
+            strike: 行权价
+            market_price: 当前市价（用于先买后卖场景）
+            trade_date: 交易日期
+        """
+        # 检查当前股票持仓
+        current_shares = self._account_simulator.get_stock_quantity(underlying)
+
+        # 记录买入的股数（用于后续持仓更新）
+        buy_shares = 0
+
+        if current_shares >= shares_required:
+            # 有足够股票：直接以行权价卖出
+            execution = self._trade_simulator.execute_stock_trade(
+                symbol=underlying,
+                side=OrderSide.SELL,
+                quantity=shares_required,
+                price=strike,
+                trade_date=trade_date,
+                reason="assigned_sell",
+            )
+        else:
+            # 股票不足：先买入不足的股票，再以行权价卖出
+            buy_shares = shares_required - current_shares
+
+            # 先买入股票（现金变动在 add_stock_position 中处理）
+            buy_execution = self._trade_simulator.execute_stock_trade(
+                symbol=underlying,
+                side=OrderSide.BUY,
+                quantity=buy_shares,
+                price=market_price,  # 按市价买入
+                trade_date=trade_date,
+                reason="pre_assignment_buy",
+            )
+
+            # 添加买入的股票到账户（包含现金变动）
+            self._account_simulator.add_stock_position(
+                symbol=underlying,
+                quantity=buy_shares,
+                entry_price=market_price,
+                trade_date=trade_date,
+                cash_change=buy_execution.net_amount,  # 现金变动（买入为负）
+            )
+
+            # 记录股票买入交易
+            stock_buy_record = TradeRecord(
+                trade_id=f"ST-{underlying}-BUY-{buy_execution.execution_id}",
+                execution_id=buy_execution.execution_id,
+                symbol=underlying,
+                underlying=None,  # 股票交易无标的
+                option_type=None,
+                strike=None,
+                expiration=None,
+                trade_date=trade_date,
+                action=TradeAction.STOCK_BUY,
+                asset_type=AssetType.STOCK,  # 股票交易
+                quantity=buy_shares,
+                price=market_price,
+                commission=buy_execution.commission,
+                gross_amount=buy_execution.gross_amount,
+                net_amount=buy_execution.net_amount,
+                pnl=None,  # 股票交易单独计算 PnL
+            )
+            self._trade_simulator.trade_records.append(stock_buy_record)
+
+            # 然后卖出所需股票
+            execution = self._trade_simulator.execute_stock_trade(
+                symbol=underlying,
+                side=OrderSide.SELL,
+                quantity=shares_required,
+                price=strike,
+                trade_date=trade_date,
+                reason="assigned_sell",
+            )
+
+        # 更新卖出后的股票持仓
+        new_shares = current_shares + buy_shares - shares_required
+
+        if new_shares == 0 and current_shares > 0:
+            # 卖出所有股票，移除持仓
+            position_id = f"{underlying}-STOCK"
+            if position_id in self._account_simulator.positions:
+                position = self._account_simulator.positions[position_id]
+                pnl = (
+                    (strike - position.entry_price)
+                    * shares_required
+                )
+                self._account_simulator.remove_position(
+                    position_id=position_id,
+                    cash_change=execution.net_amount,
+                    realized_pnl=pnl,
+                )
+        elif new_shares > 0:
+            # 还有剩余股票，更新数量
+            position_id = f"{underlying}-STOCK"
+            if position_id in self._account_simulator.positions:
+                # 使用新方法更新持仓
+                self._account_simulator.update_stock_position(
+                    position_id=position_id,
+                    quantity_change=buy_shares - shares_required,
+                    new_price=market_price,
+                    cash_change=execution.net_amount,
+                )
+        else:
+            # 没有持仓变化，无需处理
+            pass
+
+        logger.info(
+            f"Short Call assignment on {trade_date}: "
+            f"Sold {shares_required} shares of {underlying} @ ${strike:.2f} "
+            f"(assignment), cash change: ${execution.net_amount:.2f}"
+        )
+
+        # 记录股票卖出交易
+        stock_sell_record = TradeRecord(
+            trade_id=f"ST-{underlying}-SELL-{execution.execution_id}",
+            execution_id=execution.execution_id,
+            symbol=underlying,
+            underlying=None,  # 股票交易无标的
+            option_type=None,
+            strike=None,
+            expiration=None,
+            trade_date=trade_date,
+            action=TradeAction.STOCK_SELL,
+            asset_type=AssetType.STOCK,  # 股票交易
+            quantity=shares_required,
+            price=strike,
+            commission=execution.commission,
+            gross_amount=execution.gross_amount,
+            net_amount=execution.net_amount,
+            pnl=None,  # 股票交易单独计算 PnL
+        )
+        self._trade_simulator.trade_records.append(stock_sell_record)
 
     def _run_monitoring(self) -> list[PositionSuggestion]:
         """运行持仓监控
@@ -736,12 +1075,13 @@ class BacktestExecutor:
 
             # 1. Trade 层：执行交易，得到 TradeExecution
             mid_price = decision.limit_price or 0.0
+            # type: ignore[arg-type] - open decisions always have non-None option fields
             execution = self._trade_simulator.execute_open(
                 symbol=decision.symbol,
                 underlying=underlying,
-                option_type=option_type,
-                strike=strike,
-                expiration=expiry,
+                option_type=option_type,  # type: ignore[arg-type]
+                strike=strike,  # type: ignore[arg-type]
+                expiration=expiry,  # type: ignore[arg-type]
                 quantity=decision.quantity,
                 mid_price=mid_price,
                 trade_date=trade_date,
@@ -869,12 +1209,13 @@ class BacktestExecutor:
                 option_price = position.current_price
 
             # 1. Trade 层：模拟交易执行
+            # type: ignore[arg-type] - positions always have non-None option fields
             execution = self._trade_simulator.execute_close(
                 symbol=position.symbol,
-                underlying=position.underlying,
-                option_type=position.option_type,
-                strike=position.strike,
-                expiration=position.expiration,
+                underlying=position.underlying,  # type: ignore[arg-type]
+                option_type=position.option_type,  # type: ignore[arg-type]
+                strike=position.strike,  # type: ignore[arg-type]
+                expiration=position.expiration,  # type: ignore[arg-type]
                 quantity=-position.quantity,  # 平仓方向相反
                 mid_price=option_price,
                 trade_date=trade_date,
@@ -1027,19 +1368,21 @@ class BacktestExecutor:
             new_strike = decision.roll_to_strike or position.strike  # 默认保持行权价不变
 
             # 构建新合约 symbol
+            # type: ignore[arg-type] - roll positions always have non-None option fields
             new_symbol = self._build_roll_symbol(
-                underlying=position.underlying,
+                underlying=position.underlying,  # type: ignore[arg-type]
                 expiry=new_expiry,
-                strike=new_strike,
-                option_type=position.option_type,
+                strike=new_strike,  # type: ignore[arg-type]
+                option_type=position.option_type,  # type: ignore[arg-type]
             )
 
             # 获取新合约价格
+            # type: ignore[arg-type] - roll positions always have non-None option fields
             new_option_price = self._get_option_price_by_params(
-                underlying=position.underlying,
-                option_type=position.option_type,
-                strike=new_strike,
-                expiration=new_expiry,
+                underlying=position.underlying,  # type: ignore[arg-type]
+                option_type=position.option_type,  # type: ignore[arg-type]
+                strike=new_strike,  # type: ignore[arg-type]
+                expiration=new_expiry,  # type: ignore[arg-type]
             )
 
             if new_option_price is None or new_option_price <= 0:
@@ -1051,12 +1394,13 @@ class BacktestExecutor:
                 new_option_price = decision.roll_credit or close_price * 1.1
 
             # 模拟开仓执行
+            # type: ignore[arg-type] - roll positions always have non-None option fields
             open_execution = self._trade_simulator.execute_open(
                 symbol=new_symbol,
-                underlying=position.underlying,
-                option_type=position.option_type,
-                strike=new_strike,
-                expiration=new_expiry,
+                underlying=position.underlying,  # type: ignore[arg-type]
+                option_type=position.option_type,  # type: ignore[arg-type]
+                strike=new_strike,  # type: ignore[arg-type]
+                expiration=new_expiry,  # type: ignore[arg-type]
                 quantity=position.quantity,  # 保持相同数量 (负数 = SELL to open)
                 mid_price=new_option_price,
                 trade_date=trade_date,
@@ -1439,7 +1783,8 @@ class BacktestExecutor:
                 strike=pos.strike,
                 expiration=pos.expiration,
                 trade_date=pos.entry_date,
-                action="open",
+                action=TradeAction.OPEN,
+                asset_type=AssetType.OPTION,  # 使用枚举
                 quantity=pos.quantity,  # 原始数量 (负=卖出, 正=买入)
                 price=pos.entry_price,
                 commission=pos.commission_paid / 2,  # 开平仓手续费平分
@@ -1464,9 +1809,16 @@ class BacktestExecutor:
                 close_gross = close_gross  # 卖出收取权利金
 
             # 判断平仓类型
-            close_action = "close"
-            if pos.close_reason and "expire" in pos.close_reason.lower():
-                close_action = "expire"
+            close_action = TradeAction.CLOSE
+            if pos.close_reason == "assigned":
+                # 行权（ITM 到期）
+                if pos.option_type == OptionType.PUT:
+                    close_action = TradeAction.ASSIGN_PUT
+                else:  # CALL
+                    close_action = TradeAction.ASSIGN_CALL
+            elif pos.close_reason and "expire" in pos.close_reason.lower():
+                # 自然到期（OTM 或其他）
+                close_action = TradeAction.EXPIRE
 
             close_record = TradeRecord(
                 trade_id=f"TR-{pos.position_id}-CLOSE",
@@ -1478,6 +1830,7 @@ class BacktestExecutor:
                 expiration=pos.expiration,
                 trade_date=pos.close_date,
                 action=close_action,
+                asset_type=AssetType.OPTION,  # 期权交易
                 quantity=-pos.quantity,  # 平仓方向相反
                 price=pos.close_price,
                 commission=pos.commission_paid / 2,  # 开平仓手续费平分

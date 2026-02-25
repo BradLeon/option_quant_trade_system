@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from src.backtest.engine.trade_simulator import TradeAction, TradeRecord
 from src.engine.portfolio.returns import (
     calc_annualized_return,
     calc_calmar_ratio,
@@ -156,10 +157,12 @@ class BacktestMetrics:
         equity_curve = [s.nlv for s in daily_snapshots]
 
         # 提取已平仓交易的盈亏
+        # 包含所有平仓类型: CLOSE, EXPIRE, ASSIGN_PUT, ASSIGN_CALL
+        CLOSE_ACTIONS = (TradeAction.CLOSE, TradeAction.EXPIRE, TradeAction.ASSIGN_PUT, TradeAction.ASSIGN_CALL)
         closed_pnls = [
             t.pnl
             for t in trade_records
-            if t.action == "close" and t.pnl is not None
+            if t.action in CLOSE_ACTIONS and t.pnl is not None
         ]
 
         # 风险调整参数
@@ -420,9 +423,9 @@ class BacktestMetrics:
             return result
 
         # 分离开仓和平仓记录
-        open_records = [t for t in trade_records if t.action == "open"]
-        close_records = [t for t in trade_records if t.action == "close"]
-        expire_records = [t for t in trade_records if t.action == "expire"]
+        open_records = [t for t in trade_records if str(t.action) == "open"]
+        close_records = [t for t in trade_records if str(t.action) == "close"]
+        expire_records = [t for t in trade_records if str(t.action) == "expire"]
 
         # 计算平均收取权利金 (卖出期权)
         premiums_collected = [

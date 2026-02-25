@@ -34,6 +34,7 @@ from src.backtest.attribution.models import (
     TradeAttribution,
 )
 from src.backtest.data.greeks_calculator import GreeksCalculator
+from src.backtest.engine.trade_simulator import TradeAction
 
 if TYPE_CHECKING:
     from src.backtest.attribution.models import PortfolioSnapshot
@@ -73,15 +74,17 @@ class PnLAttributionEngine:
         self._dates: list[date] = []
 
         # 平仓/到期记录索引 (position_id → TradeRecord)
+        # 包含所有平仓类型: CLOSE, EXPIRE, ASSIGN_PUT, ASSIGN_CALL
+        CLOSE_ACTIONS = (TradeAction.CLOSE, TradeAction.EXPIRE, TradeAction.ASSIGN_PUT, TradeAction.ASSIGN_CALL)
         self._close_records: dict[str, TradeRecord] = {}
         for rec in self._trade_records:
-            if rec.action in ("close", "expire") and rec.position_id:
+            if rec.action in CLOSE_ACTIONS and rec.position_id:
                 self._close_records[rec.position_id] = rec
 
         # 开仓记录索引 (position_id → TradeRecord)
         self._open_records: dict[str, TradeRecord] = {}
         for rec in self._trade_records:
-            if rec.action == "open" and rec.position_id:
+            if rec.action == TradeAction.OPEN and rec.position_id:
                 self._open_records[rec.position_id] = rec
 
         self._greeks_calc = GreeksCalculator()
@@ -505,13 +508,13 @@ class PnLAttributionEngine:
             if pid not in info:
                 info[pid] = {}
 
-            if record.action == "open":
+            if record.action == TradeAction.OPEN:
                 info[pid]["symbol"] = record.symbol
                 info[pid]["underlying"] = record.underlying
                 info[pid]["option_type"] = record.option_type.value if hasattr(record.option_type, "value") else str(record.option_type)
                 info[pid]["strike"] = record.strike
                 info[pid]["entry_date"] = record.trade_date
-            elif record.action in ("close", "expire"):
+            elif record.action in (TradeAction.CLOSE, TradeAction.EXPIRE, TradeAction.ASSIGN_PUT, TradeAction.ASSIGN_CALL):
                 info[pid]["exit_date"] = record.trade_date
                 info[pid]["exit_reason"] = record.reason
                 if hasattr(record, "close_reason_type") and record.close_reason_type is not None:

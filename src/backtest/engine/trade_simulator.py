@@ -34,6 +34,7 @@ from enum import Enum
 from uuid import uuid4
 
 from src.data.models.option import OptionType
+from src.data.models.account import AssetType  # 新增
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,27 @@ class OrderSide(str, Enum):
     SELL = "sell"
 
 
+class TradeAction(str, Enum):
+    """交易动作类型
+
+    更细粒度的交易动作，用于 TradeRecord。
+    区别于 OrderSide（仅表示买卖方向），
+    TradeAction 表示交易的具体操作。
+    """
+
+    # 期权交易
+    OPEN = "open"  # 开仓（买入期权或卖出期权）
+    CLOSE = "close"  # 平仓（买入期权或卖出期权）
+    ROLL = "roll"  # 展期（平仓+开仓）
+    EXPIRE = "expire"  # 到期（OTM或ITM）
+    ASSIGN_PUT = "assign_put"  # Put 被行权（买入股票）
+    ASSIGN_CALL = "assign_call"  # Call 被行权（卖出股票）
+
+    # 股票交易
+    STOCK_BUY = "stock_buy"  # 买入股票
+    STOCK_SELL = "stock_sell"  # 卖出股票
+
+
 class ExecutionStatus(str, Enum):
     """执行状态"""
 
@@ -75,20 +97,24 @@ class TradeRecord:
     记录每笔交易的关键信息，在 Trade 层创建。
     """
 
+    # 必填字段
     trade_id: str
     execution_id: str  # 关联到 TradeExecution
     symbol: str
-    underlying: str
-    option_type: OptionType
-    strike: float
-    expiration: date
     trade_date: date
-    action: str  # "open", "close", "expire"
+    action: TradeAction  # 使用枚举类型
     quantity: int  # 有符号数量
     price: float  # 成交价
     commission: float
     gross_amount: float  # 成交金额（不含费用）
     net_amount: float  # 净金额（含费用）
+
+    # 可选字段
+    asset_type: AssetType  # 使用枚举而不是字符串
+    underlying: str | None = None  # 股票交易时为 None
+    option_type: OptionType | None = None  # 股票交易时为 None
+    strike: float | None = None  # 股票交易时为 None
+    expiration: date | None = None  # 股票交易时为 None
     pnl: float | None = None  # 已实现盈亏（仅平仓/到期时）
     reason: str | None = None
     close_reason_type: CloseReasonType | None = None  # 结构化平仓原因
@@ -110,10 +136,10 @@ class TradeExecution:
 
     # 合约信息
     symbol: str = ""
-    underlying: str = ""
-    option_type: OptionType = OptionType.PUT  # 期权类型 (CALL/PUT)
-    strike: float = 0.0
-    expiration: date = field(default_factory=date.today)
+    underlying: str | None = None  # 股票为 None
+    option_type: OptionType | None = None  # 股票为 None
+    strike: float | None = None  # 股票为 None
+    expiration: date | None = None  # 股票为 None
 
     # 订单信息
     side: OrderSide = OrderSide.SELL  # 仅用于显示/日志
@@ -138,6 +164,7 @@ class TradeExecution:
     # 额外信息
     lot_size: int = 100
     reason: str = ""  # 交易原因
+    asset_type: AssetType = AssetType.OPTION  # 默认为期权，股票交易会覆盖
 
     def to_dict(self) -> dict:
         """转换为字典"""
@@ -147,9 +174,9 @@ class TradeExecution:
             "timestamp": self.timestamp.isoformat(),
             "symbol": self.symbol,
             "underlying": self.underlying,
-            "option_type": self.option_type.value,  # OptionType enum -> str
+            "option_type": self.option_type.value if self.option_type else None,
             "strike": self.strike,
-            "expiration": self.expiration.isoformat(),
+            "expiration": self.expiration.isoformat() if self.expiration else None,
             "side": self.side.value,
             "quantity": self.quantity,
             "order_price": self.order_price,
@@ -162,6 +189,7 @@ class TradeExecution:
             "status": self.status.value,
             "lot_size": self.lot_size,
             "reason": self.reason,
+            "asset_type": self.asset_type.value if hasattr(self, "asset_type") else None,
         }
 
 
@@ -493,6 +521,9 @@ class TradeSimulator:
 
         # 创建交易记录 (Trade 层职责)
         self._trade_counter += 1
+        # 根据 action 参数确定 TradeAction 类型
+        # action 参数可能是 "open" 或 "close"，需要转换为对应的 TradeAction
+        trade_action = TradeAction(action) if action in ("open", "close") else TradeAction.OPEN
         trade_record = TradeRecord(
             trade_id=f"T{self._trade_counter:06d}",
             execution_id=execution.execution_id,
@@ -502,7 +533,8 @@ class TradeSimulator:
             strike=strike,
             expiration=expiration,
             trade_date=trade_date,
-            action=action,
+            action=trade_action,
+            asset_type=AssetType.OPTION,  # 期权交易
             quantity=quantity,  # 有符号
             price=fill_price,
             commission=commission,
@@ -655,6 +687,15 @@ class TradeSimulator:
         self._executions.append(execution)
 
         # 创建交易记录 (Trade 层职责)
+        # 根据 ITM/OTM 和期权类型确定 action
+        if is_itm:
+            if option_type == OptionType.PUT:
+                action = TradeAction.ASSIGN_PUT
+            else:  # CALL
+                action = TradeAction.ASSIGN_CALL
+        else:
+            action = TradeAction.EXPIRE
+
         self._trade_counter += 1
         trade_record = TradeRecord(
             trade_id=f"T{self._trade_counter:06d}",
@@ -665,7 +706,8 @@ class TradeSimulator:
             strike=strike,
             expiration=expiration,
             trade_date=trade_date,
-            action="expire",
+            action=action,  # ITM: ASSIGN_PUT/ASSIGN_CALL, OTM: EXPIRE
+            asset_type=AssetType.OPTION,  # 期权交易
             quantity=quantity,  # 保持原始符号
             price=fill_price,
             commission=commission,  # ITM: stock commission, OTM: 0
@@ -683,6 +725,111 @@ class TradeSimulator:
         logger.debug(
             f"Executed EXPIRE: {symbol} {reason}, "
             f"intrinsic={intrinsic_value:.4f}, gross={gross_amount:.2f}"
+        )
+
+        return execution
+
+    def execute_stock_trade(
+        self,
+        symbol: str,
+        side: OrderSide,
+        quantity: int,
+        price: float,
+        trade_date: date,
+        reason: str = "stock_trade",
+    ) -> TradeExecution:
+        """执行股票交易
+
+        股票交易用于期权行权后的股票买卖。
+
+        Args:
+            symbol: 股票代码
+            side: 买卖方向 (OrderSide.BUY/SELL)
+            quantity: 股数（正数，方向由 side 参数决定）
+            price: 交易价格
+            trade_date: 交易日期
+            reason: 交易原因（如 "assigned_buy", "assigned_sell", "pre_assignment_buy"）
+
+        Returns:
+            TradeExecution
+        """
+        # 股票交易无滑点（直接按指定价格成交）
+        fill_price = price
+        slippage = 0.0
+        slippage_pct = 0.0
+
+        # 计算手续费（按股数）
+        commission = self._commission_model.calculate_stock(abs(quantity))
+
+        # 计算金额
+        # BUY: -price * quantity (支付现金)
+        # SELL: +price * quantity (收取现金)
+        if side == OrderSide.BUY:
+            gross_amount = -quantity * fill_price  # 负数 = 现金流出
+        else:
+            gross_amount = quantity * fill_price  # 正数 = 现金流入
+
+        # 净金额 = 成交金额 - 手续费
+        # 注意: 手续费总是从账户扣除，所以无论买卖都是 -commission
+        net_amount = gross_amount - commission
+
+        # 生成执行记录
+        self._execution_counter += 1
+        execution = TradeExecution(
+            execution_id=f"E{self._execution_counter:08d}",
+            trade_date=trade_date,
+            symbol=symbol,
+            underlying=None,  # 股票没有 underlying
+            option_type=None,  # 股票没有 option_type
+            strike=None,  # 股票没有 strike
+            expiration=None,  # 股票没有 expiration
+            side=side,
+            quantity=quantity,  # 有符号: 负数=卖出, 正数=买入
+            order_price=fill_price,
+            fill_price=fill_price,
+            slippage=slippage,
+            slippage_pct=slippage_pct,
+            commission=commission,
+            gross_amount=gross_amount,
+            net_amount=net_amount,
+            status=ExecutionStatus.FILLED,
+            lot_size=1,  # 股票 lot_size = 1
+            reason=reason,
+            asset_type=AssetType.STOCK,  # 股票交易
+        )
+
+        self._executions.append(execution)
+
+        # 创建交易记录 (Trade 层职责)
+        self._trade_counter += 1
+        # 根据交易方向确定 action
+        stock_action = TradeAction.STOCK_BUY if side == OrderSide.BUY else TradeAction.STOCK_SELL
+        trade_record = TradeRecord(
+            trade_id=f"T{self._trade_counter:06d}",
+            execution_id=execution.execution_id,
+            symbol=symbol,
+            underlying=None,  # 股票没有 underlying
+            option_type=None,  # 股票没有 option_type
+            strike=None,
+            expiration=None,
+            trade_date=trade_date,
+            action=stock_action,  # 根据交易方向设置
+            asset_type=AssetType.STOCK,  # 股票交易
+            quantity=quantity,
+            price=fill_price,
+            commission=commission,
+            gross_amount=gross_amount,
+            net_amount=net_amount,
+            reason=reason,
+            close_reason_type=None,
+            underlying_price=None,  # 股票没有 underlying_price
+        )
+        self._trade_records.append(trade_record)
+
+        logger.debug(
+            f"Executed STOCK {side.value} {symbol}: "
+            f"{abs(quantity)} shares @ ${fill_price:.2f}, "
+            f"commission=${commission:.2f}, net=${net_amount:.2f}"
         )
 
         return execution

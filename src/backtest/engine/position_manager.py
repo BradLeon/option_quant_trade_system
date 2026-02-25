@@ -180,6 +180,7 @@ class PositionManager:
         position = SimulatedPosition(
             position_id=position_id,
             symbol=execution.symbol,
+            asset_type=execution.asset_type,  # 资产类型（期权或股票）
             underlying=execution.underlying,
             option_type=execution.option_type,
             strike=execution.strike,
@@ -272,12 +273,41 @@ class PositionManager:
     ) -> None:
         """从市场数据更新单个持仓价格
 
+        支持期权和股票持仓。
+
         Args:
             position: 持仓
 
         Raises:
             DataNotFoundError: 当关键市场数据缺失时
         """
+        # 股票持仓：直接更新股票价格
+        if position.is_stock:
+            stock_quote = self._data_provider.get_stock_quote(position.symbol)
+            if stock_quote is None:
+                raise DataNotFoundError(
+                    f"Stock quote not found for {position.symbol} "
+                    f"on {self._current_date}"
+                )
+
+            stock_price = self._get_price_by_mode(stock_quote)
+            if stock_price is None or stock_price <= 0:
+                raise DataNotFoundError(
+                    f"Invalid stock price for {position.symbol}: "
+                    f"mode={self._price_mode.value}, quote={stock_quote}"
+                )
+
+            # 更新股票市值（无需 underlying_price）
+            position.update_market_value(current_price=stock_price, underlying_price=0.0)
+            return
+
+        # 期权持仓：获取期权价格和标的价格
+        # 断言：期权持仓的 underlying, option_type, strike, expiration 必须非空
+        assert position.underlying is not None, "Option position must have underlying"
+        assert position.option_type is not None, "Option position must have option_type"
+        assert position.strike is not None, "Option position must have strike"
+        assert position.expiration is not None, "Option position must have expiration"
+
         # 获取标的报价
         stock_quote = self._data_provider.get_stock_quote(position.underlying)
         if stock_quote is None:
@@ -591,10 +621,10 @@ class PositionManager:
             positions: 持仓字典
 
         Returns:
-            到期的持仓列表
+            到期的持仓列表（仅期权持仓，股票没有到期日）
         """
         ref_date = self._current_date or date.today()
-        return [pos for pos in positions.values() if pos.expiration == ref_date]
+        return [pos for pos in positions.values() if pos.expiration is not None and pos.expiration == ref_date]
 
     def get_positions_by_underlying(
         self,

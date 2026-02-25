@@ -12,14 +12,15 @@ Account Simulator - 账户模拟器
 Usage:
     simulator = AccountSimulator(initial_capital=100_000)
 
-    # 开仓 (手续费由 TradeSimulator 计算后传入)
-    simulator.open_position(position, total_commission=1.30)
+    # 添加持仓
+    simulator.add_position(position, cash_change=200.0)
 
-    # 更新持仓市值
-    simulator.update_position_value(position_id, new_market_value, new_margin)
+    # 添加股票持仓
+    simulator.add_stock_position(symbol="AAPL", quantity=100, entry_price=100.0,
+                                trade_date=date(2024, 3, 1), cash_change=-10000.0)
 
-    # 平仓 (手续费由 TradeSimulator 计算后传入)
-    pnl = simulator.close_position(position_id, close_price, close_date, total_commission=1.30)
+    # 移除持仓
+    pnl = simulator.remove_position(position_id, cash_change=-150.0, realized_pnl=50.0)
 
     # 获取账户状态
     state = simulator.get_account_state()
@@ -33,6 +34,7 @@ from datetime import date, datetime
 from typing import Any
 
 from src.business.trading.models.decision import AccountState
+from src.data.models.account import AssetType
 from src.data.models.margin import calc_reg_t_margin_short_put, calc_reg_t_margin_short_call
 from src.data.models.option import OptionType
 
@@ -43,25 +45,29 @@ logger = logging.getLogger(__name__)
 class SimulatedPosition:
     """模拟持仓
 
-    记录单个期权持仓的所有信息。
+    记录单个持仓（期权或股票）的所有信息。
     """
 
+    # 必填字段
     position_id: str
-    symbol: str  # 期权合约标识
-    underlying: str  # 标的代码
-    option_type: OptionType  # 期权类型 (CALL/PUT)
-    strike: float
-    expiration: date
+    symbol: str  # 期权合约标识或股票代码
+    asset_type: AssetType  # STOCK | OPTION
     quantity: int  # 正数=多头, 负数=空头
-    entry_price: float  # 开仓价格 (每张合约)
+    entry_price: float  # 开仓价格
     entry_date: date
-    lot_size: int = 100  # 每张合约对应的股数
+
+    # 可选字段（期权专用）
+    underlying: str | None = None  # 标的代码（期权专用）
+    option_type: OptionType | None = None  # 期权类型 (CALL/PUT)，股票为 None
+    strike: float | None = None  # 行权价，股票为 None
+    expiration: date | None = None  # 到期日，股票为 None
+    lot_size: int = 100  # 期权：每张合约对应股数（默认100），股票：1
 
     # 当前市值相关
-    current_price: float = 0.0  # 当前期权价格
-    underlying_price: float = 0.0  # 当前标的价格
+    current_price: float = 0.0  # 当前价格（期权价格或股票价格）
+    underlying_price: float = 0.0  # 当前标的价格（期权专用）
     market_value: float = 0.0  # 当前市值 (quantity * current_price * lot_size)
-    margin_required: float = 0.0  # 保证金需求
+    margin_required: float = 0.0  # 保证金需求（股票为 0）
 
     # P&L
     unrealized_pnl: float = 0.0
@@ -80,23 +86,41 @@ class SimulatedPosition:
         return self.quantity < 0
 
     @property
+    def is_short_option(self) -> bool:
+        """是否空头期权（需要计算保证金）"""
+        return self.quantity < 0 and self.asset_type == AssetType.OPTION
+
+    @property
+    def is_stock(self) -> bool:
+        """是否股票持仓"""
+        return self.asset_type == AssetType.STOCK
+
+    @property
+    def is_option(self) -> bool:
+        """是否期权持仓"""
+        return self.asset_type == AssetType.OPTION
+
+    @property
     def notional_value(self) -> float:
-        """名义价值 = |quantity| * strike * lot_size"""
+        """名义价值 = |quantity| * strike * lot_size（期权专用）"""
+        if self.is_stock or self.strike is None:
+            return 0.0  # 股票没有名义价值概念
         return abs(self.quantity) * self.strike * self.lot_size
 
     def update_market_value(
         self,
         current_price: float,
-        underlying_price: float,
+        underlying_price: float = 0.0,
     ) -> None:
         """更新市值
 
         Args:
-            current_price: 当前期权价格 (per share)
-            underlying_price: 当前标的价格
+            current_price: 当前价格（期权价格 per share 或股票价格 per share）
+            underlying_price: 当前标的价格（期权专用，股票不需要）
         """
         self.current_price = current_price
-        self.underlying_price = underlying_price
+        if self.is_option:
+            self.underlying_price = underlying_price
 
         # 市值 = quantity * price * lot_size
         # 多头: 正值, 空头: 负值
@@ -106,21 +130,30 @@ class SimulatedPosition:
         entry_value = self.quantity * self.entry_price * self.lot_size
         self.unrealized_pnl = self.market_value - entry_value
 
-        # 计算保证金 (仅空头需要)
-        if self.is_short:
+        # 计算保证金（仅期权空头需要，股票为 0）
+        if self.is_stock:
+            # 股票不占用保证金
+            self.margin_required = 0.0
+        elif self.is_short_option:
+            # 只对期权空头计算保证金
             self._calculate_margin(underlying_price)
         else:
             self.margin_required = 0.0
 
     def _calculate_margin(self, underlying_price: float) -> None:
-        """计算保证金需求 (Reg T)"""
+        """计算保证金需求 (Reg T) - 仅期权持仓调用"""
+        # 确保只在期权持仓时调用
+        if self.strike is None or self.option_type is None:
+            self.margin_required = 0.0
+            return
+
         if self.option_type == OptionType.PUT:
             margin_per_share = calc_reg_t_margin_short_put(
                 underlying_price=underlying_price,
                 strike=self.strike,
                 premium=self.current_price,
             )
-        else:
+        else:  # OptionType.CALL
             margin_per_share = calc_reg_t_margin_short_call(
                 underlying_price=underlying_price,
                 strike=self.strike,
@@ -173,12 +206,18 @@ class AccountSimulator:
     - 到期无价值: 不需要额外操作
     - 被行权: Cash -= Strike * Quantity (被迫买入股票)
 
+    持仓市值更新:
+    - 由 PositionManager 负责，通过 update_position_market_data() 直接更新 SimulatedPosition
+    - BacktestExecutor 每日调用 position_manager.update_all_positions_market_data()
+
     Usage:
         simulator = AccountSimulator(initial_capital=100_000)
 
-        # 卖出 1 张 PUT
+        # 添加期权持仓 (由 PositionManager 创建)
         pos = SimulatedPosition(
             position_id="001",
+            symbol="AAPL 20240315 150P",
+            asset_type=AssetType.OPTION,
             underlying="AAPL",
             option_type=OptionType.PUT,
             strike=150,
@@ -186,14 +225,24 @@ class AccountSimulator:
             quantity=-1,  # 负数=卖出
             entry_price=3.50,
             entry_date=date(2024, 2, 1),
+            lot_size=100,
         )
-        simulator.open_position(pos, total_commission=1.00)  # 1 张合约，手续费由 TradeSimulator 计算
+        simulator.add_position(pos, cash_change=350.0)
 
-        # 每日更新
-        simulator.update_position_value("001", current_price=2.00, underlying_price=155)
+        # 添加股票持仓
+        simulator.add_stock_position(
+            symbol="AAPL",
+            quantity=100,
+            entry_price=100.0,
+            trade_date=date(2024, 3, 1),
+            cash_change=-10000.0,
+        )
 
-        # 平仓
-        pnl = simulator.close_position("001", close_price=1.00, close_date=date(2024, 3, 1), total_commission=1.00)
+        # 移除持仓
+        pnl = simulator.remove_position("001", cash_change=-150.0, realized_pnl=50.0)
+
+        # 获取账户状态
+        state = simulator.get_account_state()
     """
 
     def __init__(
@@ -251,7 +300,7 @@ class AccountSimulator:
 
         这是 open_position 的新版本，供重构后的 PositionTracker 使用。
         Position 层负责计算 position 的字段，Account 层只负责：
-        1. 检查保证金
+        1. 检查保证金（期权持仓）
         2. 更新现金 (直接使用传入的 cash_change，不重新计算)
         3. 存储持仓
 
@@ -262,7 +311,19 @@ class AccountSimulator:
         Returns:
             是否成功添加持仓
         """
-        # 检查是否有足够的保证金
+        # 股票不占用保证金，跳过保证金检查
+        if position.is_stock:
+            # 直接更新现金和持仓
+            self._cash += cash_change
+            self._positions[position.position_id] = position
+            logger.debug(
+                f"Added stock position {position.position_id}: "
+                f"{position.quantity} {position.symbol} @ {position.entry_price:.2f}, "
+                f"cash_change={cash_change:.2f}"
+            )
+            return True
+
+        # 检查是否有足够的保证金（仅期权持仓）
         if position.margin_required > self.available_margin:
             logger.warning(
                 f"Insufficient margin for {position.symbol}: "
@@ -329,39 +390,136 @@ class AccountSimulator:
 
         return True
 
-    def update_position_value(
+    def add_stock_position(
+        self,
+        symbol: str,
+        quantity: int,
+        entry_price: float,
+        trade_date: date,
+        cash_change: float = 0.0,  # 默认现金变动为 0
+    ) -> str:
+        """添加股票持仓
+
+        Args:
+            symbol: 股票代码
+            quantity: 数量（正数=多头，负数=空头）
+            entry_price: 开仓价格
+            trade_date: 开仓日期
+            cash_change: 现金变动（由调用方传入）
+
+        Returns:
+            持仓 ID（格式：{symbol}-STOCK）
+
+        Raises:
+            ValueError: 现金不足时抛出异常
+        """
+        position_id = f"{symbol}-STOCK"
+
+        # 检查现金是否足够（买入时 cash_change < 0）
+        if cash_change < 0 and abs(cash_change) > self._cash:
+            required = abs(cash_change)
+            available = self._cash
+            raise ValueError(
+                f"Insufficient cash to buy {abs(quantity)} {symbol} @ ${entry_price:.2f}: "
+                f"required=${required:.2f}, available=${available:.2f}"
+            )
+
+        # 创建股票持仓
+        position = SimulatedPosition(
+            position_id=position_id,
+            symbol=symbol,
+            asset_type=AssetType.STOCK,
+            quantity=quantity,
+            entry_price=entry_price,
+            entry_date=trade_date,
+            lot_size=1,  # 股票 lot_size = 1
+            margin_required=0.0,  # 股票不占用保证金
+            current_price=entry_price,
+            market_value=quantity * entry_price,
+            unrealized_pnl=0.0,
+        )
+
+        # 添加持仓
+        self._positions[position_id] = position
+        # 更新现金
+        self._cash += cash_change
+
+        logger.debug(
+            f"Added stock position {position_id}: "
+            f"{quantity} {symbol} @ ${entry_price:.2f}, cash_change=${cash_change:.2f}"
+        )
+
+        return position_id
+
+    def update_stock_position(
         self,
         position_id: str,
-        current_price: float,
-        underlying_price: float,
+        quantity_change: int,
+        new_price: float,
+        cash_change: float,
     ) -> None:
-        """更新持仓市值
+        """更新现有股票持仓的数量和市值
 
         Args:
-            position_id: 持仓 ID
-            current_price: 当前期权价格
-            underlying_price: 当前标的价格
+            position_id: 持仓 ID（格式：{symbol}-STOCK）
+            quantity_change: 数量变化（正数=增加，负数=减少）
+            new_price: 新价格（用于更新市值）
+            cash_change: 现金变动
         """
         if position_id not in self._positions:
+            logger.warning(f"Stock position not found: {position_id}")
             return
 
-        self._positions[position_id].update_market_value(current_price, underlying_price)
+        position = self._positions[position_id]
 
-    def update_all_positions(
-        self,
-        price_func,
-    ) -> None:
-        """更新所有持仓市值
+        # 更新数量
+        position.quantity += quantity_change
+        position.current_price = new_price
+        position.market_value = position.quantity * new_price
+
+        # 更新未实现盈亏
+        entry_value = position.quantity * position.entry_price
+        position.unrealized_pnl = position.market_value - entry_value
+
+        # 更新现金
+        self._cash += cash_change
+
+        # 如果数量变为 0，移除持仓
+        if position.quantity == 0:
+            # 移动到已平仓列表
+            self._closed_positions.append(position)
+            del self._positions[position_id]
+            logger.debug(f"Stock position {position_id} closed (quantity=0)")
+        else:
+            logger.debug(
+                f"Updated stock position {position_id}: "
+                f"quantity_change={quantity_change}, new_price=${new_price:.2f}, "
+                f"cash_change=${cash_change:.2f}"
+            )
+
+    def get_stock_position(self, symbol: str) -> SimulatedPosition | None:
+        """获取股票持仓
 
         Args:
-            price_func: 获取价格的函数 (position_id) -> (option_price, underlying_price)
+            symbol: 股票代码
+
+        Returns:
+            股票持仓对象，不存在则返回 None
         """
-        for pos_id, position in self._positions.items():
-            try:
-                option_price, underlying_price = price_func(pos_id)
-                position.update_market_value(option_price, underlying_price)
-            except Exception as e:
-                logger.warning(f"Failed to update position {pos_id}: {e}")
+        position_id = f"{symbol}-STOCK"
+        return self._positions.get(position_id)
+
+    def get_stock_quantity(self, symbol: str) -> int:
+        """获取股票持仓数量
+
+        Args:
+            symbol: 股票代码
+
+        Returns:
+            持仓数量（0 表示无持仓）
+        """
+        position = self.get_stock_position(symbol)
+        return position.quantity if position else 0
 
     def take_snapshot(self, snapshot_date: date) -> EquitySnapshot:
         """记录每日权益快照
@@ -376,7 +534,8 @@ class AccountSimulator:
 
         # 计算各项指标
         positions_value = sum(pos.market_value for pos in self._positions.values())
-        margin_used = sum(pos.margin_required for pos in self._positions.values())
+        # 只计算期权持仓的保证金，股票不占用保证金
+        margin_used = sum(pos.margin_required for pos in self._positions.values() if pos.is_option)
         unrealized_pnl = sum(pos.unrealized_pnl for pos in self._positions.values())
 
         # NLV = Cash + Positions Value
@@ -418,7 +577,8 @@ class AccountSimulator:
         # 按标的计算暴露
         exposure_by_underlying: dict[str, float] = {}
         for pos in self._positions.values():
-            underlying = pos.underlying
+            # 股票使用 symbol，期权使用 underlying
+            underlying = pos.underlying if pos.underlying else pos.symbol
             if underlying not in exposure_by_underlying:
                 exposure_by_underlying[underlying] = 0.0
             exposure_by_underlying[underlying] += pos.notional_value
@@ -434,8 +594,8 @@ class AccountSimulator:
             cash_ratio=cash_ratio,
             gross_leverage=gross_leverage,
             total_position_count=len(self._positions),
-            option_position_count=len(self._positions),
-            stock_position_count=0,
+            option_position_count=sum(1 for pos in self._positions.values() if pos.is_option),
+            stock_position_count=sum(1 for pos in self._positions.values() if pos.is_stock),
             exposure_by_underlying=exposure_by_underlying,
             timestamp=datetime.now(),
         )
@@ -448,8 +608,8 @@ class AccountSimulator:
 
     @property
     def margin_used(self) -> float:
-        """已用保证金"""
-        return sum(pos.margin_required for pos in self._positions.values())
+        """已用保证金（仅期权持仓，股票不占用保证金）"""
+        return sum(pos.margin_required for pos in self._positions.values() if pos.is_option)
 
     @property
     def available_margin(self) -> float:
@@ -487,6 +647,14 @@ class AccountSimulator:
         if not position.is_short:
             return 0.0
 
+        # 股票不占用保证金
+        if position.is_stock:
+            return 0.0
+
+        # 只对期权持仓计算保证金
+        if position.strike is None or position.option_type is None:
+            return 0.0
+
         # 使用开仓价格和当前标的价格估算
         underlying_price = position.underlying_price or position.strike
 
@@ -496,7 +664,7 @@ class AccountSimulator:
                 strike=position.strike,
                 premium=position.entry_price,
             )
-        else:
+        else:  # OptionType.CALL
             margin_per_share = calc_reg_t_margin_short_call(
                 underlying_price=underlying_price,
                 strike=position.strike,

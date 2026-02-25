@@ -29,10 +29,13 @@ try:
 except ImportError:
     PLOTLY_AVAILABLE = False
 
+from src.backtest.engine.trade_simulator import TradeAction
+
 if TYPE_CHECKING:
     from src.backtest.analysis.metrics import BacktestMetrics
     from src.backtest.attribution.models import EntryQualityReport, ExitQualityReport
     from src.backtest.engine.backtest_executor import BacktestResult
+    from src.backtest.engine.trade_simulator import TradeAction
     from src.backtest.optimization.benchmark import BenchmarkResult
     from src.backtest.visualization.attribution_charts import AttributionCharts
 
@@ -183,18 +186,20 @@ class BacktestDashboard:
                 price = record.price
                 pnl = record.pnl
 
-                if record.action == "open":
+                if record.action in (TradeAction.OPEN, TradeAction.STOCK_BUY):
                     hover = (
                         f"<b>OPEN</b><br>"
                         f"{record.underlying} {option_type_str} ${strike:.0f}<br>"
                         f"Qty: {qty} @ ${price:.2f}"
                     )
                     open_data.append((record.trade_date, nlv_by_date[record.trade_date], hover))
-                elif record.action in ("close", "expire"):
+                elif record.action in (TradeAction.CLOSE, TradeAction.EXPIRE, TradeAction.ASSIGN_PUT, TradeAction.ASSIGN_CALL, TradeAction.STOCK_SELL):
+                    # 根据action类型显示不同标题
+                    action_label = "CLOSE" if record.action == TradeAction.CLOSE else "EXPIRE" if record.action == TradeAction.EXPIRE else "ASSIGN" if record.action in (TradeAction.ASSIGN_PUT, TradeAction.ASSIGN_CALL) else str(record.action.value).upper()
                     pnl_str = f"${pnl:,.2f}" if pnl else "-"
                     pnl_color = "green" if pnl and pnl > 0 else "red" if pnl and pnl < 0 else "gray"
                     hover = (
-                        f"<b>CLOSE</b><br>"
+                        f"<b>{action_label}</b><br>"
                         f"{record.underlying} {option_type_str} ${strike:.0f}<br>"
                         f"Qty: {qty} @ ${price:.2f}<br>"
                         f"<span style='color:{pnl_color}'>PnL: {pnl_str}</span>"
@@ -415,9 +420,11 @@ class BacktestDashboard:
 
         for record in trade_records:
             key = record.position_id or record.symbol
-            if record.action == "open":
+            # 开仓类：期权开仓 + 股票买入
+            if record.action in (TradeAction.OPEN, TradeAction.STOCK_BUY):
                 positions_dict[key]["open"] = record
-            elif record.action in ("close", "expire"):
+            # 平仓类：期权平仓/到期/行权 + 股票卖出
+            elif record.action in (TradeAction.CLOSE, TradeAction.EXPIRE, TradeAction.ASSIGN_PUT, TradeAction.ASSIGN_CALL, TradeAction.STOCK_SELL):
                 positions_dict[key]["close"] = record
 
         # 构建时间线数据
@@ -574,10 +581,12 @@ class BacktestDashboard:
             underlying = getattr(record, "underlying", "Unknown")
             option_type = getattr(record, "option_type", None)
 
-            if record.action in ("close", "expire") and record.pnl is not None:
+            # 平仓类（计算 PnL）：期权平仓/到期/行权 + 股票卖出
+            if record.action in (TradeAction.CLOSE, TradeAction.EXPIRE, TradeAction.ASSIGN_PUT, TradeAction.ASSIGN_CALL, TradeAction.STOCK_SELL) and record.pnl is not None:
                 stats_by_underlying[underlying]["pnl"] += record.pnl
 
-            if record.action == "open":
+            # 开仓类：期权开仓 + 股票买入
+            if record.action in (TradeAction.OPEN, TradeAction.STOCK_BUY):
                 stats_by_underlying[underlying]["trades"] += 1
                 stats_by_underlying[underlying]["contracts"] += abs(record.quantity)
 
@@ -776,9 +785,9 @@ class BacktestDashboard:
                     continue
                 price = close_by_date[rec.trade_date]
                 dt_str = rec.trade_date.isoformat()
-                if rec.action == "open":
+                if rec.action == "OPEN":
                     open_marks.append((dt_str, price))
-                elif rec.action in ("close", "expire"):
+                elif rec.action in ("CLOSE", "EXPIRE"):
                     close_marks.append((dt_str, price))
 
             if open_marks:
@@ -1244,7 +1253,8 @@ class BacktestDashboard:
         for record in sorted_records:
             # 获取属性
             trade_date = record.trade_date.isoformat()
-            action = record.action.upper()
+            # 使用 .value 获取枚举的字符串值，然后转大写
+            action = str(record.action.value).upper() if hasattr(record.action, "value") else str(record.action).upper()
             underlying = getattr(record, "underlying", "N/A")
             option_type = getattr(record, "option_type", None)
             option_type_str = option_type.name if hasattr(option_type, "name") else str(option_type) if option_type else "N/A"
@@ -1273,11 +1283,11 @@ class BacktestDashboard:
                 pnl_str = "-"
 
             # 操作颜色
-            action_color = "#2ecc71" if action == "OPEN" else "#e74c3c" if action == "CLOSE" else "#ff7f0e"
+            action_color = "#2ecc71" if action == "OPEN" else "#e74c3c" if action == "CLOSE" else "#ff7f0e" if action == "EXPIRE" else "#3498db" if action == "ROLL" else "#95a5a6" if action == "ASSIGN_PUT" else "#e67e22" if action == "ASSIGN_CALL" else "#16a085" if action == "STOCK_BUY" else "#27ae60" if action == "STOCK_SELL" else "#999"
 
-            # Reason (仅 CLOSE/ROLL 显示)
+            # Reason (仅 CLOSE/ROLL/EXPIRE/ASSIGN_PUT/ASSIGN_CALL 显示)
             reason = getattr(record, "reason", None)
-            if action in ("CLOSE", "ROLL", "EXPIRE") and reason:
+            if action in ("CLOSE", "ROLL", "EXPIRE", "ASSIGN_PUT", "ASSIGN_CALL") and reason:
                 reason_str = reason
             else:
                 reason_str = "-"
