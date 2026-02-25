@@ -480,7 +480,7 @@ class BacktestDashboard:
             return fig
 
         # 按标的和开始日期排序
-        timeline_data.sort(key=lambda x: (x["underlying"], x["start"]))
+        timeline_data.sort(key=lambda x: (x["underlying"] or "", x["start"]))
 
         # 创建 Gantt 图
         fig = go.Figure()

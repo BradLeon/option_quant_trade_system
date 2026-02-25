@@ -469,6 +469,10 @@ class PositionManager:
         ref_date: date,
     ) -> PositionData:
         """将 SimulatedPosition 转换为 PositionData"""
+        # 正股持仓 (期权行权后) 没有 expiration，跳过监控
+        if position.expiration is None:
+            raise ValueError(f"Stock position {position.symbol} has no expiration, skipping")
+
         # 计算 DTE
         dte = (position.expiration - ref_date).days
 
