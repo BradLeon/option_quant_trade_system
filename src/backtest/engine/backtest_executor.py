@@ -1218,18 +1218,31 @@ class BacktestExecutor:
                 option_price = position.current_price
 
             # 1. Trade 层：模拟交易执行
-            # type: ignore[arg-type] - positions always have non-None option fields
-            execution = self._trade_simulator.execute_close(
-                symbol=position.symbol,
-                underlying=position.underlying,  # type: ignore[arg-type]
-                option_type=position.option_type,  # type: ignore[arg-type]
-                strike=position.strike,  # type: ignore[arg-type]
-                expiration=position.expiration,  # type: ignore[arg-type]
-                quantity=-position.quantity,  # 平仓方向相反
-                mid_price=option_price,
-                trade_date=trade_date,
-                reason=decision.reason or "monitor_signal",
-            )
+            if position.is_stock:
+                # 股票持仓：使用股票交易路径 (lot_size=1)
+                from src.backtest.engine.trade_simulator import OrderSide
+                execution = self._trade_simulator.execute_stock_trade(
+                    symbol=position.symbol,
+                    side=OrderSide.SELL,
+                    quantity=-position.quantity,  # 正数卖出
+                    price=position.current_price,
+                    trade_date=trade_date,
+                    reason=decision.reason or "monitor_signal",
+                )
+            else:
+                # 期权持仓：使用期权交易路径 (lot_size=100)
+                # type: ignore[arg-type] - positions always have non-None option fields
+                execution = self._trade_simulator.execute_close(
+                    symbol=position.symbol,
+                    underlying=position.underlying,  # type: ignore[arg-type]
+                    option_type=position.option_type,  # type: ignore[arg-type]
+                    strike=position.strike,  # type: ignore[arg-type]
+                    expiration=position.expiration,  # type: ignore[arg-type]
+                    quantity=-position.quantity,  # 平仓方向相反
+                    mid_price=option_price,
+                    trade_date=trade_date,
+                    reason=decision.reason or "monitor_signal",
+                )
 
             # 1.5. Trade 层：回填 underlying_price 到交易记录
             try:
