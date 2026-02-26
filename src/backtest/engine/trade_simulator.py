@@ -788,16 +788,13 @@ class TradeSimulator:
         # 计算手续费（按股数）
         commission = self._commission_model.calculate_stock(abs(quantity))
 
-        # 计算金额
-        # BUY: -price * quantity (支付现金)
-        # SELL: +price * quantity (收取现金)
-        if side == OrderSide.BUY:
-            gross_amount = -quantity * fill_price  # 负数 = 现金流出
-        else:
-            gross_amount = quantity * fill_price  # 正数 = 现金流入
+        # 计算金额 — 统一公式，与期权交易 (execute_open / execute_expire) 一致
+        # quantity 有符号: 正=买入, 负=卖出
+        # BUY  (qty > 0): gross = -qty * price < 0  → 现金流出
+        # SELL (qty < 0): gross = -qty * price > 0  → 现金流入
+        gross_amount = -quantity * fill_price
 
         # 净金额 = 成交金额 - 手续费
-        # 注意: 手续费总是从账户扣除，所以无论买卖都是 -commission
         net_amount = gross_amount - commission
 
         # 生成执行记录

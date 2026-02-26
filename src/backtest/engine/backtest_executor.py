@@ -774,26 +774,6 @@ class BacktestExecutor:
             f"(assignment), cash change: ${execution.net_amount:.2f}"
         )
 
-        # 记录股票买入交易
-        stock_record = TradeRecord(
-            trade_id=f"ST-{underlying}-BUY-{execution.execution_id}",
-            execution_id=execution.execution_id,
-            symbol=underlying,
-            underlying=None,  # 股票交易无标的
-            option_type=None,
-            strike=None,
-            expiration=None,
-            trade_date=trade_date,
-            action=TradeAction.STOCK_BUY,
-            asset_type=AssetType.STOCK,  # 股票交易
-            quantity=shares,
-            price=strike,
-            commission=execution.commission,
-            gross_amount=execution.gross_amount,
-            net_amount=execution.net_amount,
-            pnl=None,  # 股票交易单独计算 PnL
-        )
-        self._trade_simulator.trade_records.append(stock_record)
 
     def _handle_short_call_assignment(
         self,
@@ -823,7 +803,7 @@ class BacktestExecutor:
             execution = self._trade_simulator.execute_stock_trade(
                 symbol=underlying,
                 side=OrderSide.SELL,
-                quantity=shares_required,
+                quantity=-shares_required,  # 负数表示卖出
                 price=strike,
                 trade_date=trade_date,
                 reason="assigned_sell",
@@ -851,32 +831,12 @@ class BacktestExecutor:
                 cash_change=buy_execution.net_amount,  # 现金变动（买入为负）
             )
 
-            # 记录股票买入交易
-            stock_buy_record = TradeRecord(
-                trade_id=f"ST-{underlying}-BUY-{buy_execution.execution_id}",
-                execution_id=buy_execution.execution_id,
-                symbol=underlying,
-                underlying=None,  # 股票交易无标的
-                option_type=None,
-                strike=None,
-                expiration=None,
-                trade_date=trade_date,
-                action=TradeAction.STOCK_BUY,
-                asset_type=AssetType.STOCK,  # 股票交易
-                quantity=buy_shares,
-                price=market_price,
-                commission=buy_execution.commission,
-                gross_amount=buy_execution.gross_amount,
-                net_amount=buy_execution.net_amount,
-                pnl=None,  # 股票交易单独计算 PnL
-            )
-            self._trade_simulator.trade_records.append(stock_buy_record)
 
             # 然后卖出所需股票
             execution = self._trade_simulator.execute_stock_trade(
                 symbol=underlying,
                 side=OrderSide.SELL,
-                quantity=shares_required,
+                quantity=-shares_required,  # 负数表示卖出
                 price=strike,
                 trade_date=trade_date,
                 reason="assigned_sell",
@@ -920,26 +880,6 @@ class BacktestExecutor:
             f"(assignment), cash change: ${execution.net_amount:.2f}"
         )
 
-        # 记录股票卖出交易
-        stock_sell_record = TradeRecord(
-            trade_id=f"ST-{underlying}-SELL-{execution.execution_id}",
-            execution_id=execution.execution_id,
-            symbol=underlying,
-            underlying=None,  # 股票交易无标的
-            option_type=None,
-            strike=None,
-            expiration=None,
-            trade_date=trade_date,
-            action=TradeAction.STOCK_SELL,
-            asset_type=AssetType.STOCK,  # 股票交易
-            quantity=shares_required,
-            price=strike,
-            commission=execution.commission,
-            gross_amount=execution.gross_amount,
-            net_amount=execution.net_amount,
-            pnl=None,  # 股票交易单独计算 PnL
-        )
-        self._trade_simulator.trade_records.append(stock_sell_record)
 
     def _run_monitoring(self) -> list[PositionSuggestion]:
         """运行持仓监控
@@ -1224,7 +1164,7 @@ class BacktestExecutor:
                 execution = self._trade_simulator.execute_stock_trade(
                     symbol=position.symbol,
                     side=OrderSide.SELL,
-                    quantity=-position.quantity,  # 正数卖出
+                    quantity=-position.quantity,  # 负数表示卖出
                     price=position.current_price,
                     trade_date=trade_date,
                     reason=decision.reason or "monitor_signal",
