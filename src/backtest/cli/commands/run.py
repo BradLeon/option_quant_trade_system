@@ -115,8 +115,8 @@ logger = logging.getLogger(__name__)
     "--benchmark",
     "-B",
     type=click.Choice(["QQQ", "SPY"], case_sensitive=False),
-    default="QQQ",
-    help="基准标的 (默认: QQQ)",
+    default="SPY",
+    help="基准标的 (默认: SPY)",
 )
 def run(
     name: str,

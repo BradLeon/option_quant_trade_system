@@ -578,25 +578,14 @@ class PositionManager:
                 ):
                     greeks = quote.greeks if hasattr(quote, "greeks") else None
                     if greeks:
-                        raw_delta = greeks.delta if greeks.delta is not None else None
-                        position_delta = (
-                            raw_delta * position.quantity if raw_delta else None
-                        )
-                        position_gamma = (
-                            greeks.gamma * abs(position.quantity) if greeks.gamma else None
-                        )
-                        position_theta = (
-                            greeks.theta * position.quantity if greeks.theta else None
-                        )
-                        position_vega = (
-                            greeks.vega * abs(position.quantity) if greeks.vega else None
-                        )
-
+                        # Return raw per-share Greeks (without quantity multiplication).
+                        # The engine layer's calc_portfolio_*() functions handle
+                        # quantity × contract_multiplier correctly.
                         return (
-                            position_delta,
-                            position_gamma,
-                            position_theta,
-                            position_vega,
+                            greeks.delta,
+                            greeks.gamma,
+                            greeks.theta,
+                            greeks.vega,
                             quote.iv,
                         )
 

@@ -163,7 +163,7 @@ class MonitoringPipeline:
             # 打印组合级预警详情
             for alert in portfolio_alerts:
                 level_icon = {"red": "🔴", "yellow": "🟡", "green": "🟢"}.get(alert.level.value, "⚪")
-                value_str = f"{alert.current_value:.4f}" if alert.current_value is not None else "N/A"
+                value_str = f"{alert.current_value:.5f}" if alert.current_value is not None else "N/A"
                 threshold_str = alert.threshold_range or (f"{alert.threshold_value:.4f}" if alert.threshold_value else "N/A")
                 logger.info(
                     f"  {level_icon} [Portfolio] {alert.alert_type.value}: "

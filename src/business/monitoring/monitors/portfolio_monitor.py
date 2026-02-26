@@ -190,11 +190,14 @@ class PortfolioMonitor:
             if in_green:
                 message = threshold.green_message.format(value=value) \
                     if threshold.green_message else f"{metric_name} 正常: {value:.2f}"
+                # Build threshold_range string for display
+                range_str = self._format_green_range(threshold)
                 alerts.append(Alert(
                     alert_type=alert_type,
                     level=AlertLevel.GREEN,
                     message=message,
                     current_value=value,
+                    threshold_range=range_str,
                     suggested_action=threshold.green_action or None,
                 ))
                 return alerts
@@ -202,15 +205,49 @@ class PortfolioMonitor:
         # 不在红色范围，也不在绿色范围 -> 黄色预警
         message = threshold.yellow_message.format(value=value) \
             if threshold.yellow_message else f"{metric_name} 偏离正常范围: {value:.2f}"
+        # Build threshold_range string for display
+        range_str = self._format_yellow_range(threshold)
         alerts.append(Alert(
             alert_type=alert_type,
             level=AlertLevel.YELLOW,
             message=message,
             current_value=value,
+            threshold_range=range_str,
             suggested_action=threshold.yellow_action or None,
         ))
 
         return alerts
+
+    @staticmethod
+    def _format_green_range(threshold: ThresholdRange) -> str:
+        """Format green range for display."""
+        if threshold.green:
+            lo, hi = threshold.green
+            if hi == float("inf"):
+                return f"≥{lo}"
+            elif lo == float("-inf"):
+                return f"≤{hi}"
+            else:
+                return f"{lo}~{hi}"
+        return "N/A"
+
+    @staticmethod
+    def _format_yellow_range(threshold: ThresholdRange) -> str:
+        """Format yellow band boundaries for display."""
+        parts = []
+        if threshold.green:
+            lo, hi = threshold.green
+            if hi == float("inf"):
+                parts.append(f"绿≥{lo}")
+            elif lo == float("-inf"):
+                parts.append(f"绿≤{hi}")
+            else:
+                parts.append(f"绿{lo}~{hi}")
+        if threshold.red_above is not None:
+            parts.append(f"红>{threshold.red_above}")
+        if threshold.red_below is not None:
+            parts.append(f"红<{threshold.red_below}")
+        return ", ".join(parts) if parts else "N/A"
 
     def get_status(self, alerts: list[Alert]) -> MonitorStatus:
         """根据预警确定组合状态"""
