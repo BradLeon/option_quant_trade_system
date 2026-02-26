@@ -1494,18 +1494,23 @@ class BacktestExecutor:
         Returns:
             SimulatedPosition 或 None
         """
-        # 尝试按 underlying + strike + expiry 匹配 (从 Account 层获取持仓)
+        # 优先: 用 position_id 精确匹配
+        if decision.position_id and decision.position_id in self._account_simulator.positions:
+            return self._account_simulator.positions[decision.position_id]
+
+        # 次选: 按 underlying + strike + expiry 匹配 (从 Account 层获取持仓)
         for position in self._account_simulator.positions.values():
             if (
                 position.underlying == decision.underlying
                 and position.strike == decision.strike
+                and position.expiration is not None
                 and position.expiration.isoformat() == decision.expiry
             ):
                 return position
 
-        # 尝试按 symbol 匹配
+        # 兜底: 按 symbol 匹配 (跳过正股持仓，避免误匹配)
         for position in self._account_simulator.positions.values():
-            if decision.underlying in position.symbol:
+            if decision.underlying in position.symbol and not position.is_stock:
                 return position
 
         return None

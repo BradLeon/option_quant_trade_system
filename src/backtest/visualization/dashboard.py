@@ -1287,9 +1287,9 @@ class BacktestDashboard:
             # 操作颜色
             action_color = "#2ecc71" if action == "OPEN" else "#e74c3c" if action == "CLOSE" else "#ff7f0e" if action == "EXPIRE" else "#3498db" if action == "ROLL" else "#95a5a6" if action == "ASSIGN_PUT" else "#e67e22" if action == "ASSIGN_CALL" else "#16a085" if action == "STOCK_BUY" else "#27ae60" if action == "STOCK_SELL" else "#999"
 
-            # Reason (仅 CLOSE/ROLL/EXPIRE/ASSIGN_PUT/ASSIGN_CALL 显示)
+            # Reason (所有非 OPEN 类型均显示)
             reason = getattr(record, "reason", None)
-            if action in ("CLOSE", "ROLL", "EXPIRE", "ASSIGN_PUT", "ASSIGN_CALL") and reason:
+            if action != "OPEN" and reason:
                 reason_str = reason
             else:
                 reason_str = "-"

@@ -164,6 +164,7 @@ class TradingDecision:
     # 交易标的
     symbol: str
     underlying: str | None = None
+    position_id: str | None = None  # 持仓 ID (Monitor 信号传入，用于精确匹配)
     option_type: str | None = None  # "put" / "call"
     strike: float | None = None
     expiry: str | None = None  # YYYY-MM-DD
