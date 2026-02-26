@@ -424,7 +424,31 @@ class AccountSimulator:
                 f"required=${required:.2f}, available=${available:.2f}"
             )
 
-        # 创建股票持仓
+        # 如果已有同 symbol 的股票持仓，累加数量并重算加权平均成本
+        if position_id in self._positions:
+            existing = self._positions[position_id]
+            old_qty = existing.quantity
+            total_qty = old_qty + quantity
+            if total_qty != 0:
+                avg_price = (old_qty * existing.entry_price
+                             + quantity * entry_price) / total_qty
+            else:
+                avg_price = entry_price
+            existing.quantity = total_qty
+            existing.entry_price = avg_price
+            existing.current_price = entry_price
+            existing.market_value = total_qty * entry_price
+            existing.unrealized_pnl = total_qty * (entry_price - avg_price)
+            self._cash += cash_change
+
+            logger.debug(
+                f"Accumulated stock position {position_id}: "
+                f"{old_qty} + {quantity} = {total_qty} {symbol}, "
+                f"avg_price=${avg_price:.2f}, cash_change=${cash_change:.2f}"
+            )
+            return position_id
+
+        # 创建新股票持仓
         position = SimulatedPosition(
             position_id=position_id,
             symbol=symbol,

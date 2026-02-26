@@ -152,6 +152,9 @@ class BacktestResult:
     trade_records: list[TradeRecord] = field(default_factory=list)
     executions: list[TradeExecution] = field(default_factory=list)
 
+    # 回测结束时的未平仓持仓 (用于持仓报表)
+    open_positions: list[dict] = field(default_factory=list)
+
     # 执行信息
     execution_time_seconds: float = 0.0
     trading_days: int = 0
@@ -187,6 +190,7 @@ class BacktestResult:
         if include_details:
             result["trade_records"] = [t.to_dict() for t in self.trade_records]
             result["daily_snapshots"] = [s.to_dict() for s in self.daily_snapshots]
+            result["open_positions"] = self.open_positions
         return result
 
 
@@ -1658,6 +1662,7 @@ class BacktestExecutor:
             execution_time_seconds=execution_time,
             trading_days=len(trading_days),
             errors=self._errors,
+            open_positions=self._snapshot_open_positions(),
         )
 
     def _build_empty_result(self, start_time: datetime) -> BacktestResult:
@@ -1692,6 +1697,33 @@ class BacktestExecutor:
             trading_days=0,
             errors=["No trading days found in date range"],
         )
+
+    def _snapshot_open_positions(self) -> list[dict]:
+        """快照回测结束时的未平仓持仓
+
+        Returns:
+            持仓字典列表 (用于持仓报表)
+        """
+        positions = []
+        for pos in self._account_simulator.positions.values():
+            positions.append({
+                "position_id": pos.position_id,
+                "symbol": pos.symbol,
+                "asset_type": pos.asset_type.value if hasattr(pos.asset_type, 'value') else str(pos.asset_type),
+                "underlying": pos.underlying,
+                "option_type": pos.option_type.value if pos.option_type else None,
+                "strike": pos.strike,
+                "expiration": pos.expiration.isoformat() if pos.expiration else None,
+                "quantity": pos.quantity,
+                "entry_price": pos.entry_price,
+                "current_price": pos.current_price,
+                "market_value": pos.market_value,
+                "unrealized_pnl": pos.unrealized_pnl,
+                "realized_pnl": pos.realized_pnl,
+                "lot_size": pos.lot_size,
+            })
+
+        return positions
 
     def get_equity_curve(self) -> list[tuple[date, float]]:
         """获取权益曲线

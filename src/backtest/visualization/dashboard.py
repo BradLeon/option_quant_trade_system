@@ -1238,6 +1238,130 @@ class BacktestDashboard:
         """
         return html
 
+    def create_holdings_table(self) -> str:
+        """创建持仓报表 (HTML)
+
+        显示回测结束时的未平仓持仓，包括现金和 NLV 汇总行。
+        参考 IBKR Portfolio 面板的风格。
+
+        Returns:
+            HTML 字符串
+        """
+        open_positions = self._result.open_positions
+        last_snapshot = self._result.daily_snapshots[-1] if self._result.daily_snapshots else None
+
+        cash = last_snapshot.cash if last_snapshot else 0.0
+        nlv = last_snapshot.nlv if last_snapshot else 0.0
+
+        def fmt_money(v: float, show_sign: bool = False) -> str:
+            if v is None:
+                return "--"
+            prefix = "+" if show_sign and v > 0 else ""
+            return f"{prefix}${v:,.2f}"
+
+        def pnl_cell(v: float | None) -> str:
+            if v is None or v == 0:
+                return '<td style="text-align: right;">--</td>'
+            color = "#2ecc71" if v > 0 else "#e74c3c"
+            return f'<td style="text-align: right; color: {color}; font-weight: bold;">{fmt_money(v, show_sign=True)}</td>'
+
+        # 构建仪器名称
+        def instrument_name(pos: dict) -> str:
+            if pos["asset_type"] == "stock":
+                return f'{pos["symbol"]} STOCK'
+            # 期权: SPY Mar14'25 604 PUT
+            parts = [pos.get("underlying") or pos["symbol"]]
+            if pos.get("expiration"):
+                parts.append(pos["expiration"])
+            if pos.get("strike"):
+                parts.append(str(pos["strike"]))
+            if pos.get("option_type"):
+                parts.append(pos["option_type"].upper())
+            return " ".join(parts)
+
+        rows = []
+
+        # Cash row
+        cash_color = "#2ecc71" if cash >= 0 else "#e74c3c"
+        rows.append(f"""
+            <tr style="background-color: #1a1a2e; color: #fff;">
+                <td></td>
+                <td style="font-weight: bold;">USD CASH</td>
+                <td></td>
+                <td style="text-align: right; color: {cash_color}; font-weight: bold;">{fmt_money(cash)}</td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+            </tr>
+        """)
+
+        # Position rows
+        for pos in open_positions:
+            name = instrument_name(pos)
+            qty = pos["quantity"]
+            mv = pos["market_value"]
+            avg_px = pos["entry_price"]
+            cur_px = pos["current_price"]
+            unrl = pos["unrealized_pnl"]
+            real = pos.get("realized_pnl")
+
+            # Row background (alternate)
+            bg = "#0d1117"
+
+            rows.append(f"""
+            <tr style="background-color: {bg}; color: #c9d1d9;">
+                <td></td>
+                <td style="font-weight: bold;">{name}</td>
+                <td style="text-align: right;">{qty}</td>
+                <td style="text-align: right;">{fmt_money(mv)}</td>
+                <td style="text-align: right;">${avg_px:,.2f}</td>
+                <td style="text-align: right;">${cur_px:,.2f}</td>
+                {pnl_cell(unrl)}
+                {pnl_cell(real)}
+            </tr>
+            """)
+
+        # NLV summary row
+        nlv_color = "#2ecc71" if nlv >= self._result.initial_capital else "#e74c3c"
+        total_unrl = sum(p["unrealized_pnl"] for p in open_positions if p.get("unrealized_pnl"))
+        rows.append(f"""
+            <tr style="background-color: #161b22; color: #fff; font-weight: bold; border-top: 2px solid #30363d;">
+                <td></td>
+                <td>NET LIQUIDATION VALUE</td>
+                <td></td>
+                <td style="text-align: right; color: {nlv_color};">{fmt_money(nlv)}</td>
+                <td></td>
+                <td></td>
+                {pnl_cell(total_unrl)}
+                <td></td>
+            </tr>
+        """)
+
+        table_html = f"""
+        <h2 style="text-align: center; color: #333; margin-top: 30px;">Portfolio Holdings (End of Backtest)</h2>
+        <div style="overflow-x: auto; margin: 10px 0;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px; font-family: 'Consolas', 'Monaco', monospace;">
+            <thead>
+                <tr style="background-color: #21262d; color: #8b949e; font-size: 11px; text-transform: uppercase;">
+                    <th style="padding: 8px 12px; text-align: left; width: 60px;">Dly P&L</th>
+                    <th style="padding: 8px 12px; text-align: left;">Financial Instrument</th>
+                    <th style="padding: 8px 12px; text-align: right;">Position</th>
+                    <th style="padding: 8px 12px; text-align: right;">Market Value</th>
+                    <th style="padding: 8px 12px; text-align: right;">Avg Price</th>
+                    <th style="padding: 8px 12px; text-align: right;">Last Price</th>
+                    <th style="padding: 8px 12px; text-align: right;">Unrlzd P&L</th>
+                    <th style="padding: 8px 12px; text-align: right;">Realized P&L</th>
+                </tr>
+            </thead>
+            <tbody>
+                {"".join(rows)}
+            </tbody>
+        </table>
+        </div>
+        """
+        return table_html
+
     def create_trade_records_table(self) -> str:
         """创建交易记录表格 (HTML)
 
@@ -1565,6 +1689,7 @@ class BacktestDashboard:
         metrics_html = self.create_metrics_panel()
         benchmark_metrics_html = self.create_benchmark_metrics_panel()
         trade_records_html = self.create_trade_records_table()
+        holdings_html = self.create_holdings_table()
 
         # 组装完整 HTML
         charts_combined = "\n".join(
@@ -1618,6 +1743,8 @@ class BacktestDashboard:
         {metrics_html}
 
         {benchmark_metrics_html}
+
+        {holdings_html}
 
         <hr style="margin: 30px 0; border: none; border-top: 1px solid #eee;">
 
