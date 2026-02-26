@@ -111,6 +111,13 @@ logger = logging.getLogger(__name__)
     is_flag=True,
     help="详细输出",
 )
+@click.option(
+    "--benchmark",
+    "-B",
+    type=click.Choice(["QQQ", "SPY"], case_sensitive=False),
+    default="QQQ",
+    help="基准标的 (默认: QQQ)",
+)
 def run(
     name: str,
     start,
@@ -126,6 +133,7 @@ def run(
     report_dir: str,
     check_only: bool,
     verbose: bool,
+    benchmark: str,
 ) -> None:
     """运行回测 Pipeline
 
@@ -187,6 +195,7 @@ def run(
         max_positions=max_positions,
         strategy_types=strategy_types,
         skip_market_check=skip_market_check,
+        benchmark_symbol=benchmark.upper(),
     )
 
     # 创建 Pipeline
@@ -233,7 +242,7 @@ def run(
             br = result.benchmark_result
             excess = br.strategy_total_return - br.benchmark_total_return
             click.echo()
-            click.echo(f"vs SPY: {br.strategy_total_return:.2%} vs {br.benchmark_total_return:.2%}")
+            click.echo(f"vs {br.benchmark_name}: {br.strategy_total_return:.2%} vs {br.benchmark_total_return:.2%}")
             click.echo(f"Excess Return: {excess:.2%}")
 
         if result.attribution_summary:

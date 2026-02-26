@@ -222,7 +222,7 @@ class BacktestPipeline:
         benchmark_result = self._run_benchmark(backtest_result)
         if benchmark_result:
             logger.info(
-                f"vs SPY: {benchmark_result.strategy_total_return:.2%} vs "
+                f"vs {self.config.benchmark_symbol}: {benchmark_result.strategy_total_return:.2%} vs "
                 f"{benchmark_result.benchmark_total_return:.2%}"
             )
 
@@ -338,8 +338,8 @@ class BacktestPipeline:
         stock_start = self.config.start_date - timedelta(days=self.BETA_LOOKBACK_DAYS)
         stock_end = self.config.end_date
 
-        # 回测标的 + SPY (用于 Benchmark 和 Beta)
-        all_symbols = list(set(self.config.symbols + ["SPY"]))
+        # 回测标的 + 基准标的 (用于 Benchmark 和 Beta)
+        all_symbols = list(set(self.config.symbols + ["SPY", self.config.benchmark_symbol]))
 
         # 1. 检查股票数据缺口
         status.stock_gaps = self._data_checker.check_stock_gaps(
@@ -481,7 +481,7 @@ class BacktestPipeline:
 
             provider = DuckDBProvider(str(self._data_dir))
             benchmark = BenchmarkComparison(result)
-            return benchmark.compare_with_spy(provider)
+            return benchmark.compare_with_spy(provider, spy_symbol=self.config.benchmark_symbol)
 
         except Exception as e:
             logger.warning(f"Failed to run benchmark comparison: {e}")
