@@ -666,13 +666,21 @@ class TradeSimulator:
             is_itm = final_underlying_price > strike
             intrinsic_value = max(0, final_underlying_price - strike)
 
-        side = OrderSide.BUY if quantity > 0 else OrderSide.SELL
+        # 传入的 quantity 是持仓数量 (例如 short put 为 -1)
+        # 平仓交易的数量符号应相反
+        trade_qty = -quantity
+        side = OrderSide.BUY if trade_qty > 0 else OrderSide.SELL
 
-        # 到期时的"价格"是内在价值
-        fill_price = intrinsic_value
+        # 恢复内在价值作为结算价 (Cash Settle)
+        # - ITM 行权: 强制按内在价值买回/卖出平仓，记录为交易亏损
+        # - OTM 到期: 价值归零
+        if is_itm:
+            fill_price = intrinsic_value
+        else:
+            fill_price = 0.0
 
-        # 计算金额
-        gross_amount = -quantity * fill_price * effective_lot_size
+        # 真实的毛金额流出（支出/收入）
+        gross_amount = -trade_qty * fill_price * effective_lot_size
 
         # 计算手续费 (根据 ITM/OTM 不同)
         if is_itm:
@@ -698,7 +706,7 @@ class TradeSimulator:
             strike=strike,
             expiration=expiration,
             side=side,
-            quantity=quantity,  # 有符号
+            quantity=trade_qty,  # 平仓交易的数量
             order_price=fill_price,
             fill_price=fill_price,
             slippage=0.0,
@@ -735,7 +743,7 @@ class TradeSimulator:
             trade_date=trade_date,
             action=action,  # ITM: ASSIGN_PUT/ASSIGN_CALL, OTM: EXPIRE
             asset_type=AssetType.OPTION,  # 期权交易
-            quantity=quantity,  # 保持原始符号
+            quantity=trade_qty,  # 平仓交易的数量
             price=fill_price,
             commission=commission,  # ITM: stock commission, OTM: 0
             gross_amount=gross_amount,

@@ -721,15 +721,15 @@ class BacktestExecutor:
         shares_required = abs(position.quantity) * position.lot_size
 
         if position.option_type == OptionType.PUT:
-            # Short Put ITM 到期：按行权价买入股票
+            # Short Put ITM 到期：按市价接盘股票(期权价值已在TradeSimulator结算)
             self._handle_short_put_assignment(
                 position.underlying,
                 shares_required,
-                position.strike,
+                final_price,  # 传入市价而不是行权价
                 current_date,
             )
         else:  # OptionType.CALL
-            # Short Call ITM 到期：卖出股票
+            # Short Call ITM 到期：按市价卖出股票
             self._handle_short_call_assignment(
                 position.underlying,
                 shares_required,
@@ -742,15 +742,15 @@ class BacktestExecutor:
         self,
         underlying: str,
         shares: int,
-        strike: float,
+        market_price: float,
         trade_date: date,
     ) -> None:
-        """处理 Short Put 行权：按行权价买入股票
+        """处理 Short Put 行权：按市价接盘股票(期权按内在价值平仓)
 
         Args:
             underlying: 标的代码
             shares: 需要买入的股数
-            strike: 行权价
+            market_price: 结算市价
             trade_date: 交易日期
         """
         # 执行股票买入交易
@@ -758,7 +758,7 @@ class BacktestExecutor:
             symbol=underlying,
             side=OrderSide.BUY,
             quantity=shares,
-            price=strike,  # 按行权价买入
+            price=market_price,  # 按市价买入，反映真实最新成本
             trade_date=trade_date,
             reason="assigned_buy",
         )
@@ -767,14 +767,14 @@ class BacktestExecutor:
         self._account_simulator.add_stock_position(
             symbol=underlying,
             quantity=shares,
-            entry_price=strike,  # 成本为行权价
+            entry_price=market_price,  # 成本为市价
             trade_date=trade_date,
             cash_change=execution.net_amount,  # 现金变动（买入为负）
         )
 
         logger.info(
             f"Short Put assignment on {trade_date}: "
-            f"Bought {shares} shares of {underlying} @ ${strike:.2f} "
+            f"Bought {shares} shares of {underlying} @ ${market_price:.2f} "
             f"(assignment), cash change: ${execution.net_amount:.2f}"
         )
 
@@ -803,12 +803,12 @@ class BacktestExecutor:
         buy_shares = 0
 
         if current_shares >= shares_required:
-            # 有足够股票：直接以行权价卖出
+            # 有足够股票：直接按市价卖出
             execution = self._trade_simulator.execute_stock_trade(
                 symbol=underlying,
                 side=OrderSide.SELL,
                 quantity=-shares_required,  # 负数表示卖出
-                price=strike,
+                price=market_price,
                 trade_date=trade_date,
                 reason="assigned_sell",
             )
@@ -841,7 +841,7 @@ class BacktestExecutor:
                 symbol=underlying,
                 side=OrderSide.SELL,
                 quantity=-shares_required,  # 负数表示卖出
-                price=strike,
+                price=market_price,
                 trade_date=trade_date,
                 reason="assigned_sell",
             )
