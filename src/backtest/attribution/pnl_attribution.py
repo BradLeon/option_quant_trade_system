@@ -196,6 +196,10 @@ class PnLAttributionEngine:
         Returns:
             按日期排序的 DailyAttribution 列表
         """
+        # 性能优化：缓存归因计算结果，避免重复进行繁重的期权定价公式（Greeks）计算
+        if hasattr(self, "_cached_daily_results") and self._cached_daily_results is not None:
+            return self._cached_daily_results
+
         daily_results: list[DailyAttribution] = []
 
         # 构建前一日快照索引: date -> {position_id -> PositionSnapshot}
@@ -257,6 +261,7 @@ class PnLAttributionEngine:
             # 更新前一日快照索引
             prev_date_snaps = {s.position_id: s for s in current_snaps}
 
+        self._cached_daily_results = daily_results
         return daily_results
 
     def _attribute_position_daily(

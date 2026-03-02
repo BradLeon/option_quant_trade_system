@@ -26,6 +26,11 @@ class BaseOptionStrategy(ABC):
         """初始化策略基类"""
         self._screening_config: Optional["ScreeningConfig"] = None
         self._monitoring_config: Optional["MonitoringConfig"] = None
+        
+        # 性能优化：缓存高频调用的管道实例
+        self._screening_pipeline_instance = None
+        self._monitoring_pipeline_instance = None
+        self._position_sizer_instance = None
 
     @property
     @abstractmethod
@@ -66,14 +71,14 @@ class BaseOptionStrategy(ABC):
         from src.business.monitoring.pipeline import MonitoringPipeline
         from src.business.config.monitoring_config import MonitoringConfig
 
-        # 1. 使用注入的配置或从 YAML 加载监控配置
-        config = self._monitoring_config or MonitoringConfig.load(strategy_name=self.name)
+        # 1. 使用注入的配置或从 YAML 加载监控配置 (带缓存)
+        if self._monitoring_pipeline_instance is None:
+            config = self._monitoring_config or MonitoringConfig.load(strategy_name=self.name)
+            self._monitoring_pipeline_instance = MonitoringPipeline(config)
 
         # 2. 运行监控管道获取持仓调整建议
-        pipeline = MonitoringPipeline(config)
         vix = context.vix_value
-
-        result = pipeline.run(
+        result = self._monitoring_pipeline_instance.run(
             positions=positions,
             vix=vix,
             as_of_date=context.current_date,
@@ -136,13 +141,14 @@ class BaseOptionStrategy(ABC):
         from src.business.screening.models import MarketType
         from src.engine.models.enums import StrategyType
 
-        # 1. 使用注入的配置或从 YAML 加载配置
-        config = self._screening_config or ScreeningConfig.load(strategy_name=self.name)
+        # 1. 使用注入的配置或从 YAML 加载配置并初始化 Pipeline (带缓存)
+        if self._screening_pipeline_instance is None:
+            config = self._screening_config or ScreeningConfig.load(strategy_name=self.name)
+            self._screening_pipeline_instance = ScreeningPipeline(config, data_provider)
 
         # 2. 内部闭环调用 Pipeline 工具类
-        pipeline = ScreeningPipeline(config, data_provider)
         try:
-            result = pipeline.run(
+            result = self._screening_pipeline_instance.run(
                 symbols=symbols,
                 market_type=MarketType.US,
                 strategy_type=StrategyType.SHORT_PUT,
@@ -182,9 +188,12 @@ class BaseOptionStrategy(ABC):
         from src.business.trading.models.decision import AccountState
         from src.business.trading.config.decision_config import DecisionConfig
         
-        # 加载决策配置（内含策略匹配的 risk_config）
-        decision_config = DecisionConfig.load(strategy_name=self.name)
-        sizer = PositionSizer(config=decision_config)
+        # 加载决策配置（内含策略匹配的 risk_config），并缓存 Sizer 实例以提升性能
+        if self._position_sizer_instance is None:
+            decision_config = DecisionConfig.load(strategy_name=self.name)
+            self._position_sizer_instance = PositionSizer(config=decision_config)
+            
+        sizer = self._position_sizer_instance
         
         margin_util = account.margin_used / account.nlv if account.nlv > 0 else 0.0
         cash_ratio = account.cash / account.nlv if account.nlv > 0 else 0.0

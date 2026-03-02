@@ -109,11 +109,12 @@ class DuckDBProvider(DataProvider):
         # 缓存
         self._trading_days_cache: list[date] | None = None
         self._stock_quote_cache: dict[tuple[str, date], StockQuote | None] = {}
-        self._option_chain_cache: dict[tuple[str, date, date | None, date | None], OptionChain | None] = {}
+        self._option_chain_cache: dict[tuple[str, date], OptionChain | None] = {}
         self._cache_max_size = 1000  # 最大缓存条目数
 
         # 全序列缓存（不随 set_as_of_date 清除，历史数据不可变）
         self._kline_series_cache: dict[str, list[tuple]] = {}  # symbol -> [(date, open, high, low, close, volume), ...]
+        self._kline_dict_cache: dict[str, dict[date, tuple]] = {}  # symbol -> {date: row}
         self._macro_series_cache: dict[str, list[tuple]] = {}  # indicator -> [(date, open, high, low, close), ...]
         self._stock_volatility_cache: dict[tuple[str, date], StockVolatility | None] = {}  # (symbol, date) -> result
         self._macro_blackout_cache: dict[date, tuple[bool, list]] = {}  # date -> (is_blackout, events)
@@ -172,6 +173,7 @@ class DuckDBProvider(DataProvider):
         self._option_chain_cache.clear()
         self._trading_days_cache = None
         self._kline_series_cache.clear()
+        self._kline_dict_cache.clear()
         self._macro_series_cache.clear()
         self._stock_volatility_cache.clear()
         self._macro_blackout_cache.clear()
@@ -306,63 +308,37 @@ class DuckDBProvider(DataProvider):
         """
         symbol = symbol.upper()
 
-        # 检查缓存
-        cache_key = (symbol, self._as_of_date)
-        if cache_key in self._stock_quote_cache:
-            return self._stock_quote_cache[cache_key]
+        # Optimization: Fetch full kline series into memory and use dictionary for O(1) lookup
+        if symbol not in self._kline_series_cache:
+            self._kline_series_cache[symbol] = self._load_full_kline_series(symbol)
+            
+            # 建立基于日期的 O(1) 索引字典
+            date_dict = {}
+            for row in self._kline_series_cache[symbol]:
+                date_val = row[0]
+                if isinstance(date_val, str):
+                    date_val = date.fromisoformat(date_val)
+                elif isinstance(date_val, datetime):
+                    date_val = date_val.date()
+                date_dict[date_val] = row
+            self._kline_dict_cache[symbol] = date_dict
 
-        parquet_path = self._data_dir / "stock_daily.parquet"
-
-        if not parquet_path.exists():
-            logger.warning(f"Stock data not found: {parquet_path}")
-            self._stock_quote_cache[cache_key] = None
+        # 直接从全量内存字典中取当天数据
+        row = self._kline_dict_cache[symbol].get(self._as_of_date)
+        
+        if row is None:
             return None
 
-        try:
-            conn = self._get_conn()
-            # 优化: 列过滤在 WHERE 之前，减少数据扫描
-            result = conn.execute(
-                f"""
-                SELECT symbol, date, open, high, low, close, volume
-                FROM read_parquet('{parquet_path}')
-                WHERE date = ? AND symbol = ?
-                LIMIT 1
-                """,
-                [self._as_of_date, symbol],
-            ).fetchone()
-
-            if result is None:
-                self._stock_quote_cache[cache_key] = None
-                return None
-
-            # 明确指定列顺序: symbol, date, open, high, low, close, volume
-            # 日期可能是 date 对象或字符串
-            date_val = result[1]
-            if isinstance(date_val, str):
-                date_val = date.fromisoformat(date_val)
-            elif isinstance(date_val, datetime):
-                date_val = date_val.date()
-
-            quote = StockQuote(
-                symbol=result[0],
-                timestamp=datetime.combine(date_val, datetime.min.time()),
-                open=result[2],
-                high=result[3],
-                low=result[4],
-                close=result[5],
-                volume=result[6],
-                source="duckdb",
-            )
-
-            # 缓存结果 (限制缓存大小)
-            if len(self._stock_quote_cache) < self._cache_max_size:
-                self._stock_quote_cache[cache_key] = quote
-
-            return quote
-
-        except Exception as e:
-            logger.error(f"Failed to get stock quote for {symbol}: {e}")
-            return None
+        return StockQuote(
+            symbol=symbol,
+            timestamp=datetime.combine(self._as_of_date, datetime.min.time()),
+            open=row[1],
+            high=row[2],
+            low=row[3],
+            close=row[4],
+            volume=row[5],
+            source="duckdb",
+        )
 
     def get_stock_quotes(self, symbols: list[str]) -> list[StockQuote]:
         """获取多只股票报价
@@ -499,167 +475,168 @@ class DuckDBProvider(DataProvider):
         if expiry_max_days is not None and expiry_end is None:
             expiry_end = self._as_of_date + timedelta(days=expiry_max_days)
 
-        # 检查缓存
-        cache_key = (underlying, self._as_of_date, expiry_start, expiry_end)
-        if cache_key in self._option_chain_cache:
-            return self._option_chain_cache[cache_key]
-
-        # 查找期权数据
-        option_dir = self._data_dir / "option_daily" / underlying
-        if not option_dir.exists():
-            logger.warning(f"Option data not found for {underlying}")
-            self._option_chain_cache[cache_key] = None
-            return None
-
-        # 确定要读取的 Parquet 文件
-        year = self._as_of_date.year
-        parquet_files = []
-
-        # 优先读取当年的文件
-        year_file = option_dir / f"{year}.parquet"
-        if year_file.exists():
-            parquet_files.append(year_file)
-
-        # 如果当年文件不存在，尝试读取所有文件
-        if not parquet_files:
-            parquet_files = list(option_dir.glob("*.parquet"))
-
-        if not parquet_files:
-            logger.warning(f"No parquet files found for {underlying}")
-            self._option_chain_cache[cache_key] = None
-            return None
-
-        try:
-            # 构建查询条件
-            conditions = ["date = ?"]
-            params: list[Any] = [self._as_of_date]
-
-            if expiry_start:
-                conditions.append("expiration >= ?")
-                params.append(expiry_start)
-            if expiry_end:
-                conditions.append("expiration <= ?")
-                params.append(expiry_end)
-
-            where_clause = " AND ".join(conditions)
-
-            # 合并多个 Parquet 文件的查询
-            parquet_list = ", ".join([f"'{pf}'" for pf in parquet_files])
-
-            conn = self._get_conn()
-            rows = conn.execute(
-                f"""
-                SELECT
-                    symbol, expiration, strike, option_type, date,
-                    open, high, low, close, volume, count,
-                    bid, ask, delta, gamma, theta, vega, rho,
-                    implied_vol, underlying_price, open_interest
-                FROM read_parquet([{parquet_list}])
-                WHERE {where_clause}
-                ORDER BY expiration, strike, option_type
-                """,
-                params,
-            ).fetchall()
-
-            if not rows:
+        # 检查全链缓存 (Optimization: Fetch whole chain once per day to avoid multiple DuckDB queries)
+        cache_key = (underlying, self._as_of_date)
+        
+        chain = self._option_chain_cache.get(cache_key)
+        
+        if chain is None and cache_key not in self._option_chain_cache:
+            # 查找期权数据
+            option_dir = self._data_dir / "option_daily" / underlying
+            if not option_dir.exists():
+                logger.warning(f"Option data not found for {underlying}")
                 self._option_chain_cache[cache_key] = None
                 return None
 
-            # 构建 OptionChain
-            calls: list[OptionQuote] = []
-            puts: list[OptionQuote] = []
-            expiry_dates: set[date] = set()
+            # 确定要读取的 Parquet 文件
+            year = self._as_of_date.year
+            parquet_files = []
 
-            for row in rows:
-                (
-                    symbol,
-                    expiration,
-                    strike,
-                    opt_type,
-                    data_date,
-                    open_price,
-                    high,
-                    low,
-                    close,
-                    volume,
-                    count,
-                    bid,
-                    ask,
-                    delta,
-                    gamma,
-                    theta,
-                    vega,
-                    rho,
-                    implied_vol,
-                    underlying_price,
-                    open_interest,
-                ) = row
+            # 优先读取当年的文件
+            year_file = option_dir / f"{year}.parquet"
+            if year_file.exists():
+                parquet_files.append(year_file)
 
-                expiry_dates.add(expiration)
+            # 如果当年文件不存在，尝试读取所有文件
+            if not parquet_files:
+                parquet_files = list(option_dir.glob("*.parquet"))
 
-                # 构建期权符号 (简化格式)
-                option_symbol = (
-                    f"{underlying}{expiration.strftime('%y%m%d')}"
-                    f"{'C' if opt_type == 'call' else 'P'}{int(strike * 1000):08d}"
-                )
+            if not parquet_files:
+                logger.warning(f"No parquet files found for {underlying}")
+                self._option_chain_cache[cache_key] = None
+                return None
 
-                contract = OptionContract(
-                    symbol=option_symbol,
+            try:
+                # 构建查询条件: 获取当天该标的的所有期权合约（不在这里过滤日期，而在内存中过滤）
+                conditions = ["date = ?"]
+                params: list[Any] = [self._as_of_date]
+
+                where_clause = " AND ".join(conditions)
+
+                # 合并多个 Parquet 文件的查询
+                parquet_list = ", ".join([f"'{pf}'" for pf in parquet_files])
+
+                conn = self._get_conn()
+                rows = conn.execute(
+                    f"""
+                    SELECT
+                        symbol, expiration, strike, option_type, date,
+                        open, high, low, close, volume, count,
+                        bid, ask, delta, gamma, theta, vega, rho,
+                        implied_vol, underlying_price, open_interest
+                    FROM read_parquet([{parquet_list}])
+                    WHERE {where_clause}
+                    ORDER BY expiration, strike, option_type
+                    """,
+                    params,
+                ).fetchall()
+
+                if not rows:
+                    self._option_chain_cache[cache_key] = None
+                    return None
+
+                # 构建 OptionChain
+                calls: list[OptionQuote] = []
+                puts: list[OptionQuote] = []
+                expiry_dates: set[date] = set()
+
+                for row in rows:
+                    (
+                        symbol, expiration, strike, opt_type, data_date,
+                        open_price, high, low, close, volume, count,
+                        bid, ask, delta, gamma, theta, vega, rho,
+                        implied_vol, underlying_price, open_interest,
+                    ) = row
+
+                    expiry_dates.add(expiration)
+
+                    # 构建期权符号 (简化格式)
+                    option_symbol = (
+                        f"{underlying}{expiration.strftime('%y%m%d')}"
+                        f"{'C' if opt_type == 'call' else 'P'}{int(strike * 1000):08d}"
+                    )
+
+                    contract = OptionContract(
+                        symbol=option_symbol,
+                        underlying=underlying,
+                        option_type=OptionType.CALL if opt_type == "call" else OptionType.PUT,
+                        strike_price=strike,
+                        expiry_date=expiration,
+                    )
+
+                    greeks = Greeks(
+                        delta=delta, gamma=gamma, theta=theta, vega=vega, rho=rho,
+                    )
+
+                    quote = OptionQuote(
+                        contract=contract,
+                        timestamp=datetime.combine(data_date, datetime.min.time()),
+                        last_price=close,
+                        bid=bid, ask=ask, volume=volume, open_interest=open_interest,
+                        iv=implied_vol, greeks=greeks, source="duckdb",
+                        open=open_price, high=high, low=low, close=close,
+                    )
+
+                    if opt_type == "call":
+                        calls.append(quote)
+                    else:
+                        puts.append(quote)
+
+                chain = OptionChain(
                     underlying=underlying,
-                    option_type=OptionType.CALL if opt_type == "call" else OptionType.PUT,
-                    strike_price=strike,
-                    expiry_date=expiration,
+                    timestamp=datetime.combine(self._as_of_date, datetime.min.time()),
+                    expiry_dates=sorted(expiry_dates),
+                    calls=calls, puts=puts, source="duckdb",
                 )
 
-                greeks = Greeks(
-                    delta=delta,
-                    gamma=gamma,
-                    theta=theta,
-                    vega=vega,
-                    rho=rho,
-                )
-
-                quote = OptionQuote(
-                    contract=contract,
-                    timestamp=datetime.combine(data_date, datetime.min.time()),
-                    last_price=close,
-                    bid=bid,
-                    ask=ask,
-                    volume=volume,
-                    open_interest=open_interest,
-                    iv=implied_vol,
-                    greeks=greeks,
-                    source="duckdb",
-                    # OHLC 价格 (用于回测 price_mode)
-                    open=open_price,
-                    high=high,
-                    low=low,
-                    close=close,
-                )
-
-                if opt_type == "call":
-                    calls.append(quote)
-                else:
-                    puts.append(quote)
-
-            chain = OptionChain(
-                underlying=underlying,
-                timestamp=datetime.combine(self._as_of_date, datetime.min.time()),
-                expiry_dates=sorted(expiry_dates),
-                calls=calls,
-                puts=puts,
-                source="duckdb",
-            )
-
-            # 缓存结果
-            if len(self._option_chain_cache) < self._cache_max_size:
+                # 缓存全链结果
+                if len(self._option_chain_cache) >= self._cache_max_size:
+                    keys_to_remove = list(self._option_chain_cache.keys())[: self._cache_max_size // 2]
+                    for k in keys_to_remove:
+                        del self._option_chain_cache[k]
+                        
                 self._option_chain_cache[cache_key] = chain
 
-            return chain
+            except Exception as e:
+                logger.error(f"Failed to get option chain for {underlying}: {e}")
+                self._option_chain_cache[cache_key] = None
+                return None
 
-        except Exception as e:
-            logger.error(f"Failed to get option chain for {underlying}: {e}")
+        if not chain:
             return None
+
+        # 内存中按到期日过滤
+        if expiry_start is None and expiry_end is None:
+            return chain
+            
+        filtered_calls = []
+        filtered_puts = []
+        filtered_expiries = set()
+        
+        for quote in chain.calls:
+            if expiry_start and quote.contract.expiry_date < expiry_start:
+                continue
+            if expiry_end and quote.contract.expiry_date > expiry_end:
+                continue
+            filtered_calls.append(quote)
+            filtered_expiries.add(quote.contract.expiry_date)
+            
+        for quote in chain.puts:
+            if expiry_start and quote.contract.expiry_date < expiry_start:
+                continue
+            if expiry_end and quote.contract.expiry_date > expiry_end:
+                continue
+            filtered_puts.append(quote)
+            filtered_expiries.add(quote.contract.expiry_date)
+            
+        return OptionChain(
+            underlying=chain.underlying,
+            timestamp=chain.timestamp,
+            expiry_dates=sorted(filtered_expiries),
+            calls=filtered_calls,
+            puts=filtered_puts,
+            source=chain.source,
+        )
 
     def get_option_quote(self, symbol: str) -> OptionQuote | None:
         """获取单个期权合约报价
