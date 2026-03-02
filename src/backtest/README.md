@@ -201,11 +201,62 @@ uv run backtest run ... --no-report
 | `--symbols` | `-S` | ✅ | - | 标的列表 (可多次指定) |
 | `--data-dir` | `-d` | - | `/Volumes/ORICO/option_quant` | 数据目录 |
 | `--capital` | `-c` | - | 1,000,000 | 初始资金 |
+| `--strategy-version` | `-sv` | - | `short_options_with_expire_itm_stock_trade` | 策略版本 |
+| `--benchmark` | `-B` | - | `SPY` | 基准标的 (SPY/QQQ) |
 | `--skip-download` | - | - | False | 跳过数据下载检查 |
+| `--skip-market-check` | - | - | False | 跳过市场环境检查 |
 | `--no-report` | - | - | False | 不生成 HTML 报告 |
 | `--report-dir` | - | - | `reports` | 报告输出目录 |
 | `--check-only` | - | - | False | 仅检查数据状态 |
 | `--verbose` | `-v` | - | False | 详细输出 |
+
+### 策略版本选择
+
+回测系统支持多种策略版本，可通过 `--strategy-version` 参数选择：
+
+| 策略版本 | 说明 | 适用场景 |
+|----------|------|----------|
+| `short_options_with_expire_itm_stock_trade` | ITM 期权行权接股票 | 长期持仓、愿意接股票的策略 |
+| `short_options_without_expire_itm_stock_trade` | ITM 期权到期前平仓 | 纯期权策略、避免股票交割 |
+
+**示例**：
+
+```bash
+# 使用 ITM 行权接股票策略 (默认)
+uv run backtest run -n "WITH_STOCK" -s 2025-12-01 -e 2026-02-01 -S GOOG --skip-download
+
+# 使用 ITM 到期前平仓策略
+uv run backtest run -n "WITHOUT_STOCK" -s 2025-12-01 -e 2026-02-01 -S GOOG --skip-download \
+  --strategy-version short_options_without_expire_itm_stock_trade
+
+# 对比两种策略
+uv run backtest run -n "COMPARE_V1" -s 2025-12-01 -e 2026-02-01 -S GOOG --skip-download \
+  --strategy-version short_options_with_expire_itm_stock_trade
+
+uv run backtest run -n "COMPARE_V2" -s 2025-12-01 -e 2026-02-01 -S GOOG --skip-download \
+  --strategy-version short_options_without_expire_itm_stock_trade
+```
+
+### 策略配置文件
+
+每个策略版本有独立的配置文件：
+
+```
+config/
+├── screening/
+│   ├── short_options_with_expire_itm_stock_trade.yaml
+│   └── short_options_without_expire_itm_stock_trade.yaml
+├── monitoring/
+│   ├── short_options_with_expire_itm_stock_trade.yaml
+│   └── short_options_without_expire_itm_stock_trade.yaml
+└── trading/
+    └── base_option_strategy.yaml
+```
+
+配置文件控制：
+- **Screening**: 开仓筛选条件 (IV Rank、Delta、DTE 等)
+- **Monitoring**: 持仓监控阈值 (止盈、止损、展期规则)
+- **Trading**: 仓位计算和风控参数
 
 ### 增量下载机制
 

@@ -169,6 +169,33 @@ uv run backtest run -n "SP_ONLY" -s 2025-12-01 -e 2026-02-01 \
 | 交易 | 胜率、盈亏比、利润因子、期望值 |
 | 基准 | Alpha、Beta、信息比率、相关性 |
 
+### 多策略版本对比
+
+回测系统支持多策略版本共存，便于进行 A/B 测试：
+
+```bash
+# 策略版本 1: ITM 行权接股票 (默认)
+uv run backtest run -n "V9_WITH_STOCK" -s 2025-12-01 -e 2026-02-01 \
+  -S GOOG --skip-download \
+  --strategy-version short_options_with_expire_itm_stock_trade
+
+# 策略版本 2: ITM 到期前平仓
+uv run backtest run -n "V9_WITHOUT_STOCK" -s 2025-12-01 -e 2026-02-01 \
+  -S GOOG --skip-download \
+  --strategy-version short_options_without_expire_itm_stock_trade
+
+# 对比报告
+open reports/V9_WITH_STOCK_*.html
+open reports/V9_WITHOUT_STOCK_*.html
+```
+
+**可用策略版本**：
+
+| 策略版本 | CLI 参数 | 说明 |
+|----------|----------|------|
+| ITM 接股票 | `short_options_with_expire_itm_stock_trade` | 到期 ITM 时行权接股票 |
+| ITM 平仓 | `short_options_without_expire_itm_stock_trade` | 到期 ITM 前市价平仓 |
+
 ### PnL 归因分析
 
 回测自动运行 Greeks 归因分解，将 PnL 分解为各风险因子贡献：
@@ -347,6 +374,13 @@ option_quant_trade_system/
 │   │   └── pipeline.py             # 回测 Pipeline (完整流程编排)
 │   ├── business/                   # 业务层 (实盘交易)
 │   │   ├── cli/                    # CLI 入口 (optrade 命令)
+│   │   ├── strategy/               # 策略抽象层 (多版本共存)
+│   │   │   ├── base.py             # BaseOptionStrategy 抽象基类
+│   │   │   ├── factory.py          # 策略工厂
+│   │   │   ├── models.py           # TradeSignal, MarketContext
+│   │   │   └── versions/           # 具体策略实现
+│   │   │       ├── short_options_with_expire_itm_stock_trade.py
+│   │   │       └── short_options_without_expire_itm_stock_trade.py
 │   │   ├── screening/              # 开仓筛选 Pipeline
 │   │   ├── monitoring/             # 持仓监控 Pipeline
 │   │   ├── dashboard/              # 实时仪表盘
@@ -368,6 +402,33 @@ option_quant_trade_system/
 ├── reports/                        # 回测报告输出
 └── openspec/                       # 规格文档
 ```
+
+### 策略抽象层
+
+`src/business/strategy/` 是新增的策略抽象层，借鉴 Qlib 的 `BaseStrategy` 设计：
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    BaseOptionStrategy (抽象基类)                      │
+├─────────────────────────────────────────────────────────────────────┤
+│  evaluate_positions()  →  持仓监控，生成平仓/展期信号                   │
+│  find_opportunities()  →  市场筛选，寻找开仓机会                        │
+│  generate_entry_signals() → 仓位计算，生成开仓信号                      │
+└─────────────────────────────────────────────────────────────────────┘
+                                    ↑
+                    ┌───────────────┴───────────────┐
+                    │                               │
+┌───────────────────┴─────────────┐ ┌───────────────┴─────────────┐
+│ WithExpireItmStockTrade (V9)    │ │ WithoutExpireItmStockTrade   │
+│ - ITM 期权行权接股票              │ │ - ITM 期权到期前平仓          │
+│ - 完整的止盈止损规则              │ │ - 避免股票交割                │
+└─────────────────────────────────┘ └─────────────────────────────┘
+```
+
+**核心优势**：
+- **多版本共存**: 不同策略版本可独立运行，支持 A/B 对比测试
+- **配置分离**: 每个策略有独立的 YAML 配置 (screening/monitoring/risk)
+- **信号关联**: `TradeSignal.position_id` 精确匹配持仓，避免误操作
 
 ### 核心设计
 
