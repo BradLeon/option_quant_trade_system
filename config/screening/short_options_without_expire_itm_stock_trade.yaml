@@ -14,7 +14,7 @@ market_filter:
       weight: 0.6
     - symbol: QQQ
       weight: 0.4
-    trend_required: ignore
+    trend_required: bullish_or_neutral
     pcr_symbol: SPY
     pcr_range:
     - 0.8
@@ -33,7 +33,7 @@ market_filter:
       weight: 0.5
     - symbol: 3033.HK
       weight: 0.5
-    trend_required: ignore
+    trend_required: bullish_or_neutral
   macro_events:
     enabled: false
 underlying_filter:

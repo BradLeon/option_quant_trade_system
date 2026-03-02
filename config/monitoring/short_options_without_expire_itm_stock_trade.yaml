@@ -227,7 +227,7 @@ position_level:
     red_below_action: 考虑平仓，寻找更高效策略
     yellow_action: 关注胜率变化
   early_take_profit:
-    enabled: false
+    enabled: true
     rules:
     - dte_below: 14
       pnl_above: 0.7
