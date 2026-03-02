@@ -22,7 +22,6 @@ from typing import Any
 
 import yaml
 
-from src.business.config.config_mode import ConfigMode
 from src.business.config.config_utils import merge_overrides
 
 
@@ -33,17 +32,13 @@ class RiskConfig:
     所有风控参数的唯一配置源。
 
     配置来源 (优先级高→低):
-    1. BacktestConfig.risk_overrides (per-run 自定义覆盖)
-    2. YAML backtest_overrides 节 (BACKTEST 模式自动合并)
-    3. YAML 主配置节 (LIVE 基准值)
-    4. dataclass 默认值 (代码 fallback)
+    1. {strategy_name}.yaml (如果存在)
+    2. base_option_strategy.yaml (默认基准值)
+    3. dataclass 默认值 (代码 fallback)
 
     示例:
-        # Live 模式 (从 YAML 加载)
-        config = RiskConfig.load()
-
-        # Backtest 模式 (YAML + backtest_overrides 合并)
-        config = RiskConfig.load(mode=ConfigMode.BACKTEST)
+        # 常规加载 (根据策略名称合并)
+        config = RiskConfig.load("short_put_v9")
 
         # 从字典加载 (可覆盖任意字段)
         config = RiskConfig.from_dict({"max_notional_pct_per_underlying": 0.70})
@@ -116,13 +111,11 @@ class RiskConfig:
     def from_yaml(
         cls,
         path: str | Path,
-        mode: ConfigMode = ConfigMode.LIVE,
     ) -> "RiskConfig":
         """从 YAML 文件加载配置
 
         Args:
             path: YAML 文件路径
-            mode: 配置模式 (LIVE 或 BACKTEST)
 
         Returns:
             RiskConfig 实例
@@ -130,58 +123,62 @@ class RiskConfig:
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
 
-        # BACKTEST 模式：合并 YAML 中的 backtest_overrides
-        if mode == ConfigMode.BACKTEST and "backtest_overrides" in data:
-            data = merge_overrides(data, data["backtest_overrides"])
-
         return cls._apply_dict(cls(), data)
 
     @classmethod
-    def load(cls, mode: ConfigMode = ConfigMode.LIVE) -> "RiskConfig":
+    def load(cls, strategy_name: str | None = None) -> "RiskConfig":
         """加载配置
 
-        优先从 YAML 加载，如果 YAML 不存在则使用 dataclass 默认值。
+        优先加载 base_option_strategy.yaml，然后被具体的 {strategy_name}.yaml 覆盖。
 
         Args:
-            mode: 配置模式 (LIVE 或 BACKTEST)
+            strategy_name: 策略名称 (如 short_put_v9)
 
         Returns:
             RiskConfig 实例
         """
         config_dir = Path(__file__).parent.parent.parent.parent.parent / "config" / "trading"
-        config_file = config_dir / "risk.yaml"
-        if config_file.exists():
-            return cls.from_yaml(config_file, mode=mode)
-        return cls()
+        
+        # 1. 尝试加载基础配置
+        base_file = config_dir / "base_option_strategy.yaml"
+        base_data = {}
+        if base_file.exists():
+            with open(base_file, "r", encoding="utf-8") as f:
+                base_data = yaml.safe_load(f) or {}
+                
+        # 2. 尝试加载策略专属的覆盖配置
+        if strategy_name:
+            strategy_file = config_dir / f"{strategy_name}.yaml"
+            if strategy_file.exists():
+                with open(strategy_file, "r", encoding="utf-8") as f:
+                    strategy_data = yaml.safe_load(f) or {}
+                # 合并字典
+                base_data = merge_overrides(base_data, strategy_data)
+                
+        # 3. 如果没找到专属和基础配置，兼容查一下历史的 risk.yaml
+        if not base_data:
+            legacy_file = config_dir / "risk.yaml"
+            if legacy_file.exists():
+                with open(legacy_file, "r", encoding="utf-8") as f:
+                    base_data = yaml.safe_load(f) or {}
+
+        # 4. 应用最终字典
+        return cls._apply_dict(cls(), base_data)
 
     @classmethod
     def from_dict(
         cls,
         data: dict[str, Any],
-        mode: ConfigMode = ConfigMode.LIVE,
     ) -> "RiskConfig":
-        """从字典创建配置
-
-        支持两种场景：
-        1. 完整 YAML 格式（含 backtest_overrides）→ 直接解析
-        2. 部分覆盖字典（如 BacktestConfig.risk_overrides）→ 先加载 YAML 基线再叠加
+        """从字典创建配置 (用于测试与覆盖)
 
         Args:
             data: 配置字典 (支持嵌套 risk_limits 或扁平结构)
-            mode: 配置模式
 
         Returns:
             RiskConfig 实例
         """
-        # 完整 YAML 格式：含 backtest_overrides，直接解析
-        if "backtest_overrides" in data:
-            if mode == ConfigMode.BACKTEST:
-                data = merge_overrides(data, data["backtest_overrides"])
-            return cls._apply_dict(cls(), data)
-
-        # 部分覆盖字典：先加载 YAML 基线（含 mode 处理），再叠加
-        base = cls.load(mode)
-        return cls._apply_dict(base, data)
+        return cls._apply_dict(cls(), data)
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典"""

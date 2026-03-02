@@ -71,7 +71,13 @@ logger = logging.getLogger(__name__)
     "--strategy",
     type=click.Choice(["short_put", "covered_call", "all"], case_sensitive=False),
     default="all",
-    help="策略类型 (默认: all)",
+    help="基础策略类别 (默认: all，通常在 V9 体系下不单独使用)",
+)
+@click.option(
+    "--strategy-version",
+    "-sv",
+    default="short_options_with_expire_itm_stock_trade",
+    help="具体的策略架构版本 (例如: short_options_with_expire_itm_stock_trade, short_options_without_expire_itm_stock_trade) (默认: short_options_with_expire_itm_stock_trade)",
 )
 @click.option(
     "--max-positions",
@@ -126,6 +132,7 @@ def run(
     data_dir: str,
     capital: int,
     strategy: str,
+    strategy_version: str,
     max_positions: int,
     skip_download: bool,
     skip_market_check: bool,
@@ -197,6 +204,9 @@ def run(
         skip_market_check=skip_market_check,
         benchmark_symbol=benchmark.upper(),
     )
+    
+    # 动态注入 strategy_version 到 config，BacktestExecutor 会读取
+    setattr(config, "strategy_version", strategy_version)
 
     # 创建 Pipeline
     from src.backtest.pipeline import BacktestPipeline

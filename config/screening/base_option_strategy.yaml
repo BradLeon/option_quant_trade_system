@@ -1,0 +1,69 @@
+market_filter:
+  us_market:
+    vix_symbol: ^VIX
+    vix_range:
+    - 0
+    - 999
+    vix_percentile_range:
+    - 0.0
+    - 1.0
+    vix3m_symbol: ^VIX3M
+    term_structure_threshold: 999
+    trend_indices:
+    - symbol: SPY
+      weight: 0.6
+    - symbol: QQQ
+      weight: 0.4
+    trend_required: bullish_or_neutral
+    pcr_symbol: SPY
+    pcr_range:
+    - 0.8
+    - 1.2
+  hk_market:
+    volatility_source: 2800.HK
+    iv_calculation: atm_weighted
+    iv_range:
+    - 18
+    - 32
+    iv_percentile_range:
+    - 0.3
+    - 0.8
+    trend_indices:
+    - symbol: 2800.HK
+      weight: 0.5
+    - symbol: 3033.HK
+      weight: 0.5
+    trend_required: bullish_or_neutral
+  macro_events:
+    enabled: false
+underlying_filter:
+  min_iv_rank: 0
+  trend_override:
+    bullish:
+      min_iv_rank: 0
+    bearish:
+      min_iv_rank: 0
+  max_iv_hv_ratio: 3.0
+  min_iv_hv_ratio: 0.8
+  technical:
+    min_rsi: 30
+    max_rsi: 70
+    rsi_stabilizing_range:
+    - 30
+    - 45
+    bb_percent_b_range:
+    - 0.1
+    - 0.3
+    max_adx: 45
+    min_sma_alignment: neutral
+  fundamental:
+    enabled: false
+    max_pe_percentile: 0.7
+    min_recommendation: hold
+contract_filter:
+  liquidity:
+    min_open_interest: 0
+    max_bid_ask_spread: 0.3
+  metrics:
+    min_expected_roc: -0.5
+    min_tgr: 0.0

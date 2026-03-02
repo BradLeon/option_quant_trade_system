@@ -161,7 +161,7 @@ class TestShortPutStrategy:
             volatility=0.20,
             time_to_expiry=30 / 365,
         )
-        sharpe = strategy.calc_sharpe_ratio(margin_ratio=0.2)
+        sharpe = strategy.calc_sharpe_ratio()
         assert sharpe is not None
 
     def test_calc_kelly_fraction(self):
@@ -504,7 +504,7 @@ class TestStrategyBase:
             time_to_expiry=30 / 365,
         )
         sr = strategy.calc_sharpe_ratio()
-        sr_annual = strategy.calc_sharpe_ratio_annualized()
+        sr_annual = strategy.calc_sharpe_ratio_annual()
 
         if sr is not None and sr_annual is not None:
             # Annualized should scale by 1/sqrt(T)
@@ -526,7 +526,7 @@ class TestStrategyBase:
             vega=0.15,
             theta=-0.03,
         )
-        metrics = strategy.calc_metrics(margin_ratio=0.2)
+        metrics = strategy.calc_metrics()
 
         # Verify new fields exist and are not None
         assert metrics.prei is not None

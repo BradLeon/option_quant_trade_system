@@ -66,17 +66,15 @@ from src.backtest.engine.trade_simulator import (
 )
 from src.data.models.account import AssetType
 from src.business.config.config_mode import ConfigMode
-from src.business.config.monitoring_config import MonitoringConfig
 from src.business.config.screening_config import ScreeningConfig
-from src.business.trading.config.decision_config import DecisionConfig
 from src.business.trading.config.risk_config import RiskConfig
 from src.business.monitoring.models import PositionData
-from src.business.monitoring.pipeline import MonitoringPipeline
-from src.business.monitoring.suggestions import ActionType, PositionSuggestion
 from src.business.screening.models import ContractOpportunity, MarketType, ScreeningResult
 from src.business.screening.pipeline import ScreeningPipeline
-from src.business.trading.decision.engine import DecisionEngine
-from src.business.trading.models.decision import AccountState, DecisionType, TradingDecision
+from src.business.strategy.factory import StrategyFactory
+from src.business.strategy.models import MarketContext, TradeSignal
+from src.data.models.option import OptionType
+from src.engine.models.enums import StrategyType
 from src.data.models.option import OptionType
 from src.engine.models.enums import StrategyType
 
@@ -259,10 +257,19 @@ class BacktestExecutor:
             commission_model=commission_model,
         )
 
-        # 初始化 Pipelines (每个策略类型一个 ScreeningPipeline)
-        self._screening_pipelines: dict[StrategyType, ScreeningPipeline] = {}
-        self._monitoring_pipeline: MonitoringPipeline | None = None
-        self._decision_engine: DecisionEngine | None = None
+        # 初始化 Strategy
+        strategy_name = getattr(self._config, "strategy_version", "short_options_with_expire_itm_stock_trade")
+        self._strategy = StrategyFactory.create(strategy_name)
+
+        # 全局加载配置（只加载一次）并注入到策略
+        from src.business.config.screening_config import ScreeningConfig
+        from src.business.config.monitoring_config import MonitoringConfig
+
+        self._screening_config = ScreeningConfig.load(strategy_name=strategy_name)
+        self._monitoring_config = MonitoringConfig.load(strategy_name=strategy_name)
+        self._strategy.set_configs(self._screening_config, self._monitoring_config)
+
+        # 现在的筛选逻辑完全由 Strategy 自主控制，Executor 不再维护 pipelines
 
         # 状态
         self._current_date: date | None = None
@@ -274,92 +281,8 @@ class BacktestExecutor:
         self._attribution_collector = attribution_collector
         self._last_monitoring_position_data: list[PositionData] = []
 
-    def _init_pipelines(self) -> None:
-        """初始化 Pipeline 组件
 
-        使用 BACKTEST 模式加载所有配置，并应用 BacktestConfig 中的覆盖。
-        为每个策略类型创建独立的 ScreeningPipeline。
-        """
-        # Risk Config (用于 DecisionEngine 和 ScreeningPipeline)
-        try:
-            # 使用 BACKTEST 模式加载 RiskConfig
-            risk_config = RiskConfig.load(mode=ConfigMode.BACKTEST)
-            # 应用 BacktestConfig 中的自定义覆盖
-            if self._config.risk_overrides:
-                risk_config = RiskConfig.from_dict(
-                    self._config.risk_overrides,
-                    mode=ConfigMode.BACKTEST,
-                )
-            self._risk_config = risk_config
-            logger.info(
-                f"RiskConfig loaded with BACKTEST mode: "
-                f"max_notional_pct={risk_config.max_notional_pct_per_underlying:.0%}, "
-                f"kelly_fraction={risk_config.kelly_fraction}"
-            )
-        except Exception as e:
-            logger.warning(f"Failed to load RiskConfig: {e}")
-            self._risk_config = RiskConfig()  # 使用默认值
 
-        # Screening Pipelines (每个策略类型一个)
-        # DuckDBProvider 实现了完整的 DataProvider 接口，可直接使用
-        for strategy_type in self._config.strategy_types:
-            try:
-                # 使用 BACKTEST 模式加载配置
-                screening_config = ScreeningConfig.load(
-                    strategy=strategy_type.value,
-                    mode=ConfigMode.BACKTEST,
-                )
-                # 应用 BacktestConfig 中的自定义覆盖
-                if self._config.screening_overrides:
-                    screening_config = ScreeningConfig.from_dict(
-                        self._config.screening_overrides,
-                        mode=ConfigMode.BACKTEST,
-                    )
-                pipeline = ScreeningPipeline(
-                    config=screening_config,
-                    provider=self._data_provider,  # DuckDBProvider 直接作为 DataProvider
-                    kelly_fraction=self._risk_config.kelly_fraction,
-                )
-                self._screening_pipelines[strategy_type] = pipeline
-                cf = screening_config.contract_filter
-                logger.info(
-                    f"ScreeningPipeline for {strategy_type.value} initialized with BACKTEST mode "
-                    f"(min_expected_roc={cf.metrics.min_expected_roc}, min_tgr={cf.metrics.min_tgr})"
-                )
-            except Exception as e:
-                logger.warning(f"Failed to initialize ScreeningPipeline for {strategy_type.value}: {e}")
-
-        # Monitoring Pipeline
-        try:
-            # 使用 BACKTEST 模式加载配置
-            monitoring_config = MonitoringConfig.load(mode=ConfigMode.BACKTEST)
-            # 应用 BacktestConfig 中的自定义覆盖
-            if self._config.monitoring_overrides:
-                monitoring_config = MonitoringConfig.from_dict(
-                    self._config.monitoring_overrides,
-                    mode=ConfigMode.BACKTEST,
-                )
-            self._monitoring_pipeline = MonitoringPipeline(config=monitoring_config)
-            logger.info("MonitoringPipeline initialized with BACKTEST mode")
-        except Exception as e:
-            logger.warning(f"Failed to initialize MonitoringPipeline: {e}")
-            self._monitoring_pipeline = None
-
-        # Decision Engine
-        try:
-            # 使用 BACKTEST 模式创建 DecisionConfig，传入已加载的 RiskConfig
-            decision_config = DecisionConfig.load(
-                mode=ConfigMode.BACKTEST,
-                risk_config=self._risk_config,
-            )
-            self._decision_engine = DecisionEngine(config=decision_config)
-            logger.info(
-                f"DecisionEngine initialized with BACKTEST mode: "
-                f"max_notional_pct={decision_config.max_notional_pct_per_underlying:.0%}"
-            )
-        except Exception as e:
-            logger.warning(f"Failed to initialize DecisionEngine: {e}")
-            self._decision_engine = None
 
     def run(self) -> BacktestResult:
         """执行回测
@@ -376,8 +299,7 @@ class BacktestExecutor:
         logger.info(f"  Strategies: {strategies_str}")
         logger.info(f"  Initial Capital: ${self._config.initial_capital:,.0f}")
 
-        # 初始化 Pipelines
-        self._init_pipelines()
+
 
         # 获取交易日列表
         trading_days = self._data_provider.get_trading_days(
@@ -402,9 +324,11 @@ class BacktestExecutor:
                     self._progress_callback(current_date, i + 1, total_days)
 
             except Exception as e:
-                error_msg = f"Error on {current_date}: {e}"
+                import traceback
+                error_msg = f"Error on {current_date}: {e}\n{traceback.format_exc()}"
                 logger.error(error_msg)
                 self._errors.append(error_msg)
+                raise e
 
         # 构建结果
         execution_time = (datetime.now() - start_time).total_seconds()
@@ -415,6 +339,14 @@ class BacktestExecutor:
         logger.info(f"  Total Return: {result.total_return_pct:.2%}")
         logger.info(f"  Win Rate: {result.win_rate:.1%}")
         logger.info(f"  Total Trades: {result.total_trades}")
+
+        # 输出期权价格统计
+        stats = self._position_manager.price_stats
+        logger.info("Option Price Statistics:")
+        logger.info(f"  Total queries: {stats.total_queries}")
+        logger.info(f"  Successful: {stats.successful} ({stats.success_rate:.1%})")
+        logger.info(f"  Missing: {stats.missing} ({stats.missing_rate:.1%})")
+        logger.info(f"  Invalid: {stats.invalid} ({stats.invalid_rate:.1%})")
 
         return result
 
@@ -441,30 +373,44 @@ class BacktestExecutor:
         # 记录前一日 NLV (用于计算当日盈亏)
         prev_nlv = self._account_simulator.nlv
 
+        # 构造当天的 MarketContext
+        underlying_prices = {}
+        target_symbols = set(self._config.symbols) if self._config.symbols else {"SPY"}
+        for pos in self._account_simulator.positions.values():
+            if pos.underlying:  # 过滤掉 None (股票持仓没有 underlying)
+                target_symbols.add(pos.underlying)
+        
+        for symbol in target_symbols:
+            stock_quote = self._data_provider.get_stock_quote(symbol)
+            if stock_quote and stock_quote.close:
+                underlying_prices[symbol] = stock_quote.close
+            else:
+                underlying_prices[symbol] = 0.0
+                
+        market_context = MarketContext(
+            current_date=current_date,
+            underlying_prices=underlying_prices,
+            vix_value=None,
+            market_trend=None
+        )
+
         # 1. 更新持仓价格 (Position 层更新，Account 层存储)
         self._position_manager.update_all_positions_market_data(
             self._account_simulator.positions
         )
 
-        # 2. 处理到期期权
-        self._process_expirations(current_date)
-
-        # 3. 运行监控 (如果有持仓)
-        suggestions: list[PositionSuggestion] = []
+        # 2. 运行策略监控 (平仓风控)
+        close_signals: list[TradeSignal] = []
         self._last_monitoring_position_data = []
-        if self._account_simulator.position_count > 0 and self._monitoring_pipeline:
-            logger.info("── Monitoring ──────────────────────────────────────")
-            suggestions = self._run_monitoring()
-
-        # 3.5 采集归因快照 (复用 monitoring 的 PositionData, 避免重复计算 Greeks)
-        if self._attribution_collector:
-            pos_data = self._last_monitoring_position_data
-            if not pos_data and self._account_simulator.position_count > 0:
-                # monitoring 未运行但有持仓：手动获取 PositionData
-                pos_data = self._position_manager.get_position_data_for_monitoring(
-                    positions=self._account_simulator.positions,
-                    as_of_date=current_date,
-                )
+        if self._account_simulator.position_count > 0:
+            logger.info("── Strategy Monitoring ─────────────────────────────")
+            pos_data = self._position_manager.get_position_data_for_monitoring(
+                positions=self._account_simulator.positions,
+                as_of_date=current_date,
+            )
+            self._last_monitoring_position_data = pos_data
+            if pos_data:
+                close_signals = self._strategy.evaluate_positions(pos_data, market_context)
             self._attribution_collector.capture_daily(
                 current_date=current_date,
                 position_data_list=pos_data,
@@ -477,56 +423,49 @@ class BacktestExecutor:
 
         # 4. 运行筛选 (寻找新机会)
         screen_result: ScreeningResult | None = None
-        if self._can_open_new_positions() and self._screening_pipelines:
+        if self._can_open_new_positions():
             logger.info("── Screening ───────────────────────────────────────")
-            screen_result = self._run_screening(current_date)
+            screen_result = self._run_screening(current_date, market_context)
 
-        # 5. 生成并执行决策
+        # 5. 生成并执行策略决策
         trades_opened = 0
         trades_closed = 0
 
-        if self._decision_engine:
-            logger.info("── Trading ─────────────────────────────────────────")
-            account_state = self._account_simulator.get_account_state()
-            decisions = self._decision_engine.process_batch(
-                screen_result=screen_result,
-                account_state=account_state,
-                suggestions=suggestions,
+        logger.info("── Strategy Trading ────────────────────────────────")
+        open_signals: list[TradeSignal] = []
+        if screen_result and screen_result.confirmed:
+            open_signals = self._strategy.generate_entry_signals(
+                candidates=screen_result.confirmed,
+                account=self._account_simulator,
+                context=market_context
             )
 
-            # 构建 opportunity 查找表 (用于 trade 卡片日志)
-            opp_lookup: dict[tuple[str, float, str], ContractOpportunity] = {}
-            if screen_result and screen_result.confirmed:
-                for opp in screen_result.confirmed:
-                    opp_lookup[(opp.symbol, opp.strike, opp.expiry)] = opp
+        # 合并所有信号并执行
+        all_signals = close_signals + open_signals
+        
+        trade_index = 0
+        for signal in all_signals:
+            if signal.action == TradeAction.OPEN:
+                if self._execute_open_signal(signal, current_date):
+                    trades_opened += 1
+                    trade_index += 1
+                    if isinstance(signal.quote, ContractOpportunity):
+                        self._log_trade_execution(signal, signal.quote, trade_index)
+            elif signal.action == TradeAction.CLOSE:
+                if self._execute_close_signal(signal, current_date):
+                    trades_closed += 1
+            elif signal.action == TradeAction.ROLL:
+                close_success, open_success = self._execute_roll_decision(signal, current_date)
+                if close_success:
+                    trades_closed += 1
+                if open_success:
+                    trades_opened += 1
+                    trade_index += 1
 
-            # 执行决策
-            trade_index = 0
-            for decision in decisions:
-                if decision.decision_type == DecisionType.OPEN:
-                    # 查找匹配的 opportunity
-                    opp_key = (
-                        decision.symbol,
-                        decision.strike or 0.0,
-                        decision.expiry or "",
-                    )
-                    opportunity = opp_lookup.get(opp_key)
-                    if self._execute_open_decision(decision, current_date):
-                        trades_opened += 1
-                        trade_index += 1
-                        self._log_trade_execution(decision, opportunity, trade_index)
-                elif decision.decision_type == DecisionType.CLOSE:
-                    if self._execute_close_decision(decision, current_date):
-                        trades_closed += 1
-                elif decision.decision_type == DecisionType.ROLL:
-                    # Roll = Close + Open (参考 OrderGenerator.generate_roll)
-                    closed, opened = self._execute_roll_decision(decision, current_date)
-                    if closed:
-                        trades_closed += 1
-                    if opened:
-                        trades_opened += 1
+        # 6. 处理到期期权 (盘后交收计算)
+        self._process_expirations(current_date)
 
-        # 6. 记录每日快照
+        # 7. 记录每日快照
         snapshot = self._take_daily_snapshot(current_date, prev_nlv)
         snapshot.trades_opened = trades_opened
         snapshot.trades_closed = trades_closed
@@ -753,6 +692,17 @@ class BacktestExecutor:
             market_price: 结算市价
             trade_date: 交易日期
         """
+        required_cash = shares * market_price
+
+        # 现金不足兜底：跳过股票交易（期权已在 _process_itm_expiration 中按内在价值结算）
+        if required_cash > self._account_simulator.cash:
+            logger.warning(
+                f"Insufficient cash for assignment, skipping stock purchase: "
+                f"required=${required_cash:.2f}, available=${self._account_simulator.cash:.2f}, "
+                f"underlying={underlying}, shares={shares}"
+            )
+            return
+
         # 执行股票买入交易
         execution = self._trade_simulator.execute_stock_trade(
             symbol=underlying,
@@ -885,100 +835,32 @@ class BacktestExecutor:
         )
 
 
-    def _run_monitoring(self) -> list[PositionSuggestion]:
-        """运行持仓监控
+    # _run_monitoring 已被 Strategy.evaluate_positions 替代，完全删除
 
-        Returns:
-            调整建议列表
+    def _run_screening(self, current_date: date, context: MarketContext) -> ScreeningResult | None:
+        """运行策略的内建筛选，寻找新机会
+        
+        完全委托给 BaseOptionStrategy.find_opportunities()
         """
-        if not self._monitoring_pipeline:
-            return []
-
-        try:
-            # Position 层: 转换持仓数据 (从 Account 层获取)
-            position_data = self._position_manager.get_position_data_for_monitoring(
-                positions=self._account_simulator.positions,
-                as_of_date=self._current_date,
-            )
-
-            if not position_data:
-                return []
-
-            # 保存 position_data 供归因采集器复用 (避免重复计算 Greeks)
-            self._last_monitoring_position_data = position_data
-
-            # 运行监控 (Account 层提供 NLV)
-            # 传入 data_provider 以支持从 DuckDB 读取离线数据 (如 Beta, SPY 价格)
-            # 传入 as_of_date 以支持动态滚动 Beta
-            result = self._monitoring_pipeline.run(
-                positions=position_data,
-                nlv=self._account_simulator.nlv,
-                data_provider=self._data_provider,
-                as_of_date=self._current_date,
-            )
-
-            # 只返回需要行动的建议
-            actionable = [
-                s for s in result.suggestions
-                if s.action not in (ActionType.HOLD, ActionType.MONITOR, ActionType.REVIEW)
-            ]
-
-            return actionable
-
-        except Exception as e:
-            logger.warning(f"Monitoring failed: {e}")
-            return []
-
-    def _run_screening(self, current_date: date) -> ScreeningResult | None:
-        """运行所有策略的筛选，寻找新机会
-
-        为每个策略类型运行对应的 ScreeningPipeline，
-        然后合并所有结果到一个 ScreeningResult。
-
-        Args:
-            current_date: 当前日期
-
-        Returns:
-            合并后的筛选结果 (包含所有策略的机会)
-        """
-        if not self._screening_pipelines:
+        opportunities = self._strategy.find_opportunities(
+            symbols=self._config.symbols,
+            data_provider=self._data_provider,
+            context=context
+        )
+        
+        if not opportunities:
             return None
-
-        all_confirmed: list[ContractOpportunity] = []
-
-        # 为每个策略类型运行筛选
-        for strategy_type, pipeline in self._screening_pipelines.items():
-            try:
-                result = pipeline.run(
-                    symbols=self._config.symbols,
-                    market_type=MarketType.US,  # TODO: 支持 HK
-                    strategy_type=strategy_type,
-                    skip_market_check=self._config.skip_market_check,
-                )
-
-                if result and result.confirmed:
-                    all_confirmed.extend(result.confirmed)
-                    logger.debug(
-                        f"[{strategy_type.value}] Found {len(result.confirmed)} confirmed opportunities"
-                    )
-
-            except Exception as e:
-                logger.warning(f"Screening failed for {strategy_type.value}: {e}")
-
-        # 如果没有机会，返回 None
-        if not all_confirmed:
-            return None
-
-        # 创建合并后的 ScreeningResult
-        # 使用第一个策略类型作为代表 (仅用于满足 dataclass 要求)
-        primary_strategy = self._config.strategy_types[0]
+            
+        primary_strategy = self._config.strategy_types[0] if self._config.strategy_types else list(StrategyType)[0]
+        # 返回假装用原 Pipeline 跑出来的 Result 格式包装 (为了兼容后续逻辑报表统计)
+        from src.business.screening.models import ScreeningResult
         return ScreeningResult(
             passed=True,
             strategy_type=primary_strategy,
-            opportunities=all_confirmed,
-            confirmed=all_confirmed,  # DecisionEngine 使用 confirmed 字段
+            opportunities=opportunities,
+            confirmed=opportunities,
             scanned_underlyings=len(self._config.symbols),
-            qualified_contracts=len(all_confirmed),
+            qualified_contracts=len(opportunities),
         )
 
     def _can_open_new_positions(self) -> bool:
@@ -998,9 +880,9 @@ class BacktestExecutor:
 
         return True
 
-    def _execute_open_decision(
+    def _execute_open_signal(
         self,
-        decision: TradingDecision,
+        signal: TradeSignal,
         trade_date: date,
     ) -> bool:
         """执行开仓决策
@@ -1011,35 +893,42 @@ class BacktestExecutor:
         3. Account 层 (AccountSimulator): 检查保证金，更新现金
 
         Args:
-            decision: 交易决策
+            signal: 交易信号 (含 quote 属性)
             trade_date: 交易日期
 
         Returns:
             是否成功
         """
         try:
-            # 解析期权信息
-            underlying = decision.underlying
-            # 转换 option_type 字符串到 OptionType 枚举
-            option_type_str = decision.option_type or "put"
-            option_type = OptionType(option_type_str.lower())
-            strike = decision.strike or 0.0
-            expiry = date.fromisoformat(decision.expiry) if decision.expiry else trade_date
+            quote = signal.quote
+            if not quote:
+                logger.error("TradeSignal missing quote attribute for OPEN action")
+                return False
+                
+            underlying = quote.contract.underlying
+            # OptionQuote.contract.option_type is an Enum OptionType
+            option_type = quote.contract.option_type
+            option_type_str = option_type.value
+            strike = quote.contract.strike_price
+            expiry = quote.contract.expiry_date
 
             # 1. Trade 层：执行交易，得到 TradeExecution
-            mid_price = decision.limit_price or 0.0
-            # type: ignore[arg-type] - open decisions always have non-None option fields
+            mid_price = quote.mid_price or 0.0
+            
+            # 由于传入的 underlying 是诸如 "SPY" 的名字，构建完整的期权合约名称给 symbol
+            contract_symbol = f"{underlying}_{expiry}_{strike}_{option_type_str}"
+            
             execution = self._trade_simulator.execute_open(
-                symbol=decision.symbol,
+                symbol=contract_symbol,
                 underlying=underlying,
-                option_type=option_type,  # type: ignore[arg-type]
-                strike=strike,  # type: ignore[arg-type]
-                expiration=expiry,  # type: ignore[arg-type]
-                quantity=decision.quantity,
+                option_type=option_type,
+                strike=strike,
+                expiration=expiry,
+                quantity=signal.quantity,
                 mid_price=mid_price,
                 trade_date=trade_date,
-                reason="screening_signal",
-                lot_size=decision.contract_multiplier,  # 直接传入，None 时使用默认值
+                reason=signal.reason or "strategy_open",
+                lot_size=100,  # 默认期权乘数 100
             )
 
             # 1.5. Trade 层：回填 underlying_price 到交易记录
@@ -1070,14 +959,14 @@ class BacktestExecutor:
 
     def _log_trade_execution(
         self,
-        decision: TradingDecision,
+        signal: TradeSignal,
         opportunity: ContractOpportunity | None,
         trade_index: int,
     ) -> None:
         """输出 trade 执行卡片日志
 
         Args:
-            decision: 交易决策
+            signal: 交易信号
             opportunity: 匹配的筛选机会 (可能为 None)
             trade_index: 当日第几笔交易
         """
@@ -1090,7 +979,7 @@ class BacktestExecutor:
         exp_str = opp.expiry or "N/A"
 
         # 标题行
-        header = f"┌─ #{trade_index} {opp.symbol} {opt_type} {strike_str} @ {exp_str} (DTE={opp.dte}) | Qty={decision.quantity}"
+        header = f"┌─ #{trade_index} {opp.symbol} {opt_type} {strike_str} @ {exp_str} (DTE={opp.dte}) | Qty={signal.quantity}"
         sep = "├" + "─" * 65
 
         # 收益指标
@@ -1135,15 +1024,15 @@ class BacktestExecutor:
 
         logger.info("\n".join(lines))
 
-    def _execute_close_decision(
+    def _execute_close_signal(
         self,
-        decision: TradingDecision,
+        signal: TradeSignal,
         trade_date: date,
     ) -> bool:
         """执行平仓决策
 
         Args:
-            decision: 交易决策
+            signal: 交易决策信号 (带 related_position 或 position_id)
             trade_date: 交易日期
 
         Returns:
@@ -1151,9 +1040,22 @@ class BacktestExecutor:
         """
         try:
             # 查找对应持仓
-            position = self._find_position_for_decision(decision)
+            # 1. 优先使用 related_position
+            position = signal.related_position
+
+            # 2. 其次用 position_id 精确匹配
+            if not position and signal.position_id:
+                position = self._account_simulator.positions.get(signal.position_id)
+
+            # 3. 兜底：用 symbol 匹配（兼容旧逻辑）
             if not position:
-                logger.warning(f"Position not found for close decision: {decision.symbol}")
+                position = self._account_simulator.positions.get(signal.symbol)
+
+            if not position:
+                logger.warning(
+                    f"Position not found for close signal: "
+                    f"position_id={signal.position_id}, symbol={signal.symbol}"
+                )
                 return False
 
             # 获取当前期权价格
@@ -1168,24 +1070,22 @@ class BacktestExecutor:
                 execution = self._trade_simulator.execute_stock_trade(
                     symbol=position.symbol,
                     side=OrderSide.SELL,
-                    quantity=-position.quantity,  # 负数表示卖出
+                    quantity=signal.quantity,
                     price=position.current_price,
                     trade_date=trade_date,
-                    reason=decision.reason or "monitor_signal",
+                    reason=signal.reason or "strategy_close",
                 )
             else:
-                # 期权持仓：使用期权交易路径 (lot_size=100)
-                # type: ignore[arg-type] - positions always have non-None option fields
                 execution = self._trade_simulator.execute_close(
                     symbol=position.symbol,
                     underlying=position.underlying,  # type: ignore[arg-type]
                     option_type=position.option_type,  # type: ignore[arg-type]
                     strike=position.strike,  # type: ignore[arg-type]
                     expiration=position.expiration,  # type: ignore[arg-type]
-                    quantity=-position.quantity,  # 平仓方向相反
+                    quantity=signal.quantity,
                     mid_price=option_price,
                     trade_date=trade_date,
-                    reason=decision.reason or "monitor_signal",
+                    reason=signal.reason or "strategy_close",
                 )
 
             # 1.5. Trade 层：回填 underlying_price 到交易记录
@@ -1200,7 +1100,7 @@ class BacktestExecutor:
             pnl = self._position_manager.calculate_realized_pnl(
                 position=position,
                 execution=execution,
-                close_reason=decision.reason or "monitor_signal",
+                close_reason=signal.reason or "strategy_close",
             )
 
             # 2.5. Trade 层：回填 PnL 和 position_id 到交易记录
@@ -1217,7 +1117,7 @@ class BacktestExecutor:
             if success:
                 # 完成持仓关闭 (更新持仓字段)
                 self._position_manager.finalize_close(
-                    position, execution, pnl, decision.reason or "monitor_signal"
+                    position, execution, pnl, signal.reason or "strategy_close"
                 )
 
             return success
@@ -1228,7 +1128,7 @@ class BacktestExecutor:
 
     def _execute_roll_decision(
         self,
-        decision: TradingDecision,
+        decision: TradeSignal,
         trade_date: date,
     ) -> tuple[bool, bool]:
         """执行展期决策 (参考 OrderGenerator.generate_roll)
@@ -1236,11 +1136,7 @@ class BacktestExecutor:
         展期操作 = 平仓当前合约 + 开仓新合约
 
         Args:
-            decision: ROLL 类型的交易决策
-                - symbol/expiry/strike: 当前合约信息
-                - roll_to_expiry: 新到期日
-                - roll_to_strike: 新行权价 (None 表示保持不变)
-                - quantity: 平仓数量
+            decision: ROLL 类型的交易决策信号
             trade_date: 交易日期
 
         Returns:
@@ -1252,13 +1148,13 @@ class BacktestExecutor:
         try:
             # 验证展期参数
             if not decision.roll_to_expiry:
-                logger.warning(f"ROLL decision missing roll_to_expiry: {decision.decision_id}")
+                logger.warning(f"ROLL decision missing roll_to_expiry: {decision.reason}")
                 return False, False
 
             # ========================================
             # 1. 平仓当前合约 (BUY to close)
             # ========================================
-            position = self._find_position_for_decision(decision)
+            position = decision.related_position or self._find_position_for_decision(decision)
             if not position:
                 logger.warning(f"Position not found for roll decision: {decision.symbol}")
                 return False, False
@@ -1356,8 +1252,8 @@ class BacktestExecutor:
                     f"Cannot get price for new contract {new_symbol}, "
                     f"using roll_credit or estimated price"
                 )
-                # 使用 roll_credit 估算或基于旧合约价格估算
-                new_option_price = decision.roll_credit or close_price * 1.1
+                # 基于旧合约价格估价作为回退
+                new_option_price = close_price * 1.1
 
             # 模拟开仓执行
             # type: ignore[arg-type] - roll positions always have non-None option fields
@@ -1488,7 +1384,7 @@ class BacktestExecutor:
 
     def _find_position_for_decision(
         self,
-        decision: TradingDecision,
+        decision: Any,
     ) -> SimulatedPosition | None:
         """根据决策查找对应持仓
 

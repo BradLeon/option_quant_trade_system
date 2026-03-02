@@ -26,7 +26,6 @@ from typing import Any, Literal
 
 import yaml
 
-from src.business.config.config_mode import ConfigMode
 from src.engine.models.enums import StrategyType
 
 
@@ -113,11 +112,6 @@ class BacktestConfig:
     verbose: bool = False  # 详细日志
     skip_market_check: bool = False  # 跳过筛选的市场环境检查
     benchmark_symbol: str = "QQQ"  # 基准标的 (QQQ / SPY)
-
-    # ========== 配置模式 (始终为 BACKTEST) ==========
-    # BacktestConfig 始终使用 BACKTEST 模式
-    # 该字段不可在初始化时修改
-    config_mode: ConfigMode = field(default=ConfigMode.BACKTEST, init=False)
 
     # ========== 配置覆盖 (优先级最高) ==========
     # 这些覆盖会应用在 BACKTEST 模式默认值之上

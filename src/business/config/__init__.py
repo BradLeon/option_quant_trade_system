@@ -8,8 +8,7 @@ Configuration Management - 配置管理
 - NotificationConfig: 推送配置
 """
 
-from src.business.config.config_mode import ConfigMode
 from src.business.config.screening_config import ScreeningConfig
 from src.business.config.monitoring_config import MonitoringConfig
 
-__all__ = ["ConfigMode", "ScreeningConfig", "MonitoringConfig"]
+__all__ = ["ScreeningConfig", "MonitoringConfig"]

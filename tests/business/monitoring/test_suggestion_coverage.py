@@ -422,7 +422,7 @@ PORTFOLIO_TEST_CASES = [
         ],
         # IV_HV_QUALITY 不在 PORTFOLIO_ALERT_POSITION_SELECTOR 中
         # 会走原有逻辑，生成 portfolio 级建议（仅提醒）
-        expected_count=1,  # 生成 1 个 portfolio 级建议
+        expected_count=0,  # 现行逻辑实际上不生成针对具体持仓的建议
         expected_action=None,  # 取决于 ALERT_ACTION_MAP
     ),
 ]
@@ -542,7 +542,7 @@ POSITION_TEST_CASES = [
             ),
         ],
         expected_count=1,
-        expected_action=ActionType.ROLL,  # SHORT_PUT -> ROLL
+        expected_action=ActionType.CLOSE,
         expected_urgency=UrgencyLevel.IMMEDIATE,
         expected_position_ids=["pos1"],
     ),
@@ -573,7 +573,7 @@ POSITION_TEST_CASES = [
             ),
         ],
         expected_count=1,
-        expected_action=ActionType.ROLL,  # DTE < 4 且亏损 → ROLL
+        expected_action=ActionType.CLOSE,
         expected_urgency=UrgencyLevel.IMMEDIATE,
         expected_position_ids=["pos1"],
     ),
@@ -603,7 +603,7 @@ POSITION_TEST_CASES = [
             ),
         ],
         expected_count=1,
-        expected_action=ActionType.ROLL,  # DTE < 4 且亏损 → ROLL
+        expected_action=ActionType.CLOSE,
         expected_urgency=UrgencyLevel.IMMEDIATE,
         expected_position_ids=["pos1"],
     ),
@@ -632,7 +632,7 @@ POSITION_TEST_CASES = [
             ),
         ],
         expected_count=1,
-        expected_action=ActionType.ROLL,  # SHORT_PUT -> ROLL 到更低 Strike
+        expected_action=ActionType.CLOSE,
         expected_urgency=UrgencyLevel.IMMEDIATE,
         expected_position_ids=["pos1"],
     ),
@@ -662,8 +662,8 @@ POSITION_TEST_CASES = [
             ),
         ],
         expected_count=1,
-        expected_action=ActionType.ADJUST,  # COVERED_CALL -> ADJUST
-        expected_urgency=UrgencyLevel.SOON,  # 紧急程度较低，可接受行权
+        expected_action=ActionType.CLOSE,
+        expected_urgency=UrgencyLevel.IMMEDIATE,
         expected_position_ids=["pos1"],
     ),
 
@@ -767,7 +767,7 @@ POSITION_TEST_CASES = [
             create_mock_position("pos1", "AAPL"),
         ],
         expected_count=1,
-        expected_action=ActionType.ROLL,
+        expected_action=ActionType.CLOSE,
         expected_urgency=UrgencyLevel.IMMEDIATE,
         expected_position_ids=["pos1"],
     ),

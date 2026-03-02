@@ -150,14 +150,14 @@ class TestIBKRTradingProvider:
         if not IBKR_AVAILABLE:
             pytest.skip("ib_async not installed")
 
-        # 4002 端口应该允许
-        provider = IBKRTradingProvider(port=4002)
-        assert provider._port == 4002
+        # 7497 端口应该允许
+        provider = IBKRTradingProvider(port=7497)
+        assert provider._port == 7497
         assert provider.account_type == TradingAccountType.PAPER
 
-        # 4001 (Live) 端口应该拒绝
+        # 7496 (Live) 端口应该拒绝
         with pytest.raises(AccountTypeError):
-            IBKRTradingProvider(port=4001)
+            IBKRTradingProvider(port=7496)
 
         # Note: TradingAccountType.LIVE is intentionally NOT defined
         # to prevent any accidental real trading

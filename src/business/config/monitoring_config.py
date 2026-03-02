@@ -805,20 +805,18 @@ class MonitoringConfig:
     def from_yaml(
         cls,
         path: str | Path,
-        mode: ConfigMode = ConfigMode.LIVE,
     ) -> "MonitoringConfig":
         """从 YAML 文件加载配置
 
         Args:
             path: YAML 文件路径
-            mode: 配置模式 (LIVE 或 BACKTEST)
 
         Returns:
             MonitoringConfig 实例
         """
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
-        return cls.from_dict(data, mode=mode)
+        return cls.from_dict(data)
 
     @staticmethod
     def _parse_threshold_range(data: dict[str, Any], default: ThresholdRange) -> ThresholdRange:
@@ -865,13 +863,11 @@ class MonitoringConfig:
     def from_dict(
         cls,
         data: dict[str, Any],
-        mode: ConfigMode = ConfigMode.LIVE,
     ) -> "MonitoringConfig":
         """从字典创建配置
 
         Args:
             data: 配置字典
-            mode: 配置模式 (LIVE 或 BACKTEST)
 
         Returns:
             MonitoringConfig 实例
@@ -881,15 +877,8 @@ class MonitoringConfig:
               ...
             position_level:
               ...
-            # 可选: 回测覆盖
-            backtest_overrides:
-              position_level:
-                delta:
-                  red_above: 0.70
         """
-        # 如果是 BACKTEST 模式，合并 backtest_overrides
-        if mode == ConfigMode.BACKTEST and "backtest_overrides" in data:
-            data = merge_overrides(data, data["backtest_overrides"])
+        # (已移除基于 ConfigMode 的回测覆盖机制，由多策略隔离配置取代)
 
         config = cls()
 
@@ -976,11 +965,11 @@ class MonitoringConfig:
         return config
 
     @classmethod
-    def load(cls, mode: ConfigMode = ConfigMode.LIVE) -> "MonitoringConfig":
-        """加载默认配置
+    def load(cls, strategy_name: str | None = None) -> "MonitoringConfig":
+        """加载特定交易策略的监控配置
 
         Args:
-            mode: 配置模式 (LIVE 或 BACKTEST)
+            strategy_name: 具体的策略名称 (例如: short_put_v9)
 
         Returns:
             MonitoringConfig 实例
@@ -988,8 +977,17 @@ class MonitoringConfig:
         config_dir = (
             Path(__file__).parent.parent.parent.parent / "config" / "monitoring"
         )
+        
+        # 1. 如果提供了 strategy_name，优先加载对应的策略配置文件 (例如 short_put_v9.yaml)
+        if strategy_name:
+            config_file = config_dir / f"{strategy_name}.yaml"
+            if config_file.exists():
+                return cls.from_yaml(config_file)
+                
+        # 2. 兼容性回退：如果没找到或没提供，加载旧的通用 thresholds.yaml
         config_file = config_dir / "thresholds.yaml"
         if config_file.exists():
-            return cls.from_yaml(config_file, mode=mode)
+            return cls.from_yaml(config_file)
+            
         return cls()
 

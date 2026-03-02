@@ -796,11 +796,10 @@ class TradeSimulator:
         # 计算手续费（按股数）
         commission = self._commission_model.calculate_stock(abs(quantity))
 
-        # 计算金额 — 统一公式，与期权交易 (execute_open / execute_expire) 一致
-        # quantity 有符号: 正=买入, 负=卖出
-        # BUY  (qty > 0): gross = -qty * price < 0  → 现金流出
-        # SELL (qty < 0): gross = -qty * price > 0  → 现金流入
-        gross_amount = -quantity * fill_price
+        # 买入 (BUY): side == BUY -> 现金流出 (-qty * price < 0)
+        # 卖出 (SELL): side == SELL -> 现金流入 (+qty * price > 0)
+        signed_quantity = quantity if side == OrderSide.BUY else -quantity
+        gross_amount = -signed_quantity * fill_price
 
         # 净金额 = 成交金额 - 手续费
         net_amount = gross_amount - commission
@@ -816,7 +815,7 @@ class TradeSimulator:
             strike=None,  # 股票没有 strike
             expiration=None,  # 股票没有 expiration
             side=side,
-            quantity=quantity,  # 有符号: 负数=卖出, 正数=买入
+            quantity=signed_quantity,  # 有符号: 负数=卖出, 正数=买入
             order_price=fill_price,
             fill_price=fill_price,
             slippage=slippage,
@@ -847,7 +846,7 @@ class TradeSimulator:
             trade_date=trade_date,
             action=stock_action,  # 根据交易方向设置
             asset_type=AssetType.STOCK,  # 股票交易
-            quantity=quantity,
+            quantity=signed_quantity,
             price=fill_price,
             commission=commission,
             gross_amount=gross_amount,

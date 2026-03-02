@@ -344,32 +344,28 @@ class ScreeningConfig:
     def from_yaml(
         cls,
         path: str | Path,
-        mode: ConfigMode = ConfigMode.LIVE,
     ) -> "ScreeningConfig":
         """从 YAML 文件加载配置
 
         Args:
             path: YAML 文件路径
-            mode: 配置模式 (LIVE 或 BACKTEST)
 
         Returns:
             ScreeningConfig 实例
         """
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
-        return cls.from_dict(data, mode=mode)
+        return cls.from_dict(data)
 
     @classmethod
     def from_dict(
         cls,
         data: dict[str, Any],
-        mode: ConfigMode = ConfigMode.LIVE,
     ) -> "ScreeningConfig":
         """从字典创建配置
 
         Args:
             data: 配置字典
-            mode: 配置模式 (LIVE 或 BACKTEST)
 
         Returns:
             ScreeningConfig 实例
@@ -381,16 +377,7 @@ class ScreeningConfig:
               ...
             contract_filter:
               ...
-            # 可选: 回测覆盖
-            backtest_overrides:
-              contract_filter:
-                liquidity:
-                  min_open_interest: 0
         """
-        # 如果是 BACKTEST 模式，合并 backtest_overrides
-        if mode == ConfigMode.BACKTEST and "backtest_overrides" in data:
-            data = merge_overrides(data, data["backtest_overrides"])
-
         config = cls()
 
         if "market_filter" in data:
@@ -493,21 +480,19 @@ class ScreeningConfig:
     @classmethod
     def load(
         cls,
-        strategy: str = "short_put",
-        mode: ConfigMode = ConfigMode.LIVE,
+        strategy_name: str = "short_put",
     ) -> "ScreeningConfig":
         """加载指定策略的配置
 
         Args:
-            strategy: 策略名称 (short_put, covered_call, etc.)
-            mode: 配置模式 (LIVE 或 BACKTEST)
+            strategy_name: 具体的策略名称 (如 short_put_v9)
 
         Returns:
             ScreeningConfig 实例
         """
         config_dir = Path(__file__).parent.parent.parent.parent / "config" / "screening"
-        config_file = config_dir / f"{strategy}.yaml"
+        config_file = config_dir / f"{strategy_name}.yaml"
         if config_file.exists():
-            return cls.from_yaml(config_file, mode=mode)
+            return cls.from_yaml(config_file)
         return cls()
 

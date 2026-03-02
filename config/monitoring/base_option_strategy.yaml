@@ -1,0 +1,238 @@
+# 持仓监控阈值配置
+
+# 组合级监控阈值（统一使用 ThresholdRange 格式）
+portfolio_level:
+  beta_weighted_delta:
+    green: [-100, 100]            # 正常区间
+    yellow: [-200, 200]           # 关注区间
+    red_above: 300                # 风险上限
+    red_below: -300               # 风险下限
+    hysteresis: 20                # 迟滞值，防止状态抖动
+    alert_type: DELTA_EXPOSURE
+    red_above_message: "Beta 加权 Delta 过高: {value:.0f} > {threshold}"
+    red_below_message: "Beta 加权 Delta 过低: {value:.0f} < {threshold}"
+    yellow_message: "Beta 加权 Delta 偏离中性: {value:.0f}"
+    red_above_action: "减少多头 Delta 暴露或对冲"
+    red_below_action: "减少空头 Delta 暴露或对冲"
+    yellow_action: "关注 Delta 暴露变化"
+
+  portfolio_theta:
+    green: [0, .inf]              # Theta 正值为好（卖方策略）
+    yellow: [-50, 0]
+    red_below: -100
+    hysteresis: 10
+    alert_type: THETA_EXPOSURE
+    red_below_message: "组合 Theta 为负: {value:.0f}，时间衰减不利"
+    yellow_message: "组合 Theta 偏低: {value:.0f}"
+    red_below_action: "减少买方头寸或增加卖方头寸"
+    yellow_action: "关注时间衰减效率"
+
+  portfolio_vega:
+    green: [-500, 500]
+    yellow: [-1000, 1000]
+    red_above: 1500
+    red_below: -1500
+    hysteresis: 100
+    alert_type: VEGA_EXPOSURE
+    red_above_message: "组合 Vega 暴露过高: {value:.0f} > {threshold}"
+    red_below_message: "组合 Vega 暴露过低: {value:.0f} < {threshold}"
+    yellow_message: "组合 Vega 暴露偏大: {value:.0f}"
+    red_above_action: "减少 Vega 暴露，考虑平仓部分头寸"
+    red_below_action: "Vega 空头过大，波动率上升风险高"
+    yellow_action: "关注波动率风险"
+
+  portfolio_gamma:
+    green: [-30, 0]               # 卖方 Gamma 为负
+    yellow: [-50, -30]
+    red_below: -50
+    hysteresis: 5
+    alert_type: GAMMA_EXPOSURE
+    red_below_message: "组合 Gamma 空头过大: {value:.0f} < {threshold}"
+    yellow_message: "组合 Gamma 空头偏大: {value:.0f}"
+    red_below_action: "Gamma 空头风险高，大幅波动时亏损加速"
+    yellow_action: "关注 Gamma 风险"
+
+  portfolio_tgr:                  # Theta/Gamma 比率
+    green: [0.15, .inf]           # 健康
+    yellow: [0.05, 0.15]          # 关注
+    red_below: 0.05               # 风险
+    hysteresis: 0.01
+    alert_type: TGR_LOW
+    red_below_message: "组合 TGR 过低: {value:.3f} < {threshold}"
+    yellow_message: "组合 TGR 偏低: {value:.3f}"
+    red_below_action: "时间衰减效率不足，考虑调整持仓"
+    yellow_action: "关注时间衰减效率"
+
+  concentration_hhi:              # 集中度 (Herfindahl-Hirschman Index)
+    green: [0, 0.25]              # 分散良好
+    yellow: [0.25, 0.5]           # 偏集中
+    red_above: 0.5                # 高集中度
+    hysteresis: 0.05
+    alert_type: CONCENTRATION
+    red_above_message: "持仓集中度过高 (HHI={value:.2f} > {threshold})"
+    yellow_message: "持仓集中度偏高 (HHI={value:.2f})"
+    red_above_action: "分散持仓，降低单一标的风险"
+    yellow_action: "关注集中度变化"
+
+  # 保留旧字段用于向后兼容（deprecated）
+  tgr:
+    green_above: 0.15
+    yellow_range: [0.05, 0.15]
+    red_below: 0.05
+  correlation:
+    max_concentration: 0.5
+
+# 持仓级监控阈值（统一使用 ThresholdRange 格式）
+position_level:
+  otm_pct:                          # 虚值百分比
+    enabled: false                  # 禁用 OTM% 平仓（由 TGR 判断退出）
+    green: [0.10, .inf]             # OTM ≥ 10%
+    yellow: [-0.02, 0.10]           # -2% ~ 10%（允许轻微 ITM）
+    red_below: -0.02                # OTM < -2%（深度 ITM）才强制平仓
+    hysteresis: 0.01
+    alert_type: OTM_PCT
+    red_below_message: "深度 ITM: OTM%={value:.1%}，必须平仓"
+    yellow_message: "OTM% 偏低: {value:.1%}，接近 ATM/轻微 ITM"
+    red_below_action: "深度 ITM 强制平仓"
+    yellow_action: "关注方向性风险，TGR 将判断是否退出"
+
+  delta:                            # |Delta| 方向性风险
+    green: [0, 0.30]
+    yellow: [0.30, 0.65]
+    red_above: 0.65
+    hysteresis: 0.05
+    alert_type: DELTA_CHANGE
+    red_above_message: "|Delta| 过高: {value:.2f}，方向性风险大"
+    yellow_message: "|Delta| 偏高: {value:.2f}"
+    red_above_action: "必须行动：对冲正股或平仓"
+    yellow_action: "关注方向性风险变化"
+
+  dte:                              # 到期天数
+    green: [14, .inf]               # DTE ≥ 14 天
+    yellow: [0, 14]                 # 0 ~ 14 天
+    red_below: 0                    # DTE < 0 天（禁用）
+    hysteresis: 1
+    alert_type: DTE_WARNING
+    red_below_message: "DTE 已过期: {value:.0f} 天"
+    yellow_message: "DTE 进入两周内: {value:.0f} 天"
+    red_below_action: "合约已过期，检查持仓状态"
+    yellow_action: "关注到期日，准备到期处理"
+
+  pnl:                              # 盈亏监控（禁用 profit_target，只用 early_take_profit 止盈）
+    enabled: false                  # 禁用 P&L 平仓（TGR 作主动退出）
+    green: [999.0, .inf]            # 不可达——禁用 P&L 止盈，改用 early_take_profit
+    yellow: [-2.0, 999.0]           # 全范围黄色监控
+    red_below: -2.0                 # 极端兆底止损（TGR 应先触发）
+    hysteresis: 0.05
+    alert_type: STOP_LOSS
+    red_below_message: "持仓亏损极端: {value:.1%}，触发兆底止损线"
+    yellow_message: "持仓盈亏: {value:.1%}"
+    red_below_action: "极端兆底止损，无条件平仓"
+    yellow_action: "关注盈亏变化"
+
+  gamma_risk_pct:                   # Gamma/Margin 百分比
+    green: [0, 0.005]
+    yellow: [0.005, 0.01]
+    red_above: 0.01
+    hysteresis: 0.001
+    alert_type: GAMMA_RISK_PCT
+    red_above_message: "Gamma Risk% 过高: {value:.2%}，相对 Margin 风险大"
+    yellow_message: "Gamma Risk% 偏高: {value:.2%}"
+    red_above_action: "减仓或平仓，降低 Gamma 风险敞口"
+    yellow_action: "关注 Gamma 风险变化"
+
+  tgr:                              # Theta/Gamma Ratio（主要退出指标）
+    green: [1.5, .inf]
+    yellow: [0.5, 1.5]
+    red_below: 0.5
+    hysteresis: 0.1
+    alert_type: POSITION_TGR
+    red_below_message: "TGR 过低: {value:.2f}，时间收益/波动风险比不足"
+    yellow_message: "TGR 偏低: {value:.2f}"
+    red_below_action: "TGR 过低，Gamma 风险超过 Theta 收益，主动退出"
+    yellow_action: "关注时间衰减效率"
+
+  iv_hv:                            # IV/HV 比率
+    green: [1.2, .inf]
+    yellow: [0.8, 1.2]
+    red_below: 0.8
+    hysteresis: 0.05
+    alert_type: IV_HV_RATIO
+    red_below_message: "IV/HV 过低: {value:.2f}，期权定价偏低"
+    yellow_message: "IV/HV 偏低: {value:.2f}"
+    red_below_action: "如盈利可提前止盈，避免继续卖出"
+    yellow_action: "关注波动率环境"
+
+  expected_roc:                     # 预期资本回报率
+    green: [0.10, .inf]
+    yellow: [0.0, 0.10]
+    red_below: 0.0
+    hysteresis: 0.01
+    alert_type: EXPECTED_ROC
+    red_below_message: "预期 ROC 为负: {value:.1%}，策略已失效"
+    yellow_message: "预期 ROC 偏低: {value:.1%}"
+    red_below_action: "立即平仓，策略已失效"
+    yellow_action: "关注预期收益变化"
+
+  win_probability:                  # 理论胜率
+    green: [0.70, .inf]
+    yellow: [0.55, 0.70]
+    red_below: 0.55
+    hysteresis: 0.02
+    alert_type: WIN_PROBABILITY
+    red_below_message: "胜率过低: {value:.0%}，风险大于收益"
+    yellow_message: "胜率偏低: {value:.0%}"
+    red_below_action: "考虑平仓，寻找更高效策略"
+    yellow_action: "关注胜率变化"
+
+  # DTE + 盈利联合止盈（独立规则）
+  # 按优先级从高到低匹配，先命中先返回，PnL 阈值提高到 70%
+  early_take_profit:
+    enabled: true
+    rules:
+      - dte_below: 14             # DTE < 14 天
+        pnl_above: 0.70           # 盈利 ≥ 70%
+        level: red                # 必须立即止盈（Gamma 加速区）
+      - dte_below: 21             # DTE < 21 天
+        pnl_above: 0.70           # 盈利 ≥ 70%
+        level: yellow             # 建议止盈（即将进入 Gamma 加速区）
+      - dte_below: 30             # DTE < 30 天
+        pnl_above: 0.80           # 盈利 ≥ 80%
+        level: green              # 可止盈（高盈利，不必等 Theta 加速）
+
+# 资金级监控阈值
+capital_level:
+  sharpe_ratio:
+    green_above: 1.5
+    yellow_range: [1.0, 1.5]
+    red_below: 1.0
+
+  kelly_usage:                    # 实际仓位 / Kelly 最优仓位
+    green_range: [0.5, 1.0]
+    opportunity_below: 0.5        # 可加仓
+    red_above: 1.0                # 过度杠杆
+
+  margin_usage:                   # 保证金使用率
+    green_below: 0.6
+    yellow_range: [0.6, 0.8]
+    warning_above: 0.8
+    red_above: 0.9
+
+  max_drawdown:
+    warning_pct: 0.10             # 10% 回撤预警
+    red_pct: 0.15                 # 15% 回撤告警
+
+# 动态阈值调整（基于市场状态）
+dynamic_adjustment:
+  high_volatility:                # VIX > 28
+    gamma_multiplier: 0.6         # 收紧 Gamma 阈值
+    delta_multiplier: 0.8         # 收紧 Delta 阈值
+    kelly_multiplier: 0.5         # 使用 1/4 Kelly
+
+  trending:                       # ADX > 25
+    counter_trend_multiplier: 0.7 # 逆势仓位收紧阈值
+    with_trend_multiplier: 1.2    # 顺势仓位放宽阈值
+
+  ranging:                        # ADX < 20
+    gamma_multiplier: 1.3         # 放宽 Gamma 阈值
+    tgr_multiplier: 1.2           # 提高 TGR 要求

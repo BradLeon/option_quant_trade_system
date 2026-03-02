@@ -84,6 +84,43 @@ class PositionPnL:
     realized_pnl_pct: float | None = None
 
 
+@dataclass
+class OptionPriceStats:
+    """期权价格获取统计"""
+
+    total_queries: int = 0
+    successful: int = 0
+    missing: int = 0
+    invalid: int = 0  # price <= 0
+
+    @property
+    def success_rate(self) -> float:
+        """成功率"""
+        return self.successful / self.total_queries if self.total_queries > 0 else 0.0
+
+    @property
+    def missing_rate(self) -> float:
+        """缺失率"""
+        return self.missing / self.total_queries if self.total_queries > 0 else 0.0
+
+    @property
+    def invalid_rate(self) -> float:
+        """无效率"""
+        return self.invalid / self.total_queries if self.total_queries > 0 else 0.0
+
+    def to_dict(self) -> dict:
+        """转换为字典"""
+        return {
+            "total_queries": self.total_queries,
+            "successful": self.successful,
+            "missing": self.missing,
+            "invalid": self.invalid,
+            "success_rate": f"{self.success_rate:.1%}",
+            "missing_rate": f"{self.missing_rate:.1%}",
+            "invalid_rate": f"{self.invalid_rate:.1%}",
+        }
+
+
 class PositionManager:
     """持仓管理器 - 纯持仓生命周期管理，不包装账户
 
@@ -110,6 +147,8 @@ class PositionManager:
         self._price_mode = price_mode
         self._position_counter = 0
         self._current_date: date | None = None
+        # 期权价格获取统计
+        self._price_stats = OptionPriceStats()
 
     def set_date(self, d: date) -> None:
         """设置当前日期"""
@@ -381,6 +420,7 @@ class PositionManager:
         expiration: date,
     ) -> float | None:
         """从期权链获取期权价格"""
+        self._price_stats.total_queries += 1
         try:
             chain = self._data_provider.get_option_chain(
                 underlying=underlying,
@@ -389,6 +429,7 @@ class PositionManager:
             )
 
             if chain is None:
+                self._price_stats.missing += 1
                 return None
 
             contracts = chain.puts if option_type == OptionType.PUT else chain.calls
@@ -423,19 +464,31 @@ class PositionManager:
                             price = close_price
                         else:
                             price = quote.last_price
-                    
+
                     # 如果获取到的价格 <= 0，认为无效，返回 None 以触发内在价值兜底
                     if price is not None and price <= 0:
                         # 除非是到期日当天，可以等于0
+                        self._price_stats.invalid += 1
                         price = None
-                    
+                    elif price is not None:
+                        self._price_stats.successful += 1
+                    else:
+                        self._price_stats.missing += 1
+
                     return price
 
+            self._price_stats.missing += 1
             return None
 
         except Exception as e:
+            self._price_stats.missing += 1
             logger.warning(f"Failed to get option price: {e}")
             return None
+
+    @property
+    def price_stats(self) -> OptionPriceStats:
+        """获取期权价格统计"""
+        return self._price_stats
 
     def get_position_data_for_monitoring(
         self,
@@ -469,9 +522,33 @@ class PositionManager:
         ref_date: date,
     ) -> PositionData:
         """将 SimulatedPosition 转换为 PositionData"""
-        # 正股持仓 (期权行权后) 没有 expiration，跳过监控
+        # 计算盈亏百分比
+        entry_value = abs(position.quantity * position.entry_price * position.lot_size)
+        unrealized_pnl_pct = (
+            position.unrealized_pnl / entry_value if entry_value > 0 else 0.0
+        )
+
+        if position.is_stock:
+            return PositionData(
+                position_id=position.position_id,
+                symbol=position.symbol,
+                asset_type="stock",
+                quantity=position.quantity,
+                entry_price=position.entry_price,
+                current_price=position.current_price,
+                market_value=position.market_value,
+                unrealized_pnl=position.unrealized_pnl,
+                unrealized_pnl_pct=unrealized_pnl_pct,
+                currency="USD",
+                broker="backtest",
+                timestamp=datetime.now(),
+                underlying_price=position.current_price,
+                contract_multiplier=position.lot_size,
+            )
+
+        # 以下为期权处理逻辑
         if position.expiration is None:
-            raise ValueError(f"Stock position {position.symbol} has no expiration, skipping")
+            raise ValueError(f"Option position {position.symbol} has no expiration, skipping")
 
         # 计算 DTE
         dte = (position.expiration - ref_date).days
@@ -495,12 +572,6 @@ class PositionManager:
                 if underlying_price > 0
                 else 0.0
             )
-
-        # 计算盈亏百分比
-        entry_value = abs(position.quantity * position.entry_price * position.lot_size)
-        unrealized_pnl_pct = (
-            position.unrealized_pnl / entry_value if entry_value > 0 else 0.0
-        )
 
         # 构建期权 symbol
         expiry_str = position.expiration.strftime("%Y%m%d")
@@ -728,3 +799,4 @@ class PositionManager:
         """重置管理器状态"""
         self._position_counter = 0
         self._current_date = None
+        self._price_stats = OptionPriceStats()
