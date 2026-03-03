@@ -410,16 +410,19 @@ class BacktestExecutor:
             )
             self._last_monitoring_position_data = pos_data
             if pos_data:
-                close_signals = self._strategy.evaluate_positions(pos_data, market_context)
-            self._attribution_collector.capture_daily(
-                current_date=current_date,
-                position_data_list=pos_data,
-                nlv=self._account_simulator.nlv,
-                cash=self._account_simulator.cash,
-                margin_used=self._account_simulator.margin_used,
-                data_provider=self._data_provider,
-                as_of_date=current_date,
-            )
+                close_signals = self._strategy.evaluate_positions(
+                    pos_data, market_context, data_provider=self._data_provider
+                )
+            if hasattr(self, "_attribution_collector") and self._attribution_collector:
+                self._attribution_collector.capture_daily(
+                    current_date=current_date,
+                    position_data_list=pos_data,
+                    nlv=self._account_simulator.nlv,
+                    cash=self._account_simulator.cash,
+                    margin_used=self._account_simulator.margin_used,
+                    data_provider=self._data_provider,
+                    as_of_date=current_date,
+                )
 
         # 4. 运行筛选 (寻找新机会)
         screen_result: ScreeningResult | None = None

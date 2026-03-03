@@ -37,7 +37,7 @@ from src.backtest.engine.account_simulator import (
 )
 from src.backtest.engine.trade_simulator import TradeExecution
 from src.business.monitoring.models import PositionData
-from src.data.models import StockQuote
+from src.data.models import OptionChain, StockQuote
 from src.data.models.option import OptionType
 from src.data.providers.base import DataProvider
 from src.engine.models.enums import StrategyType
@@ -394,11 +394,150 @@ class PositionManager:
     ) -> None:
         """更新所有持仓的市场数据
 
+        优化：按 underlying 分组批量查询，避免 N+1 问题。
+
         Args:
             positions: 持仓字典 (从 AccountSimulator.positions 获取)
         """
-        for position in positions.values():
-            self.update_position_market_data(position)
+        from collections import defaultdict
+
+        # 按 underlying 分组（期权持仓）
+        by_underlying: dict[str, list[SimulatedPosition]] = defaultdict(list)
+        stock_positions: list[SimulatedPosition] = []
+
+        for pos in positions.values():
+            if pos.is_stock:
+                stock_positions.append(pos)
+            elif pos.underlying:
+                by_underlying[pos.underlying].append(pos)
+
+        # 批量处理期权持仓
+        for underlying, pos_list in by_underlying.items():
+            # 获取标的价格（一次查询，DuckDBProvider 有缓存）
+            stock_quote = self._data_provider.get_stock_quote(underlying)
+            underlying_price = self._get_price_by_mode(stock_quote) if stock_quote else None
+
+            if underlying_price is None or underlying_price <= 0:
+                # 标的价格无效，回退到逐个处理（会抛出 DataNotFoundError）
+                for pos in pos_list:
+                    self.update_position_market_data(pos)
+                continue
+
+            # 计算需要的 expiry 范围
+            expirations = {pos.expiration for pos in pos_list if pos.expiration}
+            if not expirations:
+                continue
+
+            # 获取期权链（一次查询覆盖所有到期日，DuckDBProvider 会缓存全链）
+            chain = self._data_provider.get_option_chain(
+                underlying=underlying,
+                expiry_start=min(expirations),
+                expiry_end=max(expirations),
+            )
+
+            # 从 chain 中提取每个持仓的价格
+            for pos in pos_list:
+                self._update_position_from_chain(
+                    pos, chain, underlying_price, stock_quote
+                )
+
+        # 处理股票持仓（数量通常较少，逐个处理即可）
+        for pos in stock_positions:
+            self.update_position_market_data(pos)
+
+    def _update_position_from_chain(
+        self,
+        position: SimulatedPosition,
+        chain: OptionChain | None,
+        underlying_price: float,
+        stock_quote: StockQuote | None,
+    ) -> None:
+        """从预取的期权链更新持仓市场数据
+
+        Args:
+            position: 持仓
+            chain: 期权链（可能为 None）
+            underlying_price: 标的价格
+            stock_quote: 标的报价（用于错误信息）
+
+        Raises:
+            DataNotFoundError: 当期权数据缺失且无法使用内在价值时
+        """
+        # 断言：期权持仓的必要字段
+        assert position.underlying is not None, "Option position must have underlying"
+        assert position.option_type is not None, "Option position must have option_type"
+        assert position.strike is not None, "Option position must have strike"
+        assert position.expiration is not None, "Option position must have expiration"
+
+        self._price_stats.total_queries += 1
+
+        option_price: float | None = None
+
+        if chain is not None:
+            contracts = chain.puts if position.option_type == OptionType.PUT else chain.calls
+
+            for quote in contracts:
+                if (
+                    quote.contract.strike_price == position.strike
+                    and quote.contract.expiry_date == position.expiration
+                ):
+                    # 根据 price_mode 提取价格
+                    if self._price_mode == PriceMode.OPEN:
+                        open_price = getattr(quote, "open", None)
+                        if open_price is not None and open_price > 0:
+                            option_price = open_price
+                        else:
+                            option_price = quote.last_price or quote.close
+
+                    elif self._price_mode == PriceMode.MID:
+                        if (
+                            quote.bid
+                            and quote.ask
+                            and quote.bid > 0
+                            and quote.ask > 0
+                        ):
+                            option_price = (quote.bid + quote.ask) / 2
+                        else:
+                            option_price = getattr(quote, "close", None) or quote.last_price
+
+                    else:  # CLOSE
+                        close_price = getattr(quote, "close", None)
+                        if close_price is not None and close_price > 0:
+                            option_price = close_price
+                        else:
+                            option_price = quote.last_price
+
+                    # 检查价格有效性
+                    if option_price is not None and option_price <= 0:
+                        self._price_stats.invalid += 1
+                        option_price = None
+                    elif option_price is not None:
+                        self._price_stats.successful += 1
+                    else:
+                        self._price_stats.missing += 1
+
+                    break
+            else:
+                # 未在链中找到合约
+                self._price_stats.missing += 1
+        else:
+            self._price_stats.missing += 1
+
+        if option_price is not None and option_price > 0:
+            position.update_market_value(option_price, underlying_price)
+        else:
+            # 期权价格缺失或为0时使用内在价值
+            if position.option_type == OptionType.PUT:
+                intrinsic = max(0.01, position.strike - underlying_price)
+            else:
+                intrinsic = max(0.01, underlying_price - position.strike)
+
+            logger.warning(
+                f"Option price invalid or missing for {position.underlying} "
+                f"{position.option_type.value} K={position.strike} exp={position.expiration} "
+                f"on {self._current_date} (quote price: {option_price}), using intrinsic/minimum value: {intrinsic:.2f}"
+            )
+            position.update_market_value(intrinsic, underlying_price)
 
     def _get_price_by_mode(self, quote: StockQuote) -> float | None:
         """根据 price_mode 获取价格"""

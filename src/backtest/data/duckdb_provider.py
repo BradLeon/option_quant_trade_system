@@ -117,6 +117,8 @@ class DuckDBProvider(DataProvider):
         self._kline_dict_cache: dict[str, dict[date, tuple]] = {}  # symbol -> {date: row}
         self._macro_series_cache: dict[str, list[tuple]] = {}  # indicator -> [(date, open, high, low, close), ...]
         self._stock_volatility_cache: dict[tuple[str, date], StockVolatility | None] = {}  # (symbol, date) -> result
+        self._stock_beta_cache: dict[tuple[str, date | None], float | None] = {}  # (symbol, as_of_date) -> beta
+        self._fundamental_cache: dict[tuple[str, date], Fundamental | None] = {}  # (symbol, as_of_date) -> Fundamental
         self._macro_blackout_cache: dict[date, tuple[bool, list]] = {}  # date -> (is_blackout, events)
         self._blackout_prefetched: bool = False  # 防止重复预取
 
@@ -680,6 +682,11 @@ class DuckDBProvider(DataProvider):
             logger.debug(f"No fundamental data available for {symbol}")
             return None
 
+        # Optimization: Memory cache lookup
+        cache_key = (symbol.upper(), self._as_of_date)
+        if hasattr(self, "_fundamental_cache") and cache_key in self._fundamental_cache:
+            return self._fundamental_cache[cache_key]
+
         eps_path = self._data_dir / "fundamental_eps.parquet"
         revenue_path = self._data_dir / "fundamental_revenue.parquet"
         dividend_path = self._data_dir / "fundamental_dividend.parquet"
@@ -767,7 +774,7 @@ class DuckDBProvider(DataProvider):
                 pe_ratio = stock_quote.close / eps_value
 
             # 5. 构建 Fundamental 对象
-            return Fundamental(
+            fund_obj = Fundamental(
                 symbol=symbol,
                 date=self._as_of_date,
                 eps=eps_value,
@@ -776,9 +783,14 @@ class DuckDBProvider(DataProvider):
                 ex_dividend_date=ex_dividend_date,
                 source="duckdb",
             )
+            if hasattr(self, "_fundamental_cache"):
+                self._fundamental_cache[cache_key] = fund_obj
+            return fund_obj
 
         except Exception as e:
             logger.error(f"Failed to get fundamental data for {symbol}: {e}")
+            if hasattr(self, "_fundamental_cache"):
+                self._fundamental_cache[cache_key] = None
             return None
 
     def get_historical_eps(
@@ -1464,6 +1476,11 @@ class DuckDBProvider(DataProvider):
         Returns:
             Beta 值或 None
         """
+        # Optimization: Memory cache lookup
+        cache_key = (symbol.upper(), as_of_date)
+        if hasattr(self, "_stock_beta_cache") and cache_key in self._stock_beta_cache:
+            return self._stock_beta_cache[cache_key]
+
         conn = self._get_conn()
 
         # 优先使用动态滚动 Beta (stock_beta_daily.parquet)
@@ -1492,7 +1509,10 @@ class DuckDBProvider(DataProvider):
                     ).fetchone()
 
                 if result:
-                    return float(result[0])
+                    beta_val = float(result[0])
+                    if hasattr(self, "_stock_beta_cache"):
+                        self._stock_beta_cache[cache_key] = beta_val
+                    return beta_val
             except Exception as e:
                 logger.warning(f"Failed to get rolling beta for {symbol}: {e}")
 
@@ -1505,11 +1525,16 @@ class DuckDBProvider(DataProvider):
                     [symbol.upper()],
                 ).fetchone()
                 if result:
-                    return float(result[0])
+                    beta_val = float(result[0])
+                    if hasattr(self, "_stock_beta_cache"):
+                        self._stock_beta_cache[cache_key] = beta_val
+                    return beta_val
             except Exception as e:
                 logger.warning(f"Failed to get static beta for {symbol}: {e}")
 
         logger.debug(f"Beta data not found for {symbol}")
+        if hasattr(self, "_stock_beta_cache"):
+            self._stock_beta_cache[cache_key] = None
         return None
 
     def get_stock_volatility(self, symbol: str) -> StockVolatility | None:

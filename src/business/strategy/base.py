@@ -56,7 +56,7 @@ class BaseOptionStrategy(ABC):
     # 阶段 1：平仓监控与风控决策
     # ==========================
     def evaluate_positions(
-        self, positions: List[PositionData], context: MarketContext
+        self, positions: List[PositionData], context: MarketContext, data_provider: Any = None
     ) -> List[TradeSignal]:
         """评估当前所有持仓，产生风控或止盈止损平仓信号
 
@@ -82,6 +82,7 @@ class BaseOptionStrategy(ABC):
             positions=positions,
             vix=vix,
             as_of_date=context.current_date,
+            data_provider=data_provider,
         )
 
         # 3. 将平仓建议转换为 TradeSignal
