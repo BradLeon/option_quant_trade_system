@@ -758,87 +758,89 @@ class BacktestExecutor:
         market_price: float,
         trade_date: date,
     ) -> None:
-        """处理 Short Call 行权：卖出股票
+        """处理 Short Call 行权：交割股票
 
-        流程：
-        1. 检查现有股票持仓是否足够
-        2. 不足时先按市价买入缺口股票
-        3. 按行权价卖出所需股票
-        4. **始终**更新账户持仓和现金（修复 Naked Call 场景的现金丢失 Bug）
+        与 Short Put 对称的设计：
+        - _process_itm_expiration 中 execute_expire 已按内在价值结算期权,
+          PnL = 权利金 - 内在价值, 完整反映了经济损益
+        - 本方法只处理股票交割, 不应产生额外损益
+
+        场景1: Covered Call (有足够持股)
+          → 按行权价卖出股票, 股票 PnL = strike - entry_price
+        场景2: Naked Call (无持股)
+          → 期权内在价值结算已反映全部损失, 无需执行股票买卖
+        场景3: 部分持股
+          → 卖出已有股票, 缺口部分由期权结算覆盖
 
         Args:
             underlying: 标的代码
             shares_required: 需要卖出的股数
             strike: 行权价
-            market_price: 当前市价（用于先买后卖场景）
+            market_price: 当前市价
             trade_date: 交易日期
         """
-        # Step 1: 检查当前股票持仓
         current_shares = self._account_simulator.get_stock_quantity(underlying)
 
-        # Step 2: 股票不足时先买入缺口
-        if current_shares < shares_required:
-            buy_shares = shares_required - current_shares
-
-            buy_execution = self._trade_simulator.execute_stock_trade(
-                symbol=underlying,
-                side=OrderSide.BUY,
-                quantity=buy_shares,
-                price=market_price,
-                trade_date=trade_date,
-                reason="pre_assignment_buy",
+        if current_shares <= 0:
+            # Naked Call: 无股票可交割
+            # 期权已按内在价值 (market - strike) 结算, 捕获了全部经济损失
+            # 不执行股票买卖, 避免双重计算
+            logger.info(
+                f"Short Call assignment on {trade_date}: "
+                f"Naked Call on {underlying}, no stock delivery needed. "
+                f"Option intrinsic value settlement covers the full loss."
             )
+            return
 
-            self._account_simulator.add_stock_position(
-                symbol=underlying,
-                quantity=buy_shares,
-                entry_price=market_price,
-                trade_date=trade_date,
-                cash_change=buy_execution.net_amount,
-            )
+        # Covered Call (全部或部分持股): 按行权价卖出股票
+        shares_to_sell = min(current_shares, shares_required)
 
-        # Step 3: 按行权价卖出所需股票
-        # 注意: execute_stock_trade 要求 quantity 为正数, side 决定方向
         sell_execution = self._trade_simulator.execute_stock_trade(
             symbol=underlying,
             side=OrderSide.SELL,
-            quantity=shares_required,
+            quantity=shares_to_sell,
             price=strike,
             trade_date=trade_date,
             reason="assigned_sell",
         )
 
-        # Step 4: 始终更新持仓和现金（关键修复）
+        # 更新股票持仓
         position_id = f"{underlying}-STOCK"
-        # 重新读取当前持仓（买入后已更新）
-        updated_shares = self._account_simulator.get_stock_quantity(underlying)
-        remaining_shares = updated_shares - shares_required
+        remaining_shares = current_shares - shares_to_sell
 
         if position_id in self._account_simulator.positions:
             position = self._account_simulator.positions[position_id]
 
             if remaining_shares <= 0:
-                # 所有股票已卖出（包括 Naked Call 的买入后立即卖出场景）
-                pnl = (strike - position.entry_price) * min(shares_required, updated_shares)
+                # 所有股票已交割
+                pnl = (strike - position.entry_price) * shares_to_sell
                 self._account_simulator.remove_position(
                     position_id=position_id,
                     cash_change=sell_execution.net_amount,
                     realized_pnl=pnl,
                 )
             else:
-                # 还有剩余股票，更新数量
+                # 还有剩余股票
                 self._account_simulator.update_stock_position(
                     position_id=position_id,
-                    quantity_change=-shares_required,
+                    quantity_change=-shares_to_sell,
                     new_price=market_price,
                     cash_change=sell_execution.net_amount,
                 )
 
-        logger.info(
-            f"Short Call assignment on {trade_date}: "
-            f"Sold {shares_required} shares of {underlying} @ ${strike:.2f} "
-            f"(assignment), cash change: ${sell_execution.net_amount:.2f}"
-        )
+        if shares_to_sell < shares_required:
+            uncovered = shares_required - shares_to_sell
+            logger.info(
+                f"Short Call assignment on {trade_date}: "
+                f"Delivered {shares_to_sell} shares of {underlying} @ ${strike:.2f}, "
+                f"{uncovered} shares uncovered (settled via option intrinsic value)"
+            )
+        else:
+            logger.info(
+                f"Short Call assignment on {trade_date}: "
+                f"Delivered {shares_to_sell} shares of {underlying} @ ${strike:.2f} "
+                f"(covered call), cash change: ${sell_execution.net_amount:.2f}"
+            )
 
 
     # _run_monitoring 已被 Strategy.evaluate_positions 替代，完全删除
