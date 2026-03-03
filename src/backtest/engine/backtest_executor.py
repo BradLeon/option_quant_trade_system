@@ -267,10 +267,24 @@ class BacktestExecutor:
 
         self._screening_config = ScreeningConfig.load(strategy_name=strategy_name)
         self._monitoring_config = MonitoringConfig.load(strategy_name=strategy_name)
+        
+        # 将 YAML 中定义的字符串格式 strategy_types 转换为引擎内部的 StrategyType Enum (如果没有定义，降级由于 CLI 传入的 self._config)
+        yaml_strategy_types_str = getattr(self._screening_config, "strategy_types", [])
+        if yaml_strategy_types_str:
+            yaml_strategy_types = []
+            for stype_str in yaml_strategy_types_str:
+                try:
+                    yaml_strategy_types.append(StrategyType(stype_str))
+                except ValueError:
+                    logger.warning(f"Unknown strategy type in YAML config: {stype_str}")
+            active_strategy_types = yaml_strategy_types if yaml_strategy_types else self._config.strategy_types
+        else:
+            active_strategy_types = self._config.strategy_types
+
         self._strategy.set_configs(
             self._screening_config, 
             self._monitoring_config,
-            strategy_types=self._config.strategy_types
+            strategy_types=active_strategy_types
         )
 
         # 现在的筛选逻辑完全由 Strategy 自主控制，Executor 不再维护 pipelines
