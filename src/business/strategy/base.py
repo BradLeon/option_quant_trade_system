@@ -42,15 +42,18 @@ class BaseOptionStrategy(ABC):
         self,
         screening_config: "ScreeningConfig",
         monitoring_config: "MonitoringConfig",
+        strategy_types: List["StrategyType"] = None
     ) -> None:
         """注入配置（由 BacktestExecutor 调用）
 
         Args:
             screening_config: 筛选配置
             monitoring_config: 监控配置
+            strategy_types: 策略允许操作的期权方向 (如 SHORT_PUT, COVERED_CALL)
         """
         self._screening_config = screening_config
         self._monitoring_config = monitoring_config
+        self._strategy_types = strategy_types or []
 
     # ==========================
     # 阶段 1：平仓监控与风控决策
@@ -148,19 +151,26 @@ class BaseOptionStrategy(ABC):
             self._screening_pipeline_instance = ScreeningPipeline(config, data_provider)
 
         # 2. 内部闭环调用 Pipeline 工具类
-        try:
-            result = self._screening_pipeline_instance.run(
-                symbols=symbols,
-                market_type=MarketType.US,
-                strategy_type=StrategyType.SHORT_PUT,
-                skip_market_check=False
-            )
-            if result and result.confirmed:
-                return result.confirmed
-        except Exception as e:
-            logger.error(f"Strategy {self.name} screening failed: {e}")
+        all_confirmed = []
+        target_types = self._strategy_types if getattr(self, "_strategy_types", None) else [StrategyType.SHORT_PUT]
+        
+        for stype in target_types:
+            try:
+                result = self._screening_pipeline_instance.run(
+                    symbols=symbols,
+                    market_type=MarketType.US,
+                    strategy_type=stype,
+                    skip_market_check=False
+                )
+                if result and result.confirmed:
+                    # 将策略类型附加到 opportunity 以便于后续识别
+                    for opp in result.confirmed:
+                        opp.metadata["source_strategy_type"] = stype.value
+                    all_confirmed.extend(result.confirmed)
+            except Exception as e:
+                logger.error(f"Strategy {self.name} screening failed for {stype.value}: {e}")
 
-        return []
+        return all_confirmed
 
     # ==========================
     # 阶段 3：建仓信号生成

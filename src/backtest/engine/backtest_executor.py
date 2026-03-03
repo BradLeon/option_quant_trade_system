@@ -267,7 +267,11 @@ class BacktestExecutor:
 
         self._screening_config = ScreeningConfig.load(strategy_name=strategy_name)
         self._monitoring_config = MonitoringConfig.load(strategy_name=strategy_name)
-        self._strategy.set_configs(self._screening_config, self._monitoring_config)
+        self._strategy.set_configs(
+            self._screening_config, 
+            self._monitoring_config,
+            strategy_types=self._config.strategy_types
+        )
 
         # 现在的筛选逻辑完全由 Strategy 自主控制，Executor 不再维护 pipelines
 
