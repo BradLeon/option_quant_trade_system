@@ -760,6 +760,12 @@ class BacktestExecutor:
     ) -> None:
         """处理 Short Call 行权：卖出股票
 
+        流程：
+        1. 检查现有股票持仓是否足够
+        2. 不足时先按市价买入缺口股票
+        3. 按行权价卖出所需股票
+        4. **始终**更新账户持仓和现金（修复 Naked Call 场景的现金丢失 Bug）
+
         Args:
             underlying: 标的代码
             shares_required: 需要卖出的股数
@@ -767,92 +773,71 @@ class BacktestExecutor:
             market_price: 当前市价（用于先买后卖场景）
             trade_date: 交易日期
         """
-        # 检查当前股票持仓
+        # Step 1: 检查当前股票持仓
         current_shares = self._account_simulator.get_stock_quantity(underlying)
 
-        # 记录买入的股数（用于后续持仓更新）
-        buy_shares = 0
-
-        if current_shares >= shares_required:
-            # 有足够股票：直接按行权价卖出 (而不是市价)
-            execution = self._trade_simulator.execute_stock_trade(
-                symbol=underlying,
-                side=OrderSide.SELL,
-                quantity=-shares_required,  # 负数表示卖出
-                price=strike,
-                trade_date=trade_date,
-                reason="assigned_sell",
-            )
-        else:
-            # 股票不足：先买入不足的股票，再以行权价卖出
+        # Step 2: 股票不足时先买入缺口
+        if current_shares < shares_required:
             buy_shares = shares_required - current_shares
 
-            # 先买入股票（现金变动在 add_stock_position 中处理）
             buy_execution = self._trade_simulator.execute_stock_trade(
                 symbol=underlying,
                 side=OrderSide.BUY,
                 quantity=buy_shares,
-                price=market_price,  # 按市价买入
+                price=market_price,
                 trade_date=trade_date,
                 reason="pre_assignment_buy",
             )
 
-            # 添加买入的股票到账户（包含现金变动）
             self._account_simulator.add_stock_position(
                 symbol=underlying,
                 quantity=buy_shares,
                 entry_price=market_price,
                 trade_date=trade_date,
-                cash_change=buy_execution.net_amount,  # 现金变动（买入为负）
+                cash_change=buy_execution.net_amount,
             )
 
+        # Step 3: 按行权价卖出所需股票
+        # 注意: execute_stock_trade 要求 quantity 为正数, side 决定方向
+        sell_execution = self._trade_simulator.execute_stock_trade(
+            symbol=underlying,
+            side=OrderSide.SELL,
+            quantity=shares_required,
+            price=strike,
+            trade_date=trade_date,
+            reason="assigned_sell",
+        )
 
-            # 然后按行权价卖出所需股票 (而不是市价)
-            execution = self._trade_simulator.execute_stock_trade(
-                symbol=underlying,
-                side=OrderSide.SELL,
-                quantity=-shares_required,  # 负数表示卖出
-                price=strike,
-                trade_date=trade_date,
-                reason="assigned_sell",
-            )
+        # Step 4: 始终更新持仓和现金（关键修复）
+        position_id = f"{underlying}-STOCK"
+        # 重新读取当前持仓（买入后已更新）
+        updated_shares = self._account_simulator.get_stock_quantity(underlying)
+        remaining_shares = updated_shares - shares_required
 
-        # 更新卖出后的股票持仓
-        new_shares = current_shares + buy_shares - shares_required
+        if position_id in self._account_simulator.positions:
+            position = self._account_simulator.positions[position_id]
 
-        if new_shares == 0 and current_shares > 0:
-            # 卖出所有股票，移除持仓
-            position_id = f"{underlying}-STOCK"
-            if position_id in self._account_simulator.positions:
-                position = self._account_simulator.positions[position_id]
-                pnl = (
-                    (strike - position.entry_price)
-                    * shares_required
-                )
+            if remaining_shares <= 0:
+                # 所有股票已卖出（包括 Naked Call 的买入后立即卖出场景）
+                pnl = (strike - position.entry_price) * min(shares_required, updated_shares)
                 self._account_simulator.remove_position(
                     position_id=position_id,
-                    cash_change=execution.net_amount,
+                    cash_change=sell_execution.net_amount,
                     realized_pnl=pnl,
                 )
-        elif new_shares > 0:
-            # 还有剩余股票，更新数量
-            position_id = f"{underlying}-STOCK"
-            if position_id in self._account_simulator.positions:
-                # 使用新方法更新持仓
+            else:
+                # 还有剩余股票，更新数量
                 self._account_simulator.update_stock_position(
                     position_id=position_id,
-                    quantity_change=buy_shares - shares_required,
+                    quantity_change=-shares_required,
                     new_price=market_price,
-                    cash_change=execution.net_amount,
+                    cash_change=sell_execution.net_amount,
                 )
-        else:
-            # 没有持仓变化，无需处理
-            pass
 
         logger.info(
             f"Short Call assignment on {trade_date}: "
             f"Sold {shares_required} shares of {underlying} @ ${strike:.2f} "
-            f"(assignment), cash change: ${execution.net_amount:.2f}"
+            f"(assignment), cash change: ${sell_execution.net_amount:.2f}"
         )
 
 
