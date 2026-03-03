@@ -18,6 +18,7 @@ Contract Filter - 合约过滤器
 
 import logging
 from datetime import date
+from typing import TYPE_CHECKING
 
 from src.business.config.screening_config import (
     ContractFilterConfig,
@@ -25,6 +26,9 @@ from src.business.config.screening_config import (
     MetricsConfig,
     ScreeningConfig,
 )
+
+if TYPE_CHECKING:
+    pass
 from src.business.screening.models import (
     ContractOpportunity,
     UnderlyingScore,
@@ -178,6 +182,7 @@ class ContractFilter:
         underlying_scores: list[UnderlyingScore],
         option_types: list[str] | None = None,
         return_rejected: bool = False,
+        filter_config: ContractFilterConfig | None = None,
     ) -> list[ContractOpportunity]:
         """评估合约机会
 
@@ -190,12 +195,13 @@ class ContractFilter:
             return_rejected: 是否返回被拒绝的合约（默认 False，只返回通过的）
                 - False: 只返回 passed=True 的合约（兼容现有代码）
                 - True: 返回所有评估过的合约，便于调试和分析
+            filter_config: 可选的合约过滤配置（覆盖默认配置）
 
         Returns:
             ContractOpportunity 列表
         """
         all_opportunities: list[ContractOpportunity] = []
-        filter_config = self.config.contract_filter
+        effective_config = filter_config or self.config.contract_filter
 
         for score in underlying_scores:
             if not score.passed:
@@ -204,7 +210,7 @@ class ContractFilter:
             try:
                 opportunities = self._evaluate_underlying(
                     score,
-                    filter_config,
+                    effective_config,
                     option_types=option_types,
                 )
                 all_opportunities.extend(opportunities)

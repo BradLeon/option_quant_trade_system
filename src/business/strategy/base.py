@@ -135,10 +135,15 @@ class BaseOptionStrategy(ABC):
     def find_opportunities(
         self, symbols: List[str], data_provider: Any, context: MarketContext
     ) -> List[ContractOpportunity]:
-        """寻找市面上的开仓机会（替代老的 ScreeningPipeline）
+        """寻找市面上的开仓机会（支持多交易方向）
 
         默认实现 (V9 规则):
-        利用代码实例化的 ScreeningConfig（抛弃 YAML），执行严格的 IV Rank 和技术形态过滤。
+        利用代码实例化的 ScreeningConfig，执行严格的 IV Rank 和技术形态过滤。
+
+        支持多交易方向:
+        - 从配置中读取 strategy_types 列表
+        - 为每个方向运行独立的筛选 Pipeline
+        - 合并所有确认的机会
         """
         from src.business.config.screening_config import ScreeningConfig
         from src.business.screening.pipeline import ScreeningPipeline
@@ -150,12 +155,15 @@ class BaseOptionStrategy(ABC):
             config = self._screening_config or ScreeningConfig.load(strategy_name=self.name)
             self._screening_pipeline_instance = ScreeningPipeline(config, data_provider)
 
-        # 2. 内部闭环调用 Pipeline 工具类
+        # 2. 获取支持的策略类型
+        target_types = self._get_strategy_types()
+
+        # 3. 为每个方向运行筛选
         all_confirmed = []
-        target_types = self._strategy_types if getattr(self, "_strategy_types", None) else [StrategyType.SHORT_PUT]
-        
+
         for stype in target_types:
             try:
+                logger.info(f"正在筛选 {stype.value} 方向的机会...")
                 result = self._screening_pipeline_instance.run(
                     symbols=symbols,
                     market_type=MarketType.US,
@@ -167,10 +175,41 @@ class BaseOptionStrategy(ABC):
                     for opp in result.confirmed:
                         opp.metadata["source_strategy_type"] = stype.value
                     all_confirmed.extend(result.confirmed)
+                    logger.info(f"{stype.value} 方向找到 {len(result.confirmed)} 个机会")
             except Exception as e:
                 logger.error(f"Strategy {self.name} screening failed for {stype.value}: {e}")
 
+        logger.info(f"总计找到 {len(all_confirmed)} 个机会")
         return all_confirmed
+
+    def _get_strategy_types(self) -> List["StrategyType"]:
+        """获取支持的策略类型列表
+
+        优先级:
+        1. 通过 set_configs() 注入的 _strategy_types
+        2. 从 ScreeningConfig.strategy_types 读取
+        3. 默认返回 [StrategyType.SHORT_PUT]
+
+        Returns:
+            策略类型列表
+        """
+        from src.engine.models.enums import StrategyType
+
+        # 优先使用注入的策略类型
+        if self._strategy_types:
+            return self._strategy_types
+
+        # 从配置中获取
+        if self._screening_config:
+            type_strs = getattr(
+                self._screening_config,
+                "strategy_types",
+                ["short_put"]
+            )
+            return [StrategyType(t) for t in type_strs]
+
+        # 默认只支持 SHORT_PUT
+        return [StrategyType.SHORT_PUT]
 
     # ==========================
     # 阶段 3：建仓信号生成

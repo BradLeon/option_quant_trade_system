@@ -1,3 +1,8 @@
+# 支持的交易方向
+strategy_types:
+  - short_put
+  - covered_call
+
 market_filter:
   us_market:
     vix_symbol: ^VIX
@@ -36,6 +41,7 @@ market_filter:
     trend_required: bullish_or_neutral
   macro_events:
     enabled: false
+
 underlying_filter:
   min_iv_rank: 0
   trend_override:
@@ -60,6 +66,7 @@ underlying_filter:
     enabled: false
     max_pe_percentile: 0.7
     min_recommendation: hold
+
 contract_filter:
   liquidity:
     min_open_interest: 0
@@ -67,3 +74,35 @@ contract_filter:
   metrics:
     min_expected_roc: -0.5
     min_tgr: 0.0
+
+# 方向特定参数覆盖
+directional_overrides:
+  short_put:
+    market_filter:
+      us_market:
+        trend_required: bullish_or_neutral
+      hk_market:
+        trend_required: bullish_or_neutral
+    underlying_filter:
+      technical:
+        min_rsi: 30
+        max_rsi: 70
+        max_adx: 45
+    contract_filter:
+      delta_range: [0.15, 0.35]
+  covered_call:
+    market_filter:
+      us_market:
+        trend_required: neutral_or_bearish
+      hk_market:
+        trend_required: neutral_or_bearish
+    underlying_filter:
+      trend_override:
+        bullish:
+          min_iv_rank: 0
+      technical:
+        min_rsi: 45
+        max_rsi: 75
+        max_adx: 40
+    contract_filter:
+      delta_range: [0.20, 0.40]

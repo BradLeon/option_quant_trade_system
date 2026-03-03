@@ -72,12 +72,12 @@ src/business/config/
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import yaml
 
-from src.business.config.config_mode import ConfigMode
-from src.business.config.config_utils import merge_overrides
+if TYPE_CHECKING:
+    from src.engine.models.enums import StrategyType
 
 
 @dataclass
@@ -331,7 +331,12 @@ class OutputConfig:
 
 @dataclass
 class ScreeningConfig:
-    """筛选配置"""
+    """筛选配置
+
+    支持多交易方向配置:
+    - strategy_types: 支持的策略类型列表（如 ["short_put", "covered_call"]）
+    - directional_overrides: 方向特定的参数覆盖
+    """
 
     market_filter: MarketFilterConfig = field(default_factory=MarketFilterConfig)
     underlying_filter: UnderlyingFilterConfig = field(
@@ -339,6 +344,12 @@ class ScreeningConfig:
     )
     contract_filter: ContractFilterConfig = field(default_factory=ContractFilterConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+
+    # 新增：支持的策略类型列表
+    strategy_types: list[str] = field(default_factory=lambda: ["short_put"])
+
+    # 新增：方向特定参数覆盖
+    directional_overrides: dict[str, dict] = field(default_factory=dict)
 
     @classmethod
     def from_yaml(
@@ -475,7 +486,175 @@ class ScreeningConfig:
                 sort_order=out.get("sort_order", "desc"),
             )
 
+        # 解析 strategy_types
+        if "strategy_types" in data:
+            config.strategy_types = data["strategy_types"]
+
+        # 解析 directional_overrides
+        if "directional_overrides" in data:
+            config.directional_overrides = data["directional_overrides"]
+
         return config
+
+    def get_market_filter(
+        self, strategy_type: "StrategyType"
+    ) -> MarketFilterConfig:
+        """获取指定策略类型的市场环境筛选参数
+
+        Args:
+            strategy_type: 策略类型 (SHORT_PUT / COVERED_CALL)
+
+        Returns:
+            合并后的 MarketFilterConfig
+        """
+        import copy
+
+        direction = strategy_type.value
+
+        # 检查是否有方向特定覆盖
+        if direction in self.directional_overrides:
+            overrides = self.directional_overrides[direction]
+            if "market_filter" in overrides:
+                # 深拷贝基础配置，避免修改原配置
+                merged = copy.deepcopy(self.market_filter)
+                mf_override = overrides["market_filter"]
+
+                # 合并 US Market
+                if "us_market" in mf_override:
+                    if "trend_required" in mf_override["us_market"]:
+                        merged.us_market.trend_required = mf_override["us_market"]["trend_required"]
+                    if "vix_range" in mf_override["us_market"]:
+                        merged.us_market.vix_range = tuple(mf_override["us_market"]["vix_range"])
+
+                # 合并 HK Market
+                if "hk_market" in mf_override:
+                    if "trend_required" in mf_override["hk_market"]:
+                        merged.hk_market.trend_required = mf_override["hk_market"]["trend_required"]
+
+                return merged
+
+        return self.market_filter
+
+    def get_contract_filter(
+        self, strategy_type: "StrategyType"
+    ) -> ContractFilterConfig:
+        """获取指定策略类型的合约筛选参数
+
+        支持方向特定参数覆盖，如:
+        - directional_overrides.covered_call.contract_filter.delta_range
+
+        Args:
+            strategy_type: 策略类型 (SHORT_PUT / COVERED_CALL)
+
+        Returns:
+            合并后的 ContractFilterConfig
+        """
+        from src.engine.models.enums import StrategyType
+        import copy
+
+        direction = strategy_type.value
+
+        # 检查是否有方向特定覆盖
+        if direction in self.directional_overrides:
+            overrides = self.directional_overrides[direction]
+            if "contract_filter" in overrides:
+                # 深拷贝基础配置，避免修改原配置
+                merged = copy.deepcopy(self.contract_filter)
+                cf_override = overrides["contract_filter"]
+
+                # 合并各字段
+                if "delta_range" in cf_override:
+                    merged.delta_range = tuple(cf_override["delta_range"])
+                if "optimal_delta_range" in cf_override:
+                    merged.optimal_delta_range = tuple(cf_override["optimal_delta_range"])
+                if "dte_range" in cf_override:
+                    merged.dte_range = tuple(cf_override["dte_range"])
+                if "optimal_dte_range" in cf_override:
+                    merged.optimal_dte_range = tuple(cf_override["optimal_dte_range"])
+                if "otm_range" in cf_override:
+                    merged.otm_range = tuple(cf_override["otm_range"])
+
+                # 合并 liquidity
+                if "liquidity" in cf_override:
+                    liq = cf_override["liquidity"]
+                    if "max_bid_ask_spread" in liq:
+                        merged.liquidity.max_bid_ask_spread = liq["max_bid_ask_spread"]
+                    if "min_open_interest" in liq:
+                        merged.liquidity.min_open_interest = liq["min_open_interest"]
+                    if "min_volume" in liq:
+                        merged.liquidity.min_volume = liq["min_volume"]
+
+                # 合并 metrics
+                if "metrics" in cf_override:
+                    met = cf_override["metrics"]
+                    if "min_expected_roc" in met:
+                        merged.metrics.min_expected_roc = met["min_expected_roc"]
+                    if "min_tgr" in met:
+                        merged.metrics.min_tgr = met["min_tgr"]
+                    if "min_annual_roc" in met:
+                        merged.metrics.min_annual_roc = met["min_annual_roc"]
+                    if "min_sharpe_ratio" in met:
+                        merged.metrics.min_sharpe_ratio = met["min_sharpe_ratio"]
+                    if "min_sas" in met:
+                        merged.metrics.min_sas = met["min_sas"]
+                    if "max_prei" in met:
+                        merged.metrics.max_prei = met["max_prei"]
+                    if "min_win_probability" in met:
+                        merged.metrics.min_win_probability = met["min_win_probability"]
+
+                return merged
+
+        return self.contract_filter
+
+    def get_underlying_filter(
+        self, strategy_type: "StrategyType"
+    ) -> UnderlyingFilterConfig:
+        """获取指定策略类型的标的分析参数
+
+        支持方向特定参数覆盖，如:
+        - directional_overrides.covered_call.underlying_filter.trend_override
+
+        Args:
+            strategy_type: 策略类型 (SHORT_PUT / COVERED_CALL)
+
+        Returns:
+            合并后的 UnderlyingFilterConfig
+        """
+        from src.engine.models.enums import StrategyType
+        import copy
+
+        direction = strategy_type.value
+
+        # 检查是否有方向特定覆盖
+        if direction in self.directional_overrides:
+            overrides = self.directional_overrides[direction]
+            if "underlying_filter" in overrides:
+                # 深拷贝基础配置，避免修改原配置
+                merged = copy.deepcopy(self.underlying_filter)
+                uf_override = overrides["underlying_filter"]
+
+                # 合并基础字段
+                if "min_iv_rank" in uf_override:
+                    merged.min_iv_rank = uf_override["min_iv_rank"]
+                if "max_iv_hv_ratio" in uf_override:
+                    merged.max_iv_hv_ratio = uf_override["max_iv_hv_ratio"]
+                if "min_iv_hv_ratio" in uf_override:
+                    merged.min_iv_hv_ratio = uf_override["min_iv_hv_ratio"]
+                if "trend_override" in uf_override:
+                    # 合并 trend_override（不是替换）
+                    merged.trend_override = {**merged.trend_override, **uf_override["trend_override"]}
+                if "technical" in uf_override:
+                    tech = uf_override["technical"]
+                    if "min_rsi" in tech:
+                        merged.technical.min_rsi = tech["min_rsi"]
+                    if "max_rsi" in tech:
+                        merged.technical.max_rsi = tech["max_rsi"]
+                    if "max_adx" in tech:
+                        merged.technical.max_adx = tech["max_adx"]
+
+                return merged
+
+        return self.underlying_filter
 
     @classmethod
     def load(

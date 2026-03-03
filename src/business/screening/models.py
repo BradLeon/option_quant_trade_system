@@ -338,6 +338,9 @@ class ContractOpportunity:
     warnings: list[str] = field(default_factory=list)  # P2/P3 警告信息
     passed: bool = True  # 是否通过所有 P0/P1 检查
 
+    # 元数据（用于记录来源策略类型等）
+    metadata: dict = field(default_factory=dict)
+
     # 通过信息（仅 passed=True 时填充）
     pass_reasons: list[str] = field(default_factory=list)  # 通过原因（关键指标摘要）
     recommended_position: Optional[float] = None  # 推荐仓位（1/4 Kelly）

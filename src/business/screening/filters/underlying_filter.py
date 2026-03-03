@@ -23,6 +23,7 @@ from src.business.config.screening_config import (
     FundamentalConfig,
     ScreeningConfig,
     TechnicalConfig,
+    UnderlyingFilterConfig,
 )
 from src.business.screening.models import (
     FundamentalScore,
@@ -100,6 +101,7 @@ class UnderlyingFilter:
         market_type: MarketType,
         trend_status: TrendStatus | None = None,
         strategy_type: StrategyType | None = None,
+        filter_config: "UnderlyingFilterConfig | None" = None,
     ) -> list[UnderlyingScore]:
         """批量评估标的
 
@@ -108,6 +110,7 @@ class UnderlyingFilter:
             market_type: 市场类型
             trend_status: 市场趋势状态（用于 IV Rank 趋势修正）
             strategy_type: 策略类型（用于 IV Rank 趋势修正）
+            filter_config: 可选的标的过滤配置（覆盖默认配置）
 
         Returns:
             UnderlyingScore 列表
@@ -117,7 +120,7 @@ class UnderlyingFilter:
         for idx, symbol in enumerate(symbols, 1):
             try:
                 logger.info(f"正在评估标的 {idx}/{len(symbols)}: {symbol}")
-                score = self._evaluate_single(symbol, market_type, trend_status, strategy_type)
+                score = self._evaluate_single(symbol, market_type, trend_status, strategy_type, filter_config)
                 results.append(score)
 
                 # 输出详细评估结果
@@ -198,6 +201,7 @@ class UnderlyingFilter:
         market_type: MarketType,
         trend_status: TrendStatus | None = None,
         strategy_type: StrategyType | None = None,
+        filter_config: "UnderlyingFilterConfig | None" = None,
     ) -> UnderlyingScore:
         """评估单个标的
 
@@ -206,11 +210,12 @@ class UnderlyingFilter:
             market_type: 市场类型
             trend_status: 市场趋势状态（用于 IV Rank 趋势修正）
             strategy_type: 策略类型（用于 IV Rank 趋势修正）
+            filter_config: 可选的标的过滤配置（覆盖默认配置）
 
         Returns:
             UnderlyingScore: 评估结果
         """
-        return self._evaluate_single(symbol, market_type, trend_status, strategy_type)
+        return self._evaluate_single(symbol, market_type, trend_status, strategy_type, filter_config)
 
     def _evaluate_single(
         self,
@@ -218,6 +223,7 @@ class UnderlyingFilter:
         market_type: MarketType,
         trend_status: TrendStatus | None = None,
         strategy_type: StrategyType | None = None,
+        filter_config: "UnderlyingFilterConfig | None" = None,
     ) -> UnderlyingScore:
         """评估单个标的（内部实现）
 
@@ -239,7 +245,8 @@ class UnderlyingFilter:
         - 分析师评级偏低
         - 除息日临近
         """
-        filter_config = self.config.underlying_filter
+        # 使用传入的配置或默认配置
+        effective_config = filter_config or self.config.underlying_filter
         disqualify_reasons: list[str] = []  # P0/P1 阻塞条件
         warnings: list[str] = []  # P2/P3 警告条件
 
@@ -275,14 +282,14 @@ class UnderlyingFilter:
 
             # P1: IV/HV 比率检查（阻塞）
             if iv_hv_ratio is not None:
-                if iv_hv_ratio < filter_config.min_iv_hv_ratio:
+                if iv_hv_ratio < effective_config.min_iv_hv_ratio:
                     disqualify_reasons.append(
-                        f"[P1] IV/HV={iv_hv_ratio:.2f} 偏低（<{filter_config.min_iv_hv_ratio}），"
+                        f"[P1] IV/HV={iv_hv_ratio:.2f} 偏低（<{effective_config.min_iv_hv_ratio}），"
                         f"期权相对便宜"
                     )
-                elif iv_hv_ratio > filter_config.max_iv_hv_ratio:
+                elif iv_hv_ratio > effective_config.max_iv_hv_ratio:
                     disqualify_reasons.append(
-                        f"[P1] IV/HV={iv_hv_ratio:.2f} 过高（>{filter_config.max_iv_hv_ratio}），"
+                        f"[P1] IV/HV={iv_hv_ratio:.2f} 过高（>{effective_config.max_iv_hv_ratio}），"
                         f"可能有特殊事件"
                     )
         else:
@@ -291,24 +298,24 @@ class UnderlyingFilter:
 
         # 2. 获取技术面评分（P2/P3 只警告）
         logger.debug(f"评估 {symbol} 技术面...")
-        technical = self._evaluate_technical(symbol, filter_config.technical)
-        tech_warnings = self._check_technical(technical, filter_config.technical)
+        technical = self._evaluate_technical(symbol, effective_config.technical)
+        tech_warnings = self._check_technical(technical, effective_config.technical)
         warnings.extend(tech_warnings)
 
         # 3. 获取基本面数据（只获取一次）
         fundamental_data = None
-        if filter_config.fundamental.enabled or filter_config.event_calendar.enabled:
+        if effective_config.fundamental.enabled or effective_config.event_calendar.enabled:
             logger.debug(f"获取 {symbol} 基本面数据...")
             fundamental_data = self.provider.get_fundamental(symbol)
 
         # 4. 评估基本面（P3 只警告）
         fundamental = None
-        if filter_config.fundamental.enabled:
+        if effective_config.fundamental.enabled:
             logger.debug(f"评估 {symbol} 基本面...")
             fundamental = self._evaluate_fundamental_with_data(
-                symbol, filter_config.fundamental, fundamental_data
+                symbol, effective_config.fundamental, fundamental_data
             )
-            fund_warnings = self._check_fundamental(fundamental, filter_config.fundamental)
+            fund_warnings = self._check_fundamental(fundamental, effective_config.fundamental)
             warnings.extend(fund_warnings)
 
         # 5. 检查事件日历（财报日、除息日）
@@ -317,10 +324,10 @@ class UnderlyingFilter:
         days_to_earnings = None
         days_to_ex_dividend = None
 
-        if filter_config.event_calendar.enabled:
+        if effective_config.event_calendar.enabled:
             logger.debug(f"检查 {symbol} 事件日历...")
             event_result = self._check_event_calendar_with_data(
-                symbol, filter_config.event_calendar, fundamental_data
+                symbol, effective_config.event_calendar, fundamental_data
             )
             if event_result:
                 earnings_date = event_result.get("earnings_date")

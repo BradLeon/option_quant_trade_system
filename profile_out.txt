@@ -1,0 +1,179 @@
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=510.0 exp=2024-06-28 on 2024-06-12 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=508.0 exp=2024-07-05 on 2024-06-12 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=513.0 exp=2024-07-12 on 2024-06-12 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-06-12 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-06-12 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=516.0 exp=2024-07-12 on 2024-06-12 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=510.0 exp=2024-06-28 on 2024-06-13 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=508.0 exp=2024-07-05 on 2024-06-13 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=513.0 exp=2024-07-12 on 2024-06-13 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-06-13 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-06-13 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=516.0 exp=2024-07-12 on 2024-06-13 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=517.5 exp=2024-07-12 on 2024-06-13 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.account_simulator:Insufficient margin for SPY_2024-07-26_522.0_put: required=10643.30, available=6659.39
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=510.0 exp=2024-06-28 on 2024-06-14 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=508.0 exp=2024-07-05 on 2024-06-14 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=513.0 exp=2024-07-12 on 2024-06-14 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-06-14 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-06-14 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.account_simulator:Insufficient margin for SPY_2024-07-12_524.0_put: required=10648.83, available=6452.39
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=510.0 exp=2024-06-28 on 2024-06-17 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=508.0 exp=2024-07-05 on 2024-06-17 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=513.0 exp=2024-07-12 on 2024-06-17 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-06-17 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-06-17 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=516.0 exp=2024-07-12 on 2024-06-17 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.account_simulator:Insufficient margin for SPY_2024-07-12_530.0_put: required=10766.33, available=9543.59
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=510.0 exp=2024-06-28 on 2024-06-18 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=508.0 exp=2024-07-05 on 2024-06-18 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=513.0 exp=2024-07-12 on 2024-06-18 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-06-18 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-06-18 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=516.0 exp=2024-07-12 on 2024-06-18 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=517.5 exp=2024-07-12 on 2024-06-18 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=520.0 exp=2024-07-26 on 2024-06-18 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=510.0 exp=2024-06-28 on 2024-06-20 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=508.0 exp=2024-07-05 on 2024-06-20 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=513.0 exp=2024-07-12 on 2024-06-20 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-06-20 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-06-20 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=516.0 exp=2024-07-12 on 2024-06-20 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=517.5 exp=2024-07-12 on 2024-06-20 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=520.0 exp=2024-07-26 on 2024-06-20 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.account_simulator:Insufficient margin for SPY_2024-08-02_524.0_put: required=10736.24, available=959.78
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=510.0 exp=2024-06-28 on 2024-06-21 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=508.0 exp=2024-07-05 on 2024-06-21 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=513.0 exp=2024-07-12 on 2024-06-21 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-06-21 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-06-21 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=516.0 exp=2024-07-12 on 2024-06-21 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=517.5 exp=2024-07-12 on 2024-06-21 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=510.0 exp=2024-06-28 on 2024-06-24 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=508.0 exp=2024-07-05 on 2024-06-24 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=513.0 exp=2024-07-12 on 2024-06-24 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-06-24 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-06-24 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=516.0 exp=2024-07-12 on 2024-06-24 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=517.5 exp=2024-07-12 on 2024-06-24 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=510.0 exp=2024-06-28 on 2024-06-25 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=508.0 exp=2024-07-05 on 2024-06-25 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=513.0 exp=2024-07-12 on 2024-06-25 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-06-25 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-06-25 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=516.0 exp=2024-07-12 on 2024-06-25 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=517.5 exp=2024-07-12 on 2024-06-25 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=510.0 exp=2024-06-28 on 2024-06-26 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=508.0 exp=2024-07-05 on 2024-06-26 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=513.0 exp=2024-07-12 on 2024-06-26 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-06-26 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-06-26 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=516.0 exp=2024-07-12 on 2024-06-26 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=517.5 exp=2024-07-12 on 2024-06-26 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=510.0 exp=2024-06-28 on 2024-06-27 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=508.0 exp=2024-07-05 on 2024-06-27 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=513.0 exp=2024-07-12 on 2024-06-27 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-06-27 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-06-27 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=516.0 exp=2024-07-12 on 2024-06-27 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=517.5 exp=2024-07-12 on 2024-06-27 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=520.0 exp=2024-07-26 on 2024-06-27 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.account_simulator:Insufficient margin for SPY_2024-08-02_526.0_put: required=10706.31, available=616.68
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=510.0 exp=2024-06-28 on 2024-06-28 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=508.0 exp=2024-07-05 on 2024-06-28 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=513.0 exp=2024-07-12 on 2024-06-28 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-06-28 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-06-28 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=516.0 exp=2024-07-12 on 2024-06-28 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=517.5 exp=2024-07-12 on 2024-06-28 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=520.0 exp=2024-07-26 on 2024-06-28 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=508.0 exp=2024-07-05 on 2024-07-01 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=513.0 exp=2024-07-12 on 2024-07-01 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-07-01 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=514.0 exp=2024-07-12 on 2024-07-01 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=516.0 exp=2024-07-12 on 2024-07-01 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=517.5 exp=2024-07-12 on 2024-07-01 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.position_manager:Option price invalid or missing for SPY put K=520.0 exp=2024-07-26 on 2024-07-01 (quote price: None), using intrinsic/minimum value: 0.01
+WARNING:src.backtest.engine.account_simulator:Insufficient margin for SPY_2024-08-02_527.0_put: required=10719.32, available=7315.88
+BACKTEST RESULT:
+{'config_name': 'SHORT_PUT_2020_2024', 'start_date': '2024-06-01', 'end_date': '2024-07-01', 'strategy_types': ['short_put'], 'symbols': ['SPY'], 'initial_capital': 100000.0, 'final_nlv': 101573.26299999999, 'total_return': 1573.2629999999917, 'total_return_pct': 0.015732629999999918, 'total_trades': 1, 'winning_trades': 1, 'losing_trades': 0, 'win_rate': 1.0, 'profit_factor': inf, 'total_commission': 15.0, 'total_slippage': 2.8985, 'execution_time_seconds': 46.732137, 'trading_days': 20, 'errors': []}
+Tue Mar  3 12:27:35 2026    profile_full.stats
+
+         7718836 function calls (7643904 primitive calls) in 46.735 seconds
+
+   Ordered by: cumulative time
+   List reduced from 2342 to 30 due to restriction <30>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+      7/1    0.000    0.000   46.762   46.762 {built-in method builtins.exec}
+        1    0.002    0.002   46.762   46.762 <string>:1(<module>)
+        1    0.000    0.000   46.760   46.760 /Users/liuchao/Code/Quant/option_quant_trade_system/profile_full.py:12(run_profile)
+        1    0.001    0.001   46.732   46.732 /Users/liuchao/Code/Quant/option_quant_trade_system/src/backtest/engine/backtest_executor.py:287(run)
+       20    0.001    0.000   46.716    2.336 /Users/liuchao/Code/Quant/option_quant_trade_system/src/backtest/engine/backtest_executor.py:358(_run_single_day)
+       19    0.000    0.000   35.260    1.856 /Users/liuchao/Code/Quant/option_quant_trade_system/src/business/strategy/base.py:58(evaluate_positions)
+       19    0.003    0.000   35.259    1.856 /Users/liuchao/Code/Quant/option_quant_trade_system/src/business/monitoring/pipeline.py:74(run)
+       19    0.000    0.000   35.240    1.855 /Users/liuchao/Code/Quant/option_quant_trade_system/src/engine/portfolio/metrics.py:38(calc_portfolio_metrics)
+       19    0.001    0.000   35.239    1.855 /Users/liuchao/Code/Quant/option_quant_trade_system/src/engine/portfolio/greeks_agg.py:227(calc_beta_weighted_delta)
+  773/119    0.005    0.000   35.059    0.295 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/yfinance/utils.py:89(wrapper)
+      119    0.001    0.000   34.572    0.291 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/yfinance/data.py:373(get)
+      119    0.003    0.000   34.566    0.290 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/yfinance/data.py:391(_make_request)
+      120    0.001    0.000   34.551    0.288 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/curl_cffi/requests/session.py:660(get)
+      120    0.003    0.000   34.550    0.288 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/curl_cffi/requests/session.py:496(request)
+      120    0.001    0.000   34.455    0.287 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/curl_cffi/curl.py:349(perform)
+      120   34.443    0.287   34.452    0.287 {built-in method curl_cffi._wrapper.curl_easy_perform}
+       40    0.000    0.000   22.867    0.572 /Users/liuchao/Code/Quant/option_quant_trade_system/src/engine/portfolio/greeks_agg.py:71(_get_stock_beta)
+       40    0.000    0.000   22.862    0.572 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/yfinance/ticker.py:157(info)
+       40    0.000    0.000   22.862    0.572 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/yfinance/base.py:281(get_info)
+    80/40    0.000    0.000   22.862    0.572 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/yfinance/scrapers/quote.py:500(info)
+       80    0.003    0.000   22.596    0.282 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/yfinance/scrapers/quote.py:607(_fetch_info)
+       80    0.001    0.000   22.584    0.282 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/yfinance/data.py:460(get_raw_json)
+202569/153126    0.017    0.000   12.377    0.000 {built-in method builtins.getattr}
+       19    0.000    0.000   12.369    0.651 /Users/liuchao/Code/Quant/option_quant_trade_system/src/engine/portfolio/greeks_agg.py:15(_get_spy_price)
+       19    0.000    0.000   12.366    0.651 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/yfinance/scrapers/quote.py:97(get)
+       19    0.000    0.000   12.366    0.651 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/yfinance/scrapers/quote.py:104(__getitem__)
+       19    0.000    0.000   12.366    0.651 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/yfinance/scrapers/quote.py:244(last_price)
+       19    0.003    0.000   12.365    0.651 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/yfinance/scrapers/quote.py:128(_get_1y_prices)
+       38    0.008    0.000   12.193    0.321 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/yfinance/scrapers/history.py:31(history)
+       40    0.000    0.000   12.134    0.303 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/yfinance/scrapers/quote.py:579(_fetch)
+
+
+Tue Mar  3 12:27:35 2026    profile_full.stats
+
+         7718836 function calls (7643904 primitive calls) in 46.735 seconds
+
+   Ordered by: internal time
+   List reduced from 2342 to 30 due to restriction <30>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+      120   34.443    0.287   34.452    0.287 {built-in method curl_cffi._wrapper.curl_easy_perform}
+     1787    8.731    0.005    8.736    0.005 {built-in method _duckdb.execute}
+    74888    0.660    0.000    2.159    0.000 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/scipy/stats/_distn_infrastructure.py:2132(cdf)
+    74888    0.158    0.000    0.224    0.000 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/numpy/lib/_stride_tricks_impl.py:373(_broadcast_to)
+    74888    0.142    0.000    0.825    0.000 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/scipy/stats/_distn_infrastructure.py:612(argsreduce)
+   152114    0.125    0.000    0.125    0.000 {method 'reduce' of 'numpy.ufunc' objects}
+    74888    0.122    0.000    0.224    0.000 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/scipy/stats/_distn_infrastructure.py:1044(_open_support_mask)
+   150392    0.100    0.000    0.357    0.000 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/numpy/_core/fromnumeric.py:86(_wrapreduction_any_all)
+   224664    0.072    0.000    0.072    0.000 {built-in method numpy._core._multiarray_umath._place}
+    74888    0.058    0.000    0.401    0.000 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/numpy/lib/_stride_tricks_impl.py:514(broadcast_arrays)
+      165    0.049    0.000    0.238    0.001 /Users/liuchao/Code/Quant/option_quant_trade_system/src/backtest/data/duckdb_provider.py:447(get_option_chain)
+    74888    0.045    0.000    0.049    0.000 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/numpy/lib/_stride_tricks_impl.py:446(_broadcast_shape)
+    74945    0.036    0.000    0.057    0.000 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/numpy/_core/shape_base.py:19(atleast_1d)
+    75234    0.036    0.000    0.054    0.000 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/numpy/_core/_ufunc_config.py:472(__enter__)
+357102/355145    0.036    0.000    0.056    0.000 {built-in method builtins.isinstance}
+       30    0.036    0.001    8.366    0.279 /Users/liuchao/Code/Quant/option_quant_trade_system/src/backtest/data/duckdb_provider.py:1217(get_option_quotes_batch)
+    74888    0.032    0.000    0.032    0.000 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/scipy/stats/_continuous_distns.py:370(_norm_cdf)
+      158    0.031    0.000    0.031    0.000 /Users/liuchao/.local/share/uv/python/cpython-3.11.11-macos-aarch64-none/lib/python3.11/json/decoder.py:343(raw_decode)
+    74888    0.030    0.000    2.188    0.000 /Users/liuchao/Code/Quant/option_quant_trade_system/src/engine/bs/core.py:96(calc_n)
+    74945    0.029    0.000    0.110    0.000 {method 'any' of 'numpy.generic' objects}
+   150392    0.029    0.000    0.029    0.000 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/numpy/_core/fromnumeric.py:88(<dictcomp>)
+   224664    0.029    0.000    0.101    0.000 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/numpy/lib/_function_base_impl.py:2100(place)
+    75314    0.029    0.000    0.098    0.000 {method 'all' of 'numpy.generic' objects}
+225690/225671    0.029    0.000    0.029    0.000 {built-in method numpy.array}
+       55    0.029    0.001    0.029    0.001 {built-in method _duckdb.fetchall}
+    10212    0.028    0.000    1.519    0.000 /Users/liuchao/Code/Quant/option_quant_trade_system/src/engine/strategy/short_put.py:157(calc_return_variance)
+    20424    0.027    0.000    1.238    0.000 /Users/liuchao/Code/Quant/option_quant_trade_system/src/engine/strategy/short_put.py:119(calc_expected_return)
+    74888    0.026    0.000    0.250    0.000 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/numpy/lib/_stride_tricks_impl.py:579(<listcomp>)
+     1702    0.025    0.000    2.427    0.001 /Users/liuchao/Code/Quant/option_quant_trade_system/src/business/screening/filters/contract_filter.py:418(_evaluate_contract)
+      798    0.024    0.000    0.025    0.000 /Users/liuchao/Code/Quant/option_quant_trade_system/.venv/lib/python3.11/site-packages/pandas/core/dtypes/cast.py:1591(construct_1d_object_array_from_listlike)
+
+

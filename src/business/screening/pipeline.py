@@ -23,7 +23,11 @@ Screening Pipeline - 筛选管道
 import logging
 from datetime import date, datetime
 
-from src.business.config.screening_config import ScreeningConfig
+from src.business.config.screening_config import (
+    ScreeningConfig,
+    ContractFilterConfig,
+    UnderlyingFilterConfig,
+)
 from src.business.screening.filters.contract_filter import ContractFilter
 from src.business.screening.filters.market_filter import MarketFilter
 from src.business.screening.filters.underlying_filter import UnderlyingFilter
@@ -103,11 +107,20 @@ class ScreeningPipeline:
         )
         start_time = datetime.now()
 
+        # 获取方向特定的合约筛选参数
+        contract_filter_config = self.config.get_contract_filter(strategy_type)
+        underlying_filter_config = self.config.get_underlying_filter(strategy_type)
+        market_filter_config = self.config.get_market_filter(strategy_type)
+
+        logger.debug(
+            f"方向 {strategy_type.value} 使用 Delta 范围: {contract_filter_config.delta_range}"
+        )
+
         # 1. 市场环境评估
         market_status: MarketStatus | None = None
         if not skip_market_check:
             logger.info("Step 1: 评估市场环境...")
-            market_status = self.market_filter.evaluate(market_type)
+            market_status = self.market_filter.evaluate(market_type, filter_config=market_filter_config)
 
             # 输出详细市场状态
             self._log_market_status(market_status)
@@ -136,6 +149,7 @@ class ScreeningPipeline:
             symbols, market_type,
             trend_status=overall_trend,
             strategy_type=strategy_type,
+            filter_config=underlying_filter_config,  # 传入方向特定的配置
         )
 
         passed_underlyings = [s for s in underlying_scores if s.passed]
@@ -168,11 +182,12 @@ class ScreeningPipeline:
         else:
             option_types = None  # 评估所有类型
 
-        # 使用 return_rejected=True 获取所有评估的合约（包括被拒绝的）
+        # 使用方向特定的合约筛选参数
         all_evaluated = self.contract_filter.evaluate(
             passed_underlyings,
             option_types=option_types,
             return_rejected=True,
+            filter_config=contract_filter_config,  # 传入方向特定的配置
         )
 
         # 统计实际评估数量并筛选出通过的（Step1 候选）
@@ -193,6 +208,7 @@ class ScreeningPipeline:
                 passed_underlyings=passed_underlyings,
                 option_types=option_types,
                 market_type=market_type,
+                filter_config=contract_filter_config,  # 传入方向特定的配置
             )
 
             logger.info(f"确认完成: {len(confirmed)}/{len(candidates)} 通过")
@@ -324,6 +340,7 @@ class ScreeningPipeline:
         passed_underlyings: list[UnderlyingScore],
         option_types: list[str] | None,
         market_type: MarketType,
+        filter_config: "ContractFilterConfig" = None,
     ) -> list[ContractOpportunity]:
         """二次确认候选合约
 
@@ -334,12 +351,17 @@ class ScreeningPipeline:
             passed_underlyings: 通过标的筛选的标的列表
             option_types: 期权类型列表
             market_type: 市场类型
+            filter_config: 方向特定的合约筛选配置
 
         Returns:
             两步都通过的合约列表
         """
         if not candidates:
             return []
+
+        # 使用传入的配置或默认配置
+        if filter_config is None:
+            filter_config = self.config.contract_filter
 
         # 1. 构建 OptionContract 列表（只包含候选合约）
         contracts_to_fetch: list[OptionContract] = []
@@ -381,7 +403,6 @@ class ScreeningPipeline:
         underlying_map = {s.symbol: s for s in passed_underlyings}
 
         # 4. 评估每个合约
-        filter_config = self.config.contract_filter
         dte_min, dte_max = filter_config.dte_range
 
         confirmed: list[ContractOpportunity] = []
