@@ -774,12 +774,12 @@ class BacktestExecutor:
         buy_shares = 0
 
         if current_shares >= shares_required:
-            # 有足够股票：直接按市价卖出
+            # 有足够股票：直接按行权价卖出 (而不是市价)
             execution = self._trade_simulator.execute_stock_trade(
                 symbol=underlying,
                 side=OrderSide.SELL,
                 quantity=-shares_required,  # 负数表示卖出
-                price=market_price,
+                price=strike,
                 trade_date=trade_date,
                 reason="assigned_sell",
             )
@@ -807,12 +807,12 @@ class BacktestExecutor:
             )
 
 
-            # 然后卖出所需股票
+            # 然后按行权价卖出所需股票 (而不是市价)
             execution = self._trade_simulator.execute_stock_trade(
                 symbol=underlying,
                 side=OrderSide.SELL,
                 quantity=-shares_required,  # 负数表示卖出
-                price=market_price,
+                price=strike,
                 trade_date=trade_date,
                 reason="assigned_sell",
             )

@@ -415,12 +415,12 @@ class AccountSimulator:
         """
         position_id = f"{symbol}-STOCK"
 
-        # 检查现金是否足够（买入时 cash_change < 0）
+        # 检查现金是否足够（买入时 cash_change < 0，允许融资买入或行权强制买入，只记录警告）
         if cash_change < 0 and abs(cash_change) > self._cash:
             required = abs(cash_change)
             available = self._cash
-            raise ValueError(
-                f"Insufficient cash to buy {abs(quantity)} {symbol} @ ${entry_price:.2f}: "
+            logger.warning(
+                f"Margin utilized (Negative Cash): buying {abs(quantity)} {symbol} @ ${entry_price:.2f}. "
                 f"required=${required:.2f}, available=${available:.2f}"
             )
 
