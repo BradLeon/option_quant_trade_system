@@ -485,9 +485,10 @@ class PositionThresholds:
 @dataclass
 class EarlyTakeProfitRule:
     """单条 DTE+PnL 联合止盈规则"""
-    dte_below: int          # DTE < 此值
-    pnl_above: float        # PnL ≥ 此值 (0.50 = 50%)
-    level: str = "red"      # red / yellow / green
+    pnl_above: float                  # PnL ≥ 此值 (0.50 = 50%)
+    dte_below: int | None = None      # DTE < 此值
+    dte_above: int | None = None      # DTE > 此值
+    level: str = "red"                # red / yellow / green
 
 
 @dataclass
@@ -929,9 +930,10 @@ class MonitoringConfig:
                     enabled=etp.get("enabled", True),
                     rules=[
                         EarlyTakeProfitRule(
-                            dte_below=r["dte_below"],
-                            pnl_above=r["pnl_above"],
-                            level=r["level"],
+                            dte_below=r.get("dte_below"),
+                            dte_above=r.get("dte_above"),
+                            pnl_above=r.get("pnl_above", 0.0),
+                            level=r.get("level", "red"),
                         )
                         for r in etp.get("rules", [])
                     ],

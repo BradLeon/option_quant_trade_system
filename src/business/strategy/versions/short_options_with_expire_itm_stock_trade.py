@@ -15,8 +15,9 @@ class ShortOptionsWithExpireItmStockTrade(BaseOptionStrategy):
         return "short_options_with_expire_itm_stock_trade"
 
     def get_monitoring_overrides(self) -> dict | None:
-        """接股版：禁用 OTM% 平仓 + 禁用 P&L 止损"""
+        """接股版：禁用 OTM% / P&L / win_probability 平仓"""
         return {
-            "otm_pct": {"enabled": False},  # 允许 ITM 持有至行权
-            "pnl": {"enabled": False},       # 行权接盘兜底，禁用 P&L 止损
+            "otm_pct": {"enabled": False},          # 允许 ITM 持有至行权
+            "pnl": {"enabled": False},               # 行权接盘兜底，禁用 P&L 止损
+            "win_probability": {"enabled": False},   # 允许胜率下降至行权（核心差异）
         }

@@ -109,6 +109,9 @@ class BacktestConfig:
     # - "mid": 中间价
     price_mode: str = "close"
 
+    # ========== 策略行为 ==========
+    max_new_positions_per_day: int = 1  # 每日最大新开仓数量
+
     # ========== 其他选项 ==========
     random_seed: int | None = None  # 随机种子 (用于可重复性)
     verbose: bool = False  # 详细日志
@@ -239,6 +242,7 @@ class BacktestConfig:
             "stock_commission_min_per_order": self.stock_commission_min_per_order,
             "data_dir": self.data_dir,
             "price_mode": self.price_mode,
+            "max_new_positions_per_day": self.max_new_positions_per_day,
             "random_seed": self.random_seed,
             "verbose": self.verbose,
             "skip_market_check": self.skip_market_check,

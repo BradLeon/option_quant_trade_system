@@ -26,7 +26,8 @@ class BaseOptionStrategy(ABC):
         """初始化策略基类"""
         self._screening_config: Optional["ScreeningConfig"] = None
         self._monitoring_config: Optional["MonitoringConfig"] = None
-        
+        self._max_new_positions_per_day: int = 1
+
         # 性能优化：缓存高频调用的管道实例
         self._screening_pipeline_instance = None
         self._monitoring_pipeline_instance = None
@@ -67,7 +68,8 @@ class BaseOptionStrategy(ABC):
         self,
         screening_config: "ScreeningConfig",
         monitoring_config: "MonitoringConfig",
-        strategy_types: List["StrategyType"] = None
+        strategy_types: List["StrategyType"] = None,
+        max_new_positions_per_day: int = 1,
     ) -> None:
         """注入配置（由 BacktestExecutor 调用）
 
@@ -75,10 +77,12 @@ class BaseOptionStrategy(ABC):
             screening_config: 筛选配置
             monitoring_config: 监控配置
             strategy_types: 策略允许操作的期权方向 (如 SHORT_PUT, COVERED_CALL)
+            max_new_positions_per_day: 每日最大新开仓数量
         """
         self._screening_config = screening_config
         self._monitoring_config = monitoring_config
         self._strategy_types = strategy_types or []
+        self._max_new_positions_per_day = max_new_positions_per_day
 
     # ==========================
     # 阶段 1：平仓监控与风控决策
@@ -269,39 +273,109 @@ class BaseOptionStrategy(ABC):
         """
         return sorted(candidates, key=lambda x: getattr(x, 'expected_roc', 0) or x.annual_roc, reverse=True)
 
+    def _build_entry_signal(
+        self,
+        candidate: ContractOpportunity,
+        account_state: Any,
+        context: MarketContext,
+    ) -> Optional[TradeSignal]:
+        """为单个候选合约构建开仓信号（内部方法）
+
+        Args:
+            candidate: 候选合约
+            account_state: 账户状态 (AccountState)
+            context: 市场上下文
+
+        Returns:
+            TradeSignal 或 None（仓位为 0 时）
+        """
+        from src.backtest.engine.trade_simulator import TradeAction
+        from src.data.models.option import OptionQuote, OptionContract, OptionType, Greeks
+        from datetime import datetime
+        from src.engine.models.enums import PositionSide
+
+        sizer = self._position_sizer_instance
+        qty = sizer.calculate_size(candidate, account_state)
+
+        if qty <= 0:
+            logger.warning(f"PositionSizer 认为仓位受限无法开仓对于: {candidate.symbol}")
+            return None
+
+        try:
+            expiration = datetime.strptime(candidate.expiry, "%Y-%m-%d").date()
+        except Exception:
+            from datetime import date
+            expiration = candidate.expiry if isinstance(candidate.expiry, date) else context.current_date
+
+        contract = OptionContract(
+            symbol=candidate.symbol,
+            underlying=candidate.symbol.split()[0] if " " in candidate.symbol else candidate.symbol,
+            option_type=OptionType(candidate.option_type.lower()),
+            strike_price=candidate.strike,
+            expiry_date=expiration,
+            lot_size=candidate.lot_size or 100
+        )
+
+        greeks = Greeks(
+            delta=candidate.delta,
+            gamma=candidate.gamma,
+            theta=candidate.theta,
+            vega=candidate.vega
+        )
+
+        quote_obj = OptionQuote(
+            contract=contract,
+            timestamp=datetime.combine(context.current_date, datetime.min.time()),
+            bid=candidate.bid or candidate.mid_price,
+            ask=candidate.ask or candidate.mid_price,
+            last_price=candidate.mid_price,
+            iv=candidate.iv,
+            volume=candidate.volume or 0,
+            open_interest=candidate.open_interest or 0,
+            greeks=greeks
+        )
+
+        side = self.get_position_side(candidate)
+        direction = 1 if side == PositionSide.LONG else -1
+
+        return TradeSignal(
+            action=TradeAction.OPEN,
+            symbol=candidate.symbol,
+            quantity=qty * direction,
+            reason=f"Top candidate: AnnROC={getattr(candidate, 'expected_roc', candidate.annual_roc):.1%}, IVRank={getattr(candidate, 'underlying_iv_rank', getattr(candidate, 'iv_rank', 0.0)):.1f}%",
+            priority="normal",
+            quote=quote_obj
+        )
+
     def generate_entry_signals(
-        self, 
-        candidates: List[ContractOpportunity], 
+        self,
+        candidates: List[ContractOpportunity],
         account: "AccountSimulator",
         context: MarketContext
     ) -> List[TradeSignal]:
-        """从机会中挑选并分配仓位（替代老的 DecisionEngine）
+        """从机会中挑选 top-N 并分配仓位
 
-        默认实现 (V9 规则):
-        选择 Expected ROC 即 Annual ROC 最高的一个合约进行交易，分配 25% 购买力。
+        遍历排名前 _max_new_positions_per_day 个候选，每个独立计算仓位大小。
         """
         if not candidates:
             return []
-            
+
         # 使用模板方法排序（子类可覆写选优标准）
         sorted_candidates = self.rank_candidates(candidates)
-        best_candidate = sorted_candidates[0]
-        
+
         # 仓位计算：复用核心底层 PositionSizer，确保风控及 Kelly 公式准确执行
         from src.business.trading.decision.position_sizer import PositionSizer
         from src.business.trading.models.decision import AccountState
         from src.business.trading.config.decision_config import DecisionConfig
-        
+
         # 加载决策配置（内含策略匹配的 risk_config），并缓存 Sizer 实例以提升性能
         if self._position_sizer_instance is None:
             decision_config = DecisionConfig.load(strategy_name=self.name)
             self._position_sizer_instance = PositionSizer(config=decision_config)
-            
-        sizer = self._position_sizer_instance
-        
+
         margin_util = account.margin_used / account.nlv if account.nlv > 0 else 0.0
         cash_ratio = account.cash / account.nlv if account.nlv > 0 else 0.0
-        
+
         account_state = AccountState(
             broker="backtest",
             account_type="paper",
@@ -314,65 +388,12 @@ class BaseOptionStrategy(ABC):
             gross_leverage=0.0,
             total_position_count=account.position_count
         )
-        
-        qty = sizer.calculate_size(best_candidate, account_state)
-        
-        if qty <= 0:
-            logger.warning(f"PositionSizer 认为仓位受限无法开仓对于: {best_candidate.symbol}")
-            return []
-            
-        from src.backtest.engine.trade_simulator import TradeAction
-        from src.data.models.option import OptionQuote, OptionContract, OptionType, Greeks
-        from datetime import datetime
-        from src.engine.models.enums import PositionSide
 
-        # 构造临时的 OptionQuote 以满足执行引擎的需要
-        # format of expiry in ContractOpportunity is mostly ISO string or similar
-        try:
-            expiration = datetime.strptime(best_candidate.expiry, "%Y-%m-%d").date()
-        except Exception:
-            # Fallback if it's already a date or different format
-            from datetime import date
-            expiration = best_candidate.expiry if isinstance(best_candidate.expiry, date) else context.current_date
+        max_new = self._max_new_positions_per_day
+        signals = []
+        for candidate in sorted_candidates[:max_new]:
+            signal = self._build_entry_signal(candidate, account_state, context)
+            if signal is not None:
+                signals.append(signal)
 
-        contract = OptionContract(
-            symbol=best_candidate.symbol,
-            underlying=best_candidate.symbol.split()[0] if " " in best_candidate.symbol else best_candidate.symbol,
-            option_type=OptionType(best_candidate.option_type.lower()),
-            strike_price=best_candidate.strike,
-            expiry_date=expiration,
-            lot_size=best_candidate.lot_size or 100
-        )
-        
-        greeks = Greeks(
-            delta=best_candidate.delta,
-            gamma=best_candidate.gamma,
-            theta=best_candidate.theta,
-            vega=best_candidate.vega
-        )
-
-        quote_obj = OptionQuote(
-            contract=contract,
-            timestamp=datetime.combine(context.current_date, datetime.min.time()),
-            bid=best_candidate.bid or best_candidate.mid_price,
-            ask=best_candidate.ask or best_candidate.mid_price,
-            last_price=best_candidate.mid_price,
-            iv=best_candidate.iv,
-            volume=best_candidate.volume or 0,
-            open_interest=best_candidate.open_interest or 0,
-            greeks=greeks
-        )
-
-        side = self.get_position_side(best_candidate)
-        direction = 1 if side == PositionSide.LONG else -1
-
-        return [
-            TradeSignal(
-                action=TradeAction.OPEN,
-                symbol=best_candidate.symbol,
-                quantity=qty * direction,  # 动态应用开仓方向
-                reason=f"Top candidate: AnnROC={getattr(best_candidate, 'expected_roc', best_candidate.annual_roc):.1%}, IVRank={getattr(best_candidate, 'underlying_iv_rank', getattr(best_candidate, 'iv_rank', 0.0)):.1f}%",
-                priority="normal",
-                quote=quote_obj
-            )
-        ]
+        return signals

@@ -481,6 +481,7 @@ class AccountSimulator:
         quantity_change: int,
         new_price: float,
         cash_change: float,
+        realized_pnl: float = 0.0,
     ) -> None:
         """更新现有股票持仓的数量和市值
 
@@ -505,8 +506,9 @@ class AccountSimulator:
         entry_value = position.quantity * position.entry_price
         position.unrealized_pnl = position.market_value - entry_value
 
-        # 更新现金
+        # 更新现金和已实现盈亏
         self._cash += cash_change
+        self._realized_pnl_cumulative += realized_pnl
 
         # 如果数量变为 0，移除持仓
         if position.quantity == 0:

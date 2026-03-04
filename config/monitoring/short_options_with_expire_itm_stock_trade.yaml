@@ -84,17 +84,17 @@ portfolio_level:
 
 # 持仓级监控阈值（统一使用 ThresholdRange 格式）
 position_level:
-  otm_pct:                          # 虚值百分比（接股票版：禁用 OTM% 平仓，允许 ITM 持有至行权）
-    enabled: false                  # 禁用 OTM% 平仓（接股票版允许 ITM 持有至行权接股）
+  otm_pct:                          # 虚值百分比（不接股票版：启用 OTM% 监控，更早检测 ITM）
+    enabled: false                   # 关闭 OTM% 强制平仓
     green: [0.10, .inf]             # OTM ≥ 10%
-    yellow: [-0.02, 0.10]           # -2% ~ 10%（允许轻微 ITM）
-    red_below: -0.02                # OTM < -2%（深度 ITM）仅参考
+    yellow: [0.02, 0.10]            # 2% ~ 10%（接近 ATM 时警告）
+    red_below: 0.02                 # OTM < 2% 强制平仓（避免进入 ITM）
     hysteresis: 0.01
     alert_type: OTM_PCT
-    red_below_message: "深度 ITM: OTM%={value:.1%}（接股票版：允许行权）"
-    yellow_message: "OTM% 偏低: {value:.1%}，接近 ATM/轻微 ITM"
-    red_below_action: "深度 ITM，准备行权接股"
-    yellow_action: "关注方向性风险，TGR 将判断是否退出"
+    red_below_message: "接近/进入 ITM: OTM%={value:.1%}，必须平仓（不接股票版本）"
+    yellow_message: "OTM% 偏低: {value:.1%}，接近 ATM"
+    red_below_action: "接近 ITM 强制平仓，避免行权"
+    yellow_action: "关注方向性风险，准备平仓"
 
   delta:                            # |Delta| 方向性风险
     green: [0, 0.30]
@@ -118,17 +118,17 @@ position_level:
     red_below_action: "合约已过期，检查持仓状态"
     yellow_action: "关注到期日，准备到期处理"
 
-  pnl:                              # 盈亏监控（接股票版：更宽容的止损，因有行权接盘预期）
-    enabled: false                  # 禁用 P&L 平仓（TGR 作主动退出，行权接盘兜底）
+  pnl:                              # 盈亏监控（不接股票版：启用止损，无法通过行权回收）
+    enabled: false                   # 关闭 P&L 止损
     green: [999.0, .inf]            # 不可达——禁用 P&L 止盈，改用 early_take_profit
-    yellow: [-2.0, 999.0]           # 全范围黄色监控
-    red_below: -2.0                 # 极端兆底止损（接股票版阈值更宽，-200%）
+    yellow: [-0.8, 999.0]           # 亏损 > 80% 时黄色警告
+    red_below: -1.0                 # 亏损 > 100% 止损（权利金已全部亏完）
     hysteresis: 0.05
     alert_type: STOP_LOSS
-    red_below_message: "持仓亏损极端: {value:.1%}，触发兆底止损线"
-    yellow_message: "持仓盈亏: {value:.1%}"
-    red_below_action: "极端兆底止损，无条件平仓"
-    yellow_action: "关注盈亏变化"
+    red_below_message: "持仓亏损超过权利金: {value:.1%}，触发止损"
+    yellow_message: "持仓亏损较大: {value:.1%}"
+    red_below_action: "无条件止损平仓"
+    yellow_action: "关注亏损扩大风险"
 
   gamma_risk_pct:                   # Gamma/Margin 百分比
     green: [0, 0.005]
@@ -144,7 +144,7 @@ position_level:
   tgr:                              # Theta/Gamma Ratio（主要退出指标）
     green: [1.5, .inf]
     yellow: [0.5, 1.5]
-    red_below: 0.5
+    red_below: 0.1
     hysteresis: 0.1
     alert_type: POSITION_TGR
     red_below_message: "TGR 过低: {value:.2f}，时间收益/波动风险比不足"
@@ -164,6 +164,7 @@ position_level:
     yellow_action: "关注波动率环境"
 
   expected_roc:                     # 预期资本回报率
+    enabled: false
     green: [0.10, .inf]
     yellow: [0.0, 0.10]
     red_below: 0.0
@@ -175,9 +176,10 @@ position_level:
     yellow_action: "关注预期收益变化"
 
   win_probability:                  # 理论胜率
+    enabled: true                  # 关闭 胜率平仓
     green: [0.70, .inf]
-    yellow: [0.55, 0.70]
-    red_below: 0.55
+    yellow: [0.50, 0.70]
+    red_below: 0.50
     hysteresis: 0.02
     alert_type: WIN_PROB_LOW
     red_below_message: "胜率过低: {value:.0%}，风险大于收益"
@@ -186,13 +188,13 @@ position_level:
     yellow_action: "关注胜率变化"
 
   # DTE + 盈利联合止盈（独立规则）
-  # DTE > 14 且已盈利 ≥ 70% → 落袋为安，无需等到期
+  # 按优先级从高到低匹配，先命中先返回，PnL 阈值提高到 70%
   early_take_profit:
     enabled: true
     rules:
       - dte_above: 14             # DTE > 14 天
         pnl_above: 0.70           # 盈利 ≥ 70%
-        level: green              # 浮盈达标即可止盈
+        level: green              # 只要浮盈达到70%即可落袋为安
 
 # 资金级监控阈值
 capital_level:

@@ -25,10 +25,11 @@ class ShortOptionsWithoutExpireItmStockTrade(BaseOptionStrategy):
         return "short_options_without_expire_itm_stock_trade"
 
     def get_monitoring_overrides(self) -> dict | None:
-        """不接股版：关闭 OTM% 和 P&L 止损"""
+        """不接股版：关闭 OTM% 和 P&L 平仓"""
         return {
             "otm_pct": {"enabled": False, "red_below": 0.02},  # 关闭 OTM 强制平仓
             "pnl": {"enabled": False, "red_below": -1.0},       # 关闭 亏损止损
+            # win_probability 不再 override，使用 YAML 配置的 enabled: true
         }
 
     # ==========================

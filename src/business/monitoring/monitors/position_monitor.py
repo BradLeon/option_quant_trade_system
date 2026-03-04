@@ -467,21 +467,37 @@ class PositionMonitor:
         }
 
         for rule in config.rules:
-            if dte < rule.dte_below and pnl_pct >= rule.pnl_above:
+            dte_condition_met = True
+            dte_message_parts = []
+            
+            if rule.dte_below is not None:
+                if dte >= rule.dte_below:
+                    dte_condition_met = False
+                else:
+                    dte_message_parts.append(f"<{rule.dte_below}")
+                    
+            if rule.dte_above is not None:
+                if dte <= rule.dte_above:
+                    dte_condition_met = False
+                else:
+                    dte_message_parts.append(f">{rule.dte_above}")
+
+            if dte_condition_met and pnl_pct >= rule.pnl_above:
                 level = level_map.get(rule.level, AlertLevel.RED)
+                dte_cond_str = " & ".join(dte_message_parts)
                 return [Alert(
                     alert_type=AlertType.DTE_PROFITABLE,
                     level=level,
                     message=(
-                        f"DTE={dte:.0f} 天(<{rule.dte_below})"
+                        f"DTE={dte:.0f} 天({dte_cond_str})"
                         f"且盈利 {pnl_pct:.1%}(≥{rule.pnl_above:.0%})，"
                         f"{'必须' if rule.level == 'red' else '建议' if rule.level == 'yellow' else '可'}止盈"
                     ),
                     symbol=pos.symbol,
                     position_id=pos.position_id,
                     current_value=float(dte),
-                    threshold_value=rule.dte_below,
-                    threshold_range=f"DTE<{rule.dte_below} & PnL≥{rule.pnl_above:.0%}",
+                    threshold_value=rule.dte_below or rule.dte_above or 0,
+                    threshold_range=f"DTE {dte_cond_str} & PnL≥{rule.pnl_above:.0%}",
                     suggested_action=action_map.get(rule.level, "止盈平仓"),
                 )]
 

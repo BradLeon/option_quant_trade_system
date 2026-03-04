@@ -43,37 +43,22 @@ market_filter:
     enabled: false
 
 underlying_filter:
-  min_iv_rank: 0
-  trend_override:
-    bullish:
-      min_iv_rank: 0
-    bearish:
-      min_iv_rank: 0
+  iv_rank_enabled: false
+  iv_hv_enabled: true
   max_iv_hv_ratio: 3.0
   min_iv_hv_ratio: 0.8
   technical:
-    min_rsi: 30
-    max_rsi: 70
-    rsi_stabilizing_range:
-    - 30
-    - 45
-    bb_percent_b_range:
-    - 0.1
-    - 0.3
-    max_adx: 45
-    min_sma_alignment: neutral
+    enabled: false
   fundamental:
     enabled: false
-    max_pe_percentile: 0.7
-    min_recommendation: hold
 
 contract_filter:
   liquidity:
     min_open_interest: 0
     max_bid_ask_spread: 0.3
   metrics:
-    min_expected_roc: -0.5
-    min_tgr: 0.0
+    expected_roc_enabled: false
+    tgr_enabled: false
 
 # 方向特定参数覆盖
 directional_overrides:

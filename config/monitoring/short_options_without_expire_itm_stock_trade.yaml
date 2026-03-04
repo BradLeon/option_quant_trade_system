@@ -143,7 +143,7 @@ position_level:
 
   tgr:                              # Theta/Gamma Ratio（主要退出指标）
     green: [1.5, .inf]
-    yellow: [0.1, 1.5]
+    yellow: [0.5, 1.5]
     red_below: 0.1
     hysteresis: 0.1
     alert_type: POSITION_TGR
@@ -176,9 +176,10 @@ position_level:
     yellow_action: "关注预期收益变化"
 
   win_probability:                  # 理论胜率
+    enabled: true                  # 关闭 胜率平仓
     green: [0.70, .inf]
-    yellow: [0.55, 0.70]
-    red_below: 0.55
+    yellow: [0.50, 0.70]
+    red_below: 0.50
     hysteresis: 0.02
     alert_type: WIN_PROB_LOW
     red_below_message: "胜率过低: {value:.0%}，风险大于收益"
@@ -191,9 +192,9 @@ position_level:
   early_take_profit:
     enabled: true
     rules:
-      - dte_below: 14             # DTE < 14 天
+      - dte_above: 14             # DTE > 14 天
         pnl_above: 0.70           # 盈利 ≥ 70%
-        level: red                # 必须立即止盈（Gamma 加速区）
+        level: green              # 只要浮盈达到70%即可落袋为安
 
 # 资金级监控阈值
 capital_level:

@@ -282,9 +282,10 @@ class BacktestExecutor:
             active_strategy_types = self._config.strategy_types
 
         self._strategy.set_configs(
-            self._screening_config, 
+            self._screening_config,
             self._monitoring_config,
-            strategy_types=active_strategy_types
+            strategy_types=active_strategy_types,
+            max_new_positions_per_day=self._config.max_new_positions_per_day,
         )
 
         # 现在的筛选逻辑完全由 Strategy 自主控制，Executor 不再维护 pipelines
@@ -799,7 +800,7 @@ class BacktestExecutor:
             symbol=underlying,
             side=OrderSide.SELL,
             quantity=shares_to_sell,
-            price=strike,
+            price=market_price,  # 修复核心BUG：用市价平仓以抵消期权内在价值的结算，避免被扣两次钱
             trade_date=trade_date,
             reason="assigned_sell",
         )
@@ -813,19 +814,21 @@ class BacktestExecutor:
 
             if remaining_shares <= 0:
                 # 所有股票已交割
-                pnl = (strike - position.entry_price) * shares_to_sell
+                pnl = (market_price - position.entry_price) * shares_to_sell
                 self._account_simulator.remove_position(
                     position_id=position_id,
                     cash_change=sell_execution.net_amount,
                     realized_pnl=pnl,
                 )
             else:
-                # 还有剩余股票
+                # 还有剩余股票，卖出了部分股票，实现部分盈亏
+                pnl = (market_price - position.entry_price) * shares_to_sell
                 self._account_simulator.update_stock_position(
                     position_id=position_id,
                     quantity_change=-shares_to_sell,
                     new_price=market_price,
                     cash_change=sell_execution.net_amount,
+                    realized_pnl=pnl,
                 )
 
         if shares_to_sell < shares_required:
@@ -877,8 +880,11 @@ class BacktestExecutor:
         Returns:
             True 如果可以开新仓
         """
-        # 检查持仓数量限制 (Account 层)
-        if self._account_simulator.position_count >= self._config.max_positions:
+        # 检查期权持仓数量限制（股票持仓不占用期权仓位配额）
+        option_count = sum(
+            1 for pos in self._account_simulator.positions.values() if pos.is_option
+        )
+        if option_count >= self._config.max_positions:
             return False
 
         # 检查保证金使用率 (Account 层)
