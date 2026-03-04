@@ -731,7 +731,7 @@ class PositionManager:
             # 长期权标记为 UNKNOWN
             strategy_type = StrategyType.UNKNOWN
 
-        return PositionData(
+        pos_data = PositionData(
             position_id=position.position_id,
             symbol=option_symbol,
             asset_type="option",
@@ -761,6 +761,18 @@ class PositionManager:
             strategy_type=strategy_type,
             margin=position.margin_required,
         )
+
+        # ====== 补充计算 MonitoringPipeline 所需的关键风控指标 ======
+        from src.engine.position.risk_return import calc_tgr
+
+        # 计算 TGR (Theta/Gamma Ratio)
+        pos_data.tgr = calc_tgr(pos_data)
+
+        # 计算 Gamma Risk % (|Gamma| / Margin)
+        if pos_data.gamma is not None and pos_data.margin and pos_data.margin > 0:
+            pos_data.gamma_risk_pct = abs(pos_data.gamma) / pos_data.margin
+
+        return pos_data
 
     def _get_greeks(
         self,

@@ -132,12 +132,11 @@ class PositionMonitor:
             position=pos,
         ))
 
-        # 2. 检查 |Delta|（使用 per-contract 绝对值）
-        # PositionData.delta 在回测中是 position-level（raw_delta × qty），需归一化
+        # 2. 检查 |Delta| 
+        # PositionData.delta 在回测和实盘中均已是 per-share 的 raw_delta，无需除以 qty
         per_contract_delta = None
         if pos.delta is not None:
-            qty = abs(pos.quantity) if pos.quantity else 1
-            per_contract_delta = abs(pos.delta / qty)
+            per_contract_delta = abs(pos.delta)
         alerts.extend(self._check_threshold(
             value=per_contract_delta,
             threshold=thresholds.delta,
