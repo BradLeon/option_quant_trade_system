@@ -1094,6 +1094,7 @@ class BacktestExecutor:
                     mid_price=option_price,
                     trade_date=trade_date,
                     reason=signal.reason or "strategy_close",
+                    alert_type=signal.alert_type,
                 )
 
             # 1.5. Trade 层：回填 underlying_price 到交易记录
@@ -1190,6 +1191,7 @@ class BacktestExecutor:
                 mid_price=close_price,
                 trade_date=trade_date,
                 reason=f"roll_close: {decision.reason or 'rolling to new expiry'}",
+                alert_type=decision.alert_type,
             )
 
             # 1.5. Trade 层：回填 underlying_price 到平仓记录

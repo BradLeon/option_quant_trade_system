@@ -139,12 +139,18 @@ class BaseOptionStrategy(ABC):
                     roll_to_expiry = suggestion.metadata.get("suggested_expiry") if action_enum == TradeAction.ROLL else None
                     roll_to_strike = suggestion.metadata.get("suggested_strike") if action_enum == TradeAction.ROLL else None
 
+                    # 从 trigger_alerts 提取结构化 alert_type（透传到 TradeSimulator）
+                    primary_alert_type = None
+                    if suggestion.trigger_alerts:
+                        primary_alert_type = suggestion.trigger_alerts[0].alert_type.value
+
                     signals.append(
                         TradeSignal(
                             action=action_enum,
                             symbol=suggestion.symbol,
                             quantity=-pos.quantity,  # 反向平仓/展期第一步都是平掉原仓位
                             reason=suggestion.reason,
+                            alert_type=primary_alert_type,
                             position_id=pos.position_id,  # 设置 position_id 用于交易执行
                             roll_to_expiry=roll_to_expiry,
                             roll_to_strike=roll_to_strike,

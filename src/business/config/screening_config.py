@@ -163,6 +163,8 @@ class MarketFilterConfig:
 class TechnicalConfig:
     """技术面配置"""
 
+    enabled: bool = True  # 是否启用技术面检查（False 时跳过所有 RSI/ADX/SMA 检查）
+
     # RSI 策略区分阈值
     # Short Put: 允许更深超卖（RSI 25 是底部反弹信号）
     short_put_rsi_min: float = 25.0
@@ -212,7 +214,9 @@ class UnderlyingFilterConfig:
         strong_bullish / strong_bearish 自动回退到 bullish / bearish。
     """
 
+    iv_rank_enabled: bool = True  # 是否启用 IV Rank 检查 (P1)
     min_iv_rank: float = 30.0  # P1: IV Rank 阻塞条件，卖方必须卖"贵"的东西
+    iv_hv_enabled: bool = True  # 是否启用 IV/HV 比率检查 (P1)
     max_iv_hv_ratio: float = 2.0
     min_iv_hv_ratio: float = 0.8
     trend_override: dict[str, dict[str, float]] = field(default_factory=dict)
@@ -275,28 +279,38 @@ class MetricsConfig:
     - P2: Annual ROC（重要条件）
     - P3: Sharpe Ratio, Premium Rate, Win Probability, Theta/Premium, Kelly（参考条件）
           Sharpe/PremRate 降级原因：卖方收益非正态分布，费率已被 AnnROC 包含
+
+    每个指标都有独立的 enabled 开关，设为 False 时跳过该检查。
     """
 
+    # P0: 期望收益率必须足够高
+    expected_roc_enabled: bool = True
+    min_expected_roc: float = 0.10
+    # P1: Theta/Gamma 比率（标准化公式：|Theta| / (|Gamma| × S² × σ_daily) × 100）
+    tgr_enabled: bool = True
+    min_tgr: float = 0.5
+    # P2: 年化收益率
+    annual_roc_enabled: bool = True
+    min_annual_roc: float = 0.15
     # P3: 年化夏普比率（参考条件，卖方收益非正态分布）
+    sharpe_enabled: bool = True
     min_sharpe_ratio: float = 0.5
+    # P3: 胜率
+    win_probability_enabled: bool = True
+    min_win_probability: float = 0.65
+    # P3: 费率（参考条件，已被 Annual ROC 包含）
+    premium_rate_enabled: bool = True
+    min_premium_rate: float = 0.01
+    # P3: Theta/Premium 比率 (每天)
+    theta_premium_enabled: bool = True
+    min_theta_premium_ratio: float = 0.01
+    # P3: Kelly 仓位上限
+    kelly_enabled: bool = True
+    max_kelly_fraction: float = 0.25
     # P2: 策略吸引力评分
     min_sas: float = 50.0
     # P2: 风险暴露指数 (越低越好)
     max_prei: float = 75.0
-    # P1: Theta/Gamma 比率（标准化公式：|Theta| / (|Gamma| × S² × σ_daily) × 100）
-    min_tgr: float = 0.5
-    # P3: Kelly 仓位上限
-    max_kelly_fraction: float = 0.25
-    # P0: 期望收益率必须足够高
-    min_expected_roc: float = 0.10
-    # P2: 年化收益率
-    min_annual_roc: float = 0.15
-    # P3: 胜率
-    min_win_probability: float = 0.65
-    # P3: Theta/Premium 比率 (每天)
-    min_theta_premium_ratio: float = 0.01
-    # P3: 费率（参考条件，已被 Annual ROC 包含）
-    min_premium_rate: float = 0.01
 
 
 @dataclass
@@ -431,11 +445,14 @@ class ScreeningConfig:
             tech = uf.get("technical", {})
             fund = uf.get("fundamental", {})
             config.underlying_filter = UnderlyingFilterConfig(
+                iv_rank_enabled=uf.get("iv_rank_enabled", True),
                 min_iv_rank=uf.get("min_iv_rank", 50),
+                iv_hv_enabled=uf.get("iv_hv_enabled", True),
                 max_iv_hv_ratio=uf.get("max_iv_hv_ratio", 2.0),
                 min_iv_hv_ratio=uf.get("min_iv_hv_ratio", 0.8),
                 trend_override=uf.get("trend_override", {}),
                 technical=TechnicalConfig(
+                    enabled=tech.get("enabled", True),
                     min_rsi=tech.get("min_rsi", 30),
                     max_rsi=tech.get("max_rsi", 70),
                     rsi_stabilizing_range=tuple(tech.get("rsi_stabilizing_range", [30, 45])),
@@ -465,16 +482,24 @@ class ScreeningConfig:
                     min_volume=liq.get("min_volume", 10),
                 ),
                 metrics=MetricsConfig(
+                    expected_roc_enabled=met.get("expected_roc_enabled", True),
+                    min_expected_roc=met.get("min_expected_roc", 0.10),
+                    tgr_enabled=met.get("tgr_enabled", True),
+                    min_tgr=met.get("min_tgr", 0.5),
+                    annual_roc_enabled=met.get("annual_roc_enabled", True),
+                    min_annual_roc=met.get("min_annual_roc", 0.15),
+                    sharpe_enabled=met.get("sharpe_enabled", True),
                     min_sharpe_ratio=met.get("min_sharpe_ratio", 0.5),
+                    win_probability_enabled=met.get("win_probability_enabled", True),
+                    min_win_probability=met.get("min_win_probability", 0.65),
+                    premium_rate_enabled=met.get("premium_rate_enabled", True),
+                    min_premium_rate=met.get("min_premium_rate", 0.01),
+                    theta_premium_enabled=met.get("theta_premium_enabled", True),
+                    min_theta_premium_ratio=met.get("min_theta_premium_ratio", 0.01),
+                    kelly_enabled=met.get("kelly_enabled", True),
+                    max_kelly_fraction=met.get("max_kelly_fraction", 0.25),
                     min_sas=met.get("min_sas", 50),
                     max_prei=met.get("max_prei", 75),
-                    min_tgr=met.get("min_tgr", 0.5),
-                    max_kelly_fraction=met.get("max_kelly_fraction", 0.25),
-                    min_expected_roc=met.get("min_expected_roc", 0.10),
-                    min_annual_roc=met.get("min_annual_roc", 0.15),
-                    min_win_probability=met.get("min_win_probability", 0.65),
-                    min_theta_premium_ratio=met.get("min_theta_premium_ratio", 0.01),
-                    min_premium_rate=met.get("min_premium_rate", 0.01),
                 ),
             )
 
@@ -587,20 +612,19 @@ class ScreeningConfig:
                 # 合并 metrics
                 if "metrics" in cf_override:
                     met = cf_override["metrics"]
-                    if "min_expected_roc" in met:
-                        merged.metrics.min_expected_roc = met["min_expected_roc"]
-                    if "min_tgr" in met:
-                        merged.metrics.min_tgr = met["min_tgr"]
-                    if "min_annual_roc" in met:
-                        merged.metrics.min_annual_roc = met["min_annual_roc"]
-                    if "min_sharpe_ratio" in met:
-                        merged.metrics.min_sharpe_ratio = met["min_sharpe_ratio"]
-                    if "min_sas" in met:
-                        merged.metrics.min_sas = met["min_sas"]
-                    if "max_prei" in met:
-                        merged.metrics.max_prei = met["max_prei"]
-                    if "min_win_probability" in met:
-                        merged.metrics.min_win_probability = met["min_win_probability"]
+                    for key in [
+                        "expected_roc_enabled", "min_expected_roc",
+                        "tgr_enabled", "min_tgr",
+                        "annual_roc_enabled", "min_annual_roc",
+                        "sharpe_enabled", "min_sharpe_ratio",
+                        "win_probability_enabled", "min_win_probability",
+                        "premium_rate_enabled", "min_premium_rate",
+                        "theta_premium_enabled", "min_theta_premium_ratio",
+                        "kelly_enabled", "max_kelly_fraction",
+                        "min_sas", "max_prei",
+                    ]:
+                        if key in met:
+                            setattr(merged.metrics, key, met[key])
 
                 return merged
 
@@ -634,8 +658,12 @@ class ScreeningConfig:
                 uf_override = overrides["underlying_filter"]
 
                 # 合并基础字段
+                if "iv_rank_enabled" in uf_override:
+                    merged.iv_rank_enabled = uf_override["iv_rank_enabled"]
                 if "min_iv_rank" in uf_override:
                     merged.min_iv_rank = uf_override["min_iv_rank"]
+                if "iv_hv_enabled" in uf_override:
+                    merged.iv_hv_enabled = uf_override["iv_hv_enabled"]
                 if "max_iv_hv_ratio" in uf_override:
                     merged.max_iv_hv_ratio = uf_override["max_iv_hv_ratio"]
                 if "min_iv_hv_ratio" in uf_override:
@@ -645,6 +673,8 @@ class ScreeningConfig:
                     merged.trend_override = {**merged.trend_override, **uf_override["trend_override"]}
                 if "technical" in uf_override:
                     tech = uf_override["technical"]
+                    if "enabled" in tech:
+                        merged.technical.enabled = tech["enabled"]
                     if "min_rsi" in tech:
                         merged.technical.min_rsi = tech["min_rsi"]
                     if "max_rsi" in tech:

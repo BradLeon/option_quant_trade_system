@@ -396,6 +396,47 @@ class CommissionModel:
         )
 
 
+# AlertType → CloseReasonType 确定性映射
+ALERT_TO_CLOSE_REASON: dict[str, CloseReasonType] = {
+    # 止盈
+    "profit_target": CloseReasonType.PROFIT_TARGET,
+    "dte_profitable": CloseReasonType.PROFIT_TARGET,
+    # Delta 止损
+    "delta_change": CloseReasonType.STOP_LOSS_DELTA,
+    # OTM 止损
+    "otm_pct": CloseReasonType.STOP_LOSS_OTM,
+    "moneyness": CloseReasonType.STOP_LOSS_OTM,
+    # 通用止损
+    "stop_loss": CloseReasonType.STOP_LOSS,
+    "pnl_target": CloseReasonType.STOP_LOSS,
+    "gamma_risk_pct": CloseReasonType.STOP_LOSS,
+    "gamma_risk": CloseReasonType.STOP_LOSS,
+    "gamma_near_expiry": CloseReasonType.STOP_LOSS,
+    # Theta/TGR/ROC 相关退出
+    "position_tgr": CloseReasonType.TIME_EXIT,
+    "tgr_low": CloseReasonType.TIME_EXIT,
+    "expected_roc_low": CloseReasonType.TIME_EXIT,
+    "roc_low": CloseReasonType.TIME_EXIT,
+    # DTE 到期退出
+    "dte_warning": CloseReasonType.TIME_EXIT,
+    # 胜率 / IV/HV
+    "win_prob_low": CloseReasonType.MANUAL_CLOSE,
+    "position_iv_hv": CloseReasonType.MANUAL_CLOSE,
+    "iv_hv_change": CloseReasonType.MANUAL_CLOSE,
+    # Portfolio 级
+    "delta_exposure": CloseReasonType.STOP_LOSS,
+    "gamma_exposure": CloseReasonType.STOP_LOSS,
+    "vega_exposure": CloseReasonType.STOP_LOSS,
+    "theta_exposure": CloseReasonType.STOP_LOSS,
+    "concentration": CloseReasonType.MANUAL_CLOSE,
+    # Capital 级
+    "margin_utilization": CloseReasonType.STOP_LOSS,
+    "cash_ratio": CloseReasonType.STOP_LOSS,
+    "gross_leverage": CloseReasonType.STOP_LOSS,
+    "stress_test_loss": CloseReasonType.STOP_LOSS,
+}
+
+
 class TradeSimulator:
     """交易模拟器
 
@@ -491,6 +532,7 @@ class TradeSimulator:
         reason: str = "screening_signal",
         action: str = "open",  # 交易类型: open, close
         lot_size: int | None = None,  # 每张合约对应股数，None 则使用默认值
+        alert_type: str | None = None,  # 结构化平仓原因（来自 AlertType）
     ) -> TradeExecution:
         """执行开仓
 
@@ -579,7 +621,7 @@ class TradeSimulator:
             gross_amount=gross_amount,
             net_amount=net_amount,
             reason=reason,
-            close_reason_type=self._infer_close_reason_type(reason, action),
+            close_reason_type=self._resolve_close_reason_type(alert_type, reason, action),
         )
         self._trade_records.append(trade_record)
 
@@ -603,6 +645,7 @@ class TradeSimulator:
         trade_date: date,
         reason: str = "take_profit",
         lot_size: int | None = None,
+        alert_type: str | None = None,
     ) -> TradeExecution:
         """执行平仓
 
@@ -617,6 +660,7 @@ class TradeSimulator:
             trade_date: 交易日期
             reason: 平仓原因
             lot_size: 每张合约对应股数 (可选，默认使用模拟器配置)
+            alert_type: 结构化平仓原因（来自 AlertType）
 
         Returns:
             TradeExecution
@@ -634,6 +678,7 @@ class TradeSimulator:
             reason=reason,
             action="close",
             lot_size=lot_size,
+            alert_type=alert_type,
         )
 
     def execute_expire(
@@ -929,30 +974,26 @@ class TradeSimulator:
             self._trade_records[-1].pnl = pnl
 
     @staticmethod
-    def _infer_close_reason_type(reason: str, action: str) -> CloseReasonType | None:
-        """从 reason 字符串推断结构化平仓类型"""
+    def _resolve_close_reason_type(
+        alert_type: str | None, reason: str, action: str
+    ) -> CloseReasonType | None:
+        """从 alert_type 推断结构化平仓类型
+
+        所有 execute_close() 调用路径都必定携带 alert_type（来自 MonitoringPipeline
+        的 trigger_alerts 或策略版本硬编码），因此不需要关键词匹配 fallback。
+        """
         if action == "open":
             return None
         if action == "expire":
             if "assigned" in reason:
                 return CloseReasonType.EXPIRED_ITM
             return CloseReasonType.EXPIRED_WORTHLESS
-        # action == "close"
-        r = reason.lower()
-        if "profit" in r or "止盈" in reason:
-            return CloseReasonType.PROFIT_TARGET
-        if "delta" in r or "DELTA" in reason:
-            return CloseReasonType.STOP_LOSS_DELTA
-        if "otm" in r or "OTM" in reason:
-            return CloseReasonType.STOP_LOSS_OTM
-        if "stop" in r or "loss" in r or "止损" in reason or "触发止损" in reason or "无条件平仓" in reason:
-            return CloseReasonType.STOP_LOSS
-        if "dte" in r or "time" in r:
-            return CloseReasonType.TIME_EXIT
-        if "roll" in r:
-            return CloseReasonType.ROLL
-        if "close" in r or "平仓" in reason:
-            return CloseReasonType.MANUAL_CLOSE
+        if alert_type and alert_type in ALERT_TO_CLOSE_REASON:
+            return ALERT_TO_CLOSE_REASON[alert_type]
+        # alert_type 未映射：记录警告以便排查，而非静默降级
+        logger.warning(
+            f"Unmapped alert_type={alert_type!r} for action={action}, reason={reason!r}"
+        )
         return CloseReasonType.UNKNOWN
 
     def update_last_trade_position_id(self, position_id: str) -> None:

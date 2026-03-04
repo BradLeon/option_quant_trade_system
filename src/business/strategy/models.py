@@ -34,6 +34,7 @@ class TradeSignal:
     symbol: str  # 要交易的具体期权合约代码
     quantity: int  # 正数为买，负数为卖，与 TradeSimulator 一致
     reason: str  # 记录该信号产生的原因（例如 "DTE<=14 止盈"）
+    alert_type: Optional[str] = None  # 结构化平仓原因（如 "position_tgr", "stop_loss"）
     # 用于交易执行的唯一标识（优先使用此字段定位持仓）
     position_id: Optional[str] = None
     # 当平仓时，这里可指定原持仓，便于追踪

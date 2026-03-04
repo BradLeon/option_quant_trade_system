@@ -270,18 +270,19 @@ class UnderlyingFilter:
             current_iv = vol_data.iv
 
             # P1: IV Rank 检查（阻塞，卖方策略必须卖"贵"的东西）
-            # 使用动态阈值（与 VIX 挂钩）
-            iv_rank_threshold = self._get_dynamic_iv_rank_threshold(
-                market_type, trend_status, strategy_type
-            )
-            if iv_rank is not None and iv_rank < iv_rank_threshold:
-                disqualify_reasons.append(
-                    f"[P1] IV Rank={iv_rank:.1f}% 不足（<{iv_rank_threshold:.0f}%），"
-                    f"期权不够'贵'"
+            if effective_config.iv_rank_enabled:
+                # 使用动态阈值（与 VIX 挂钩）
+                iv_rank_threshold = self._get_dynamic_iv_rank_threshold(
+                    market_type, trend_status, strategy_type
                 )
+                if iv_rank is not None and iv_rank < iv_rank_threshold:
+                    disqualify_reasons.append(
+                        f"[P1] IV Rank={iv_rank:.1f}% 不足（<{iv_rank_threshold:.0f}%），"
+                        f"期权不够'贵'"
+                    )
 
             # P1: IV/HV 比率检查（阻塞）
-            if iv_hv_ratio is not None:
+            if effective_config.iv_hv_enabled and iv_hv_ratio is not None:
                 if iv_hv_ratio < effective_config.min_iv_hv_ratio:
                     disqualify_reasons.append(
                         f"[P1] IV/HV={iv_hv_ratio:.2f} 偏低（<{effective_config.min_iv_hv_ratio}），"
@@ -297,10 +298,12 @@ class UnderlyingFilter:
             disqualify_reasons.append("[P1] 无法获取波动率数据")
 
         # 2. 获取技术面评分（P2/P3 只警告）
-        logger.debug(f"评估 {symbol} 技术面...")
-        technical = self._evaluate_technical(symbol, effective_config.technical)
-        tech_warnings = self._check_technical(technical, effective_config.technical)
-        warnings.extend(tech_warnings)
+        technical = None
+        if effective_config.technical.enabled:
+            logger.debug(f"评估 {symbol} 技术面...")
+            technical = self._evaluate_technical(symbol, effective_config.technical)
+            tech_warnings = self._check_technical(technical, effective_config.technical)
+            warnings.extend(tech_warnings)
 
         # 3. 获取基本面数据（只获取一次）
         fundamental_data = None

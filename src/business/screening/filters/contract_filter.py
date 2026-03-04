@@ -917,59 +917,67 @@ class ContractFilter:
         issues: list[str] = []
 
         # === P0: Expected ROC 检查 ===
-        if expected_roc is not None and expected_roc <= config.min_expected_roc:
-            issues.append(
-                f"[P0] Expected ROC={expected_roc:.2%} 不足（需>{config.min_expected_roc:.0%}）"
-            )
+        if config.expected_roc_enabled:
+            if expected_roc is not None and expected_roc <= config.min_expected_roc:
+                issues.append(
+                    f"[P0] Expected ROC={expected_roc:.2%} 不足（需>{config.min_expected_roc:.0%}）"
+                )
 
         # === P1: TGR 检查 ===
-        tgr = metrics.get("tgr")
-        if tgr is not None and tgr < config.min_tgr:
-            issues.append(
-                f"[P1] TGR={tgr:.3f} 不足（<{config.min_tgr}）"
-            )
+        if config.tgr_enabled:
+            tgr = metrics.get("tgr")
+            if tgr is not None and tgr < config.min_tgr:
+                issues.append(
+                    f"[P1] TGR={tgr:.3f} 不足（<{config.min_tgr}）"
+                )
 
         # SAS/PREI 检查已移除 - 这些指标在筛选中意义不大，保留计算用于分析
 
         # === P2: Annual ROC 检查 ===
-        if annual_roc is not None and annual_roc < config.min_annual_roc:
-            issues.append(
-                f"[P2] Annual ROC={annual_roc:.1%} 不足（<{config.min_annual_roc:.0%}）"
-            )
+        if config.annual_roc_enabled:
+            if annual_roc is not None and annual_roc < config.min_annual_roc:
+                issues.append(
+                    f"[P2] Annual ROC={annual_roc:.1%} 不足（<{config.min_annual_roc:.0%}）"
+                )
 
         # === P3: Sharpe Ratio (年化) 检查（参考条件，卖方收益非正态分布）===
-        sharpe_annual = metrics.get("sharpe_ratio_annual")
-        if sharpe_annual is not None and sharpe_annual < config.min_sharpe_ratio:
-            issues.append(
-                f"[P3] Sharpe(年化)={sharpe_annual:.2f} 偏低（<{config.min_sharpe_ratio}）"
-            )
+        if config.sharpe_enabled:
+            sharpe_annual = metrics.get("sharpe_ratio_annual")
+            if sharpe_annual is not None and sharpe_annual < config.min_sharpe_ratio:
+                issues.append(
+                    f"[P3] Sharpe(年化)={sharpe_annual:.2f} 偏低（<{config.min_sharpe_ratio}）"
+                )
 
         # === P3: 费率检查（参考条件，已被 Annual ROC 包含）===
-        premium_rate = metrics.get("premium_rate")
-        if premium_rate is not None and premium_rate < config.min_premium_rate:
-            issues.append(
-                f"[P3] 费率={premium_rate:.2%} 偏低（<{config.min_premium_rate:.0%}）"
-            )
+        if config.premium_rate_enabled:
+            premium_rate = metrics.get("premium_rate")
+            if premium_rate is not None and premium_rate < config.min_premium_rate:
+                issues.append(
+                    f"[P3] 费率={premium_rate:.2%} 偏低（<{config.min_premium_rate:.0%}）"
+                )
 
         # === P3: Win Probability 检查 ===
-        win_prob = metrics.get("win_probability")
-        if win_prob is not None and win_prob < config.min_win_probability:
-            issues.append(
-                f"[P3] Win Probability={win_prob:.1%} 偏低（<{config.min_win_probability:.0%}）"
-            )
+        if config.win_probability_enabled:
+            win_prob = metrics.get("win_probability")
+            if win_prob is not None and win_prob < config.min_win_probability:
+                issues.append(
+                    f"[P3] Win Probability={win_prob:.1%} 偏低（<{config.min_win_probability:.0%}）"
+                )
 
         # === P3: Theta/Premium 检查 ===
-        if theta_prem_ratio is not None and theta_prem_ratio < config.min_theta_premium_ratio:
-            issues.append(
-                f"[P3] Theta/Premium={theta_prem_ratio:.2%}/天 偏低（<{config.min_theta_premium_ratio:.0%}）"
-            )
+        if config.theta_premium_enabled:
+            if theta_prem_ratio is not None and theta_prem_ratio < config.min_theta_premium_ratio:
+                issues.append(
+                    f"[P3] Theta/Premium={theta_prem_ratio:.2%}/天 偏低（<{config.min_theta_premium_ratio:.0%}）"
+                )
 
         # === P3: Kelly 检查 ===
-        kelly = metrics.get("kelly_fraction")
-        if kelly is not None and kelly > config.max_kelly_fraction:
-            issues.append(
-                f"[P3] Kelly={kelly:.1%} 过高（>{config.max_kelly_fraction:.0%}）"
-            )
+        if config.kelly_enabled:
+            kelly = metrics.get("kelly_fraction")
+            if kelly is not None and kelly > config.max_kelly_fraction:
+                issues.append(
+                    f"[P3] Kelly={kelly:.1%} 过高（>{config.max_kelly_fraction:.0%}）"
+                )
 
         return issues
 
