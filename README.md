@@ -572,3 +572,16 @@ uv run pytest tests/engine/test_strategy.py -v
 ## License
 
 MIT
+## 更新：监控风控与策略执行一致性修复
+
+在新的模块化策略架构（V9/V10）下，**持仓监控器(PositionMonitor)** 被高度依赖来主动生成退场信号：
+- 尤其对于 `short_options_without_expire_itm_stock_trade` 策略，**P&L 与 OTM 止损被显式禁用**，取而代之的是依赖 **TGR 过低 (`< 0.5`)** 或者 **Delta 暴露 (`> 0.65`)** 进行主动防守。
+
+### 修复问题
+1. **指标计算缺失：** 由于回测引擎的 `PositionManager` 不经过实盘抓取的 `DataBridge`，部分风控指标（如 `TGR`, `Gamma Risk %` 等）在生成监控数据包 (`PositionData`) 时被遗漏，导致 TGR 监控规则永远无法被触发。
+2. **Delta 偏差评估：** 旧版监控器对持仓 Delta 进行了错误的缩放处理 `abs(pos.delta / qty)`，由于系统内的 Delta 已经是 per-share 数据，除以数量反而使评估值缩小了数十倍，完全丧失了风控效力。
+
+### 实现效果
+修复计算错误后：
+1. **亏损止损即时响应：** 策略的 `TGR` 监控现在能够在盈亏（PNL）发生超预期恶化之前提前发现时间衰减失效与 Gamma 风险的不对称，成功拦截由于过期价内 (ITM) 造成的严重回撤（例如防止单手亏损超过 `-3000`）。
+2. **提前止盈联动：** 在符合 DTE 及高比例利润的条件时，由于所有风控链路已被打通，现在能够准确抛出触发退出的交易信号。
