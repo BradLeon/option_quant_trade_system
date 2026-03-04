@@ -90,10 +90,20 @@ class BaseOptionStrategy(ABC):
 
         # 3. 将平仓建议转换为 TradeSignal
         for suggestion in result.suggestions:
-            if suggestion.action.value in ["close", "roll"]:
-                pos = next((p for p in positions if p.symbol == suggestion.symbol), None)
+            if suggestion.action.value in ["close", "roll", "take_profit", "reduce", "hedge", "adjust"]:
+                # 优先适用 position_id 匹配，因为不同引擎/环境生成的 symbol 格式（如背测连线vs实盘IB）可能不一致
+                pos = next((p for p in positions if p.position_id == getattr(suggestion, 'position_id', None)), None)
+                if not pos:
+                    pos = next((p for p in positions if p.symbol == suggestion.symbol), None)
+                    
                 if pos:
-                    action_enum = TradeAction.CLOSE if suggestion.action.value == "close" else TradeAction.ROLL
+                    # 如果动作为 TAKE_PROFIT (止盈), REDUCE (减仓) 等，本质上都是执行 CLOSE 单操作
+                    # 这里简单将其归类为买入平仓操作
+                    # 展期维持在 ROLL
+                    if suggestion.action.value in ["close", "take_profit", "reduce", "hedge", "adjust"]:
+                        action_enum = TradeAction.CLOSE
+                    else:
+                        action_enum = TradeAction.ROLL
 
                     roll_to_expiry = suggestion.metadata.get("suggested_expiry") if action_enum == TradeAction.ROLL else None
                     roll_to_strike = suggestion.metadata.get("suggested_strike") if action_enum == TradeAction.ROLL else None

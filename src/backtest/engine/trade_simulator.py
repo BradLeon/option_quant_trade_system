@@ -121,6 +121,12 @@ class TradeRecord:
     position_id: str | None = None  # 可选，由 Position 层填充
     underlying_price: float | None = None  # 交易时标的价格（到期时为结算价格）
 
+    # 决策信息字段 (DecisionEngine 集成)
+    decision_source: str | None = None       # SCREEN_SIGNAL / MONITOR_ALERT
+    decision_priority: str | None = None     # CRITICAL / HIGH / NORMAL / LOW
+    trigger_alerts: list[str] | None = None  # 触发的 alert 消息列表
+    decision_reason: str | None = None       # 完整的决策原因
+
     def to_dict(self) -> dict:
         """转换为字典 (用于 JSON 序列化)"""
         return {
@@ -146,6 +152,11 @@ class TradeRecord:
             ),
             "position_id": self.position_id,
             "underlying_price": self.underlying_price,
+            # 决策信息字段
+            "decision_source": self.decision_source,
+            "decision_priority": self.decision_priority,
+            "trigger_alerts": self.trigger_alerts,
+            "decision_reason": self.decision_reason,
         }
 
 
