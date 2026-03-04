@@ -415,6 +415,14 @@ option_quant_trade_system/
 │  find_opportunities()  →  市场筛选，寻找开仓机会                        │
 │  generate_entry_signals() → 仓位计算，生成开仓信号                      │
 └─────────────────────────────────────────────────────────────────────┘
+
+
+#### 核心设计点：
+1. **信号动作映射 (Action Translation)**：
+   监控管道 (`MonitoringPipeline`) 生成的带有明确交易意图的建议（如 `take_profit` 止盈、`reduce` 减仓、`hedge` 对冲），会在 `evaluate_positions()` 阶段无缝翻译为底层的标准交易动作（`TradeAction.CLOSE` 或 `ROLL`）。该过程完全兼容曾经存在的全局决策引擎 (`DecisionEngine`)。
+2. **跨环境匹配机制 (Cross-Environment Matching)**：
+   考虑到实盘通道（如 IBKR `SPY 20230929 435.0P PUT 435 09/29`）与回测生成数据（如 `SPY_2023-09-22_432.0_put`）可能存在各种标的格式变体，信号动作在寻找目标持仓时，**一律以底层注入的全局唯一 `position_id` 为首选主键** 进行匹配，保障了从“生成报警”到“实施调仓”全程的高可用性。
+
                                     ↑
                     ┌───────────────┴───────────────┐
                     │                               │
