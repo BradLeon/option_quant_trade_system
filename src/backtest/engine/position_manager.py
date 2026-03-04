@@ -661,10 +661,14 @@ class PositionManager:
         ref_date: date,
     ) -> PositionData:
         """将 SimulatedPosition 转换为 PositionData"""
+        from src.business.monitoring.position_data_builder import PositionDataBuilder
+
         # 计算盈亏百分比
-        entry_value = abs(position.quantity * position.entry_price * position.lot_size)
-        unrealized_pnl_pct = (
-            position.unrealized_pnl / entry_value if entry_value > 0 else 0.0
+        unrealized_pnl_pct = PositionDataBuilder.calc_unrealized_pnl_pct(
+            position.unrealized_pnl,
+            position.quantity,
+            position.entry_price,
+            position.lot_size,
         )
 
         if position.is_stock:
@@ -695,40 +699,25 @@ class PositionManager:
         # 获取 Greeks
         delta, gamma, theta, vega, iv = self._get_greeks(position)
 
-        # 计算 moneyness 和 OTM%
+        # 计算 moneyness 和 OTM%（使用 PositionDataBuilder 统一逻辑）
         underlying_price = position.underlying_price or position.strike
-        moneyness = (underlying_price - position.strike) / position.strike
-
-        if position.option_type == OptionType.PUT:
-            otm_pct = (
-                (underlying_price - position.strike) / underlying_price
-                if underlying_price > 0
-                else 0.0
-            )
-        else:
-            otm_pct = (
-                (position.strike - underlying_price) / underlying_price
-                if underlying_price > 0
-                else 0.0
-            )
+        moneyness = PositionDataBuilder.calc_moneyness(underlying_price, position.strike)
+        otm_pct = PositionDataBuilder.calc_otm_pct(
+            underlying_price, position.strike, position.option_type.value,
+        )
 
         # 构建期权 symbol
         expiry_str = position.expiration.strftime("%Y%m%d")
-        option_symbol = (
-            f"{position.underlying} "
-            f"{expiry_str} "
-            f"{position.strike:.1f}{position.option_type.value[0].upper()}"
+        option_symbol = PositionDataBuilder.build_option_symbol(
+            position.underlying, expiry_str, position.strike, position.option_type.value,
         )
 
         # 推断策略类型
-        # 注意: StrategyType 枚举只有 SHORT_PUT, NAKED_CALL, COVERED_CALL 等
-        # 没有 LONG_PUT/LONG_CALL (长期权一般不作为独立策略)
         if position.option_type == OptionType.PUT and position.is_short:
             strategy_type = StrategyType.SHORT_PUT
         elif position.option_type == OptionType.CALL and position.is_short:
-            strategy_type = StrategyType.NAKED_CALL  # 裸卖 Call
+            strategy_type = StrategyType.NAKED_CALL
         else:
-            # 长期权标记为 UNKNOWN
             strategy_type = StrategyType.UNKNOWN
 
         pos_data = PositionData(
@@ -762,68 +751,52 @@ class PositionManager:
             margin=position.margin_required,
         )
 
-        # ====== 使用原生 Strategy 对象计算完整监控指标 ======
-        time_to_expiry = max(0.01, dte / 365.0)
+        # ====== 使用 PositionDataBuilder 统一创建策略对象并填充指标 ======
+        premium = abs(position.current_price or position.entry_price)
+        strategy_obj = PositionDataBuilder.create_strategy_object(
+            strategy_type=strategy_type,
+            underlying_price=underlying_price,
+            strike=position.strike,
+            premium=premium,
+            iv=iv,
+            dte=dte,
+            delta=delta,
+            gamma=gamma,
+            theta=theta,
+            vega=vega,
+        )
+        if strategy_obj:
+            PositionDataBuilder.populate_strategy_metrics(pos_data, strategy_obj)
 
-        # 尝试将对应的策略实例化以获取标准指标
-        try:
-            strategy_obj = None
-            premium = abs(position.current_price or position.entry_price)
-
-            if strategy_type == StrategyType.SHORT_PUT:
-                from src.engine.strategy.short_put import ShortPutStrategy
-                strategy_obj = ShortPutStrategy(
-                    spot_price=underlying_price,
-                    strike_price=position.strike,
-                    premium=premium,
-                    volatility=iv or 0.2, # Fallback
-                    time_to_expiry=time_to_expiry,
-                    risk_free_rate=0.03,
-                    dte=dte,
-                    delta=delta,
-                    gamma=gamma,
-                    theta=theta,
-                    vega=vega,
-                )
-            elif strategy_type == StrategyType.NAKED_CALL:
-                from src.engine.strategy.short_call import ShortCallStrategy
-                strategy_obj = ShortCallStrategy(
-                    spot_price=underlying_price,
-                    strike_price=position.strike,
-                    premium=premium,
-                    volatility=iv or 0.2,
-                    time_to_expiry=time_to_expiry,
-                    risk_free_rate=0.03,
-                    dte=dte,
-                    delta=delta,
-                    gamma=gamma,
-                    theta=theta,
-                    vega=vega,
-                )
-            # 如果有更多如 Covered Call 等，可继续添加...
-
-            if strategy_obj:
-                metrics = strategy_obj.calc_metrics()
-                pos_data.prei = metrics.prei
-                pos_data.tgr = metrics.tgr
-                pos_data.sas = metrics.sas
-                pos_data.roc = metrics.roc
-                pos_data.expected_roc = metrics.expected_roc
-                pos_data.sharpe = metrics.sharpe_ratio
-                pos_data.kelly = metrics.kelly_fraction
-                pos_data.win_probability = metrics.win_probability
-                pos_data.expected_return = metrics.expected_return
-                pos_data.max_profit = metrics.max_profit
-                pos_data.max_loss = metrics.max_loss
-                pos_data.breakeven = metrics.breakeven
-                pos_data.return_std = metrics.return_std
-                
-                if pos_data.margin and pos_data.margin > 0 and pos_data.gamma:
-                    pos_data.gamma_risk_pct = abs(pos_data.gamma) / pos_data.margin
-        except Exception as e:
-            logger.debug(f"Failed to populate native strategy metrics for {position.symbol}: {e}")
+        # ====== 计算 iv_hv_ratio（从 DuckDB 获取 HV 数据）======
+        self._enrich_iv_hv_ratio(pos_data, position.underlying, iv)
 
         return pos_data
+
+    def _enrich_iv_hv_ratio(
+        self,
+        pos_data: PositionData,
+        underlying: str,
+        iv: float | None,
+    ) -> None:
+        """为回测 PositionData 补充 iv_hv_ratio
+
+        从 DuckDB 获取 HV 数据并计算 IV/HV 比率。
+        """
+        from src.business.monitoring.position_data_builder import PositionDataBuilder
+
+        if iv is None:
+            return
+        try:
+            stock_quote = self._data_provider.get_stock_quote(underlying)
+            if stock_quote and hasattr(stock_quote, 'hv') and stock_quote.hv:
+                pos_data.hv = stock_quote.hv
+                pos_data.iv_hv_ratio = PositionDataBuilder.calc_iv_hv_ratio(iv, stock_quote.hv)
+            elif stock_quote and hasattr(stock_quote, 'volatility') and stock_quote.volatility:
+                pos_data.hv = stock_quote.volatility
+                pos_data.iv_hv_ratio = PositionDataBuilder.calc_iv_hv_ratio(iv, stock_quote.volatility)
+        except Exception as e:
+            logger.debug(f"Failed to get HV for {underlying}: {e}")
 
     def _get_greeks(
         self,

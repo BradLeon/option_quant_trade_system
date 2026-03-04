@@ -125,6 +125,18 @@ ALERT_ACTION_MAP: dict[tuple[AlertType, AlertLevel], tuple[ActionType, UrgencyLe
     (AlertType.STRESS_TEST_LOSS, AlertLevel.YELLOW): (ActionType.REVIEW, UrgencyLevel.SOON),
     (AlertType.CONCENTRATION, AlertLevel.YELLOW): (ActionType.DIVERSIFY, UrgencyLevel.SOON),
     (AlertType.DELTA_EXPOSURE, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
+    # === Position-level YELLOW/RED Alerts ===
+    (AlertType.WIN_PROB_LOW, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.SOON),
+    (AlertType.WIN_PROB_LOW, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
+    (AlertType.EXPECTED_ROC_LOW, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
+    (AlertType.POSITION_IV_HV, AlertLevel.RED): (ActionType.TAKE_PROFIT, UrgencyLevel.SOON),
+    (AlertType.POSITION_IV_HV, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
+    (AlertType.POSITION_TGR, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.SOON),
+    (AlertType.POSITION_TGR, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
+    (AlertType.GAMMA_RISK_PCT, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
+    (AlertType.GAMMA_RISK_PCT, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
+    (AlertType.OTM_PCT, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
+    (AlertType.OTM_PCT, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
     # === GREEN Alerts → Opportunities ===
     (AlertType.PROFIT_TARGET, AlertLevel.GREEN): (
         ActionType.TAKE_PROFIT,
@@ -227,8 +239,8 @@ STRATEGY_SPECIFIC_SUGGESTIONS: dict[
         "TGR 过低，Gamma 风险超过 Theta 收益，主动退出"
     ),
     (AlertType.POSITION_TGR, AlertLevel.RED, StrategyType.COVERED_CALL): (
-        ActionType.HOLD, UrgencyLevel.MONITOR,
-        "TGR 偏低，但有正股覆盖，继续持有"
+        ActionType.CLOSE, UrgencyLevel.SOON,
+        "TGR 过低，Gamma 风险超过 Theta 收益，主动退出"
     ),
     (AlertType.POSITION_TGR, AlertLevel.RED, StrategyType.SHORT_STRANGLE): (
         ActionType.CLOSE, UrgencyLevel.SOON,
@@ -241,8 +253,8 @@ STRATEGY_SPECIFIC_SUGGESTIONS: dict[
         "Gamma 风险过高，平仓"
     ),
     (AlertType.GAMMA_RISK_PCT, AlertLevel.RED, StrategyType.COVERED_CALL): (
-        ActionType.HOLD, UrgencyLevel.MONITOR,
-        "一般不触发（正股覆盖）"
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "Gamma 风险过高，平仓"
     ),
     (AlertType.GAMMA_RISK_PCT, AlertLevel.RED, StrategyType.SHORT_STRANGLE): (
         ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
@@ -294,9 +306,15 @@ ALERT_PRIORITY = {
     AlertType.GAMMA_EXPOSURE: 60,
     AlertType.DELTA_EXPOSURE: 50,
     AlertType.TGR_LOW: 45,
+    AlertType.WIN_PROB_LOW: 42,
     AlertType.CONCENTRATION: 40,
+    AlertType.POSITION_TGR: 38,
+    AlertType.GAMMA_RISK_PCT: 37,
+    AlertType.EXPECTED_ROC_LOW: 36,
     # YELLOW alerts
     AlertType.GAMMA_NEAR_EXPIRY: 35,
+    AlertType.POSITION_IV_HV: 32,
+    AlertType.OTM_PCT: 31,
     AlertType.VEGA_EXPOSURE: 30,
     AlertType.IV_HV_CHANGE: 25,
     # GREEN alerts

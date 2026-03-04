@@ -258,7 +258,7 @@ class BacktestExecutor:
         )
 
         # 初始化 Strategy
-        strategy_name = getattr(self._config, "strategy_version", "short_options_with_expire_itm_stock_trade")
+        strategy_name = self._config.strategy_version
         self._strategy = StrategyFactory.create(strategy_name)
 
         # 全局加载配置（只加载一次）并注入到策略

@@ -157,7 +157,7 @@ position_level:
     yellow: [0.8, 1.2]
     red_below: 0.8
     hysteresis: 0.05
-    alert_type: IV_HV_RATIO
+    alert_type: POSITION_IV_HV
     red_below_message: "IV/HV 过低: {value:.2f}，期权定价偏低"
     yellow_message: "IV/HV 偏低: {value:.2f}"
     red_below_action: "如盈利可提前止盈，避免继续卖出"
@@ -168,7 +168,7 @@ position_level:
     yellow: [0.0, 0.10]
     red_below: 0.0
     hysteresis: 0.01
-    alert_type: EXPECTED_ROC
+    alert_type: EXPECTED_ROC_LOW
     red_below_message: "预期 ROC 为负: {value:.1%}，策略已失效"
     yellow_message: "预期 ROC 偏低: {value:.1%}"
     red_below_action: "立即平仓，策略已失效"
@@ -179,7 +179,7 @@ position_level:
     yellow: [0.55, 0.70]
     red_below: 0.55
     hysteresis: 0.02
-    alert_type: WIN_PROBABILITY
+    alert_type: WIN_PROB_LOW
     red_below_message: "胜率过低: {value:.0%}，风险大于收益"
     yellow_message: "胜率偏低: {value:.0%}"
     red_below_action: "考虑平仓，寻找更高效策略"

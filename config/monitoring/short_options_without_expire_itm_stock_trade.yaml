@@ -84,17 +84,17 @@ portfolio_level:
 
 # 持仓级监控阈值（统一使用 ThresholdRange 格式）
 position_level:
-  otm_pct:                          # 虚值百分比
-    enabled: false                  # 禁用 OTM% 平仓（由 TGR 判断退出）
+  otm_pct:                          # 虚值百分比（不接股票版：启用 OTM% 监控，更早检测 ITM）
+    enabled: true                   # 启用 OTM% 平仓（不接股票版需要更早退出 ITM 持仓）
     green: [0.10, .inf]             # OTM ≥ 10%
-    yellow: [-0.02, 0.10]           # -2% ~ 10%（允许轻微 ITM）
-    red_below: -0.02                # OTM < -2%（深度 ITM）才强制平仓
+    yellow: [0.02, 0.10]            # 2% ~ 10%（接近 ATM 时警告）
+    red_below: 0.02                 # OTM < 2% 强制平仓（避免进入 ITM）
     hysteresis: 0.01
     alert_type: OTM_PCT
-    red_below_message: "深度 ITM: OTM%={value:.1%}，必须平仓"
-    yellow_message: "OTM% 偏低: {value:.1%}，接近 ATM/轻微 ITM"
-    red_below_action: "深度 ITM 强制平仓"
-    yellow_action: "关注方向性风险，TGR 将判断是否退出"
+    red_below_message: "接近/进入 ITM: OTM%={value:.1%}，必须平仓（不接股票版本）"
+    yellow_message: "OTM% 偏低: {value:.1%}，接近 ATM"
+    red_below_action: "接近 ITM 强制平仓，避免行权"
+    yellow_action: "关注方向性风险，准备平仓"
 
   delta:                            # |Delta| 方向性风险
     green: [0, 0.30]
@@ -118,17 +118,17 @@ position_level:
     red_below_action: "合约已过期，检查持仓状态"
     yellow_action: "关注到期日，准备到期处理"
 
-  pnl:                              # 盈亏监控（禁用 profit_target，只用 early_take_profit 止盈）
-    enabled: false                  # 禁用 P&L 平仓（TGR 作主动退出）
+  pnl:                              # 盈亏监控（不接股票版：启用止损，无法通过行权回收）
+    enabled: true                   # 启用 P&L 止损（不接股票版需要严格止损）
     green: [999.0, .inf]            # 不可达——禁用 P&L 止盈，改用 early_take_profit
-    yellow: [-2.0, 999.0]           # 全范围黄色监控
-    red_below: -2.0                 # 极端兆底止损（TGR 应先触发）
+    yellow: [-0.8, 999.0]           # 亏损 > 80% 时黄色警告
+    red_below: -1.0                 # 亏损 > 100% 止损（权利金已全部亏完）
     hysteresis: 0.05
     alert_type: STOP_LOSS
-    red_below_message: "持仓亏损极端: {value:.1%}，触发兆底止损线"
-    yellow_message: "持仓盈亏: {value:.1%}"
-    red_below_action: "极端兆底止损，无条件平仓"
-    yellow_action: "关注盈亏变化"
+    red_below_message: "持仓亏损超过权利金: {value:.1%}，触发止损"
+    yellow_message: "持仓亏损较大: {value:.1%}"
+    red_below_action: "无条件止损平仓"
+    yellow_action: "关注亏损扩大风险"
 
   gamma_risk_pct:                   # Gamma/Margin 百分比
     green: [0, 0.005]
@@ -157,7 +157,7 @@ position_level:
     yellow: [0.8, 1.2]
     red_below: 0.8
     hysteresis: 0.05
-    alert_type: IV_HV_RATIO
+    alert_type: POSITION_IV_HV
     red_below_message: "IV/HV 过低: {value:.2f}，期权定价偏低"
     yellow_message: "IV/HV 偏低: {value:.2f}"
     red_below_action: "如盈利可提前止盈，避免继续卖出"
@@ -168,7 +168,7 @@ position_level:
     yellow: [0.0, 0.10]
     red_below: 0.0
     hysteresis: 0.01
-    alert_type: EXPECTED_ROC
+    alert_type: EXPECTED_ROC_LOW
     red_below_message: "预期 ROC 为负: {value:.1%}，策略已失效"
     yellow_message: "预期 ROC 偏低: {value:.1%}"
     red_below_action: "立即平仓，策略已失效"
@@ -179,7 +179,7 @@ position_level:
     yellow: [0.55, 0.70]
     red_below: 0.55
     hysteresis: 0.02
-    alert_type: WIN_PROBABILITY
+    alert_type: WIN_PROB_LOW
     red_below_message: "胜率过低: {value:.0%}，风险大于收益"
     yellow_message: "胜率偏低: {value:.0%}"
     red_below_action: "考虑平仓，寻找更高效策略"

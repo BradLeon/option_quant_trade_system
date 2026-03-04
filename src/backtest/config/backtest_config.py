@@ -74,6 +74,8 @@ class BacktestConfig:
     strategy_types: list[StrategyType] = field(
         default_factory=lambda: [StrategyType.SHORT_PUT]
     )
+    # 策略架构版本（决定监控/筛选配置和行为差异）
+    strategy_version: str = "short_options_with_expire_itm_stock_trade"
     # 指向监控配置文件
     monitoring_config: str = "config/monitoring/thresholds.yaml"
     # 已废弃: 使用 strategy_types 代替
@@ -223,6 +225,7 @@ class BacktestConfig:
             "symbols": self.symbols,
             "market": self.market,
             "strategy_types": [st.value for st in self.strategy_types],
+            "strategy_version": self.strategy_version,
             "monitoring_config": self.monitoring_config,
             "initial_capital": self.initial_capital,
             "max_margin_utilization": self.max_margin_utilization,

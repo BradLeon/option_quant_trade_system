@@ -201,12 +201,10 @@ def run(
         initial_capital=capital,
         max_positions=max_positions,
         strategy_types=strategy_types,
+        strategy_version=strategy_version,
         skip_market_check=skip_market_check,
         benchmark_symbol=benchmark.upper(),
     )
-    
-    # 动态注入 strategy_version 到 config，BacktestExecutor 会读取
-    setattr(config, "strategy_version", strategy_version)
 
     # 创建 Pipeline
     from src.backtest.pipeline import BacktestPipeline
