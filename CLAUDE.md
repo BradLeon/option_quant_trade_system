@@ -61,7 +61,7 @@ uv run optrade trade monitor --execute
 
 ### Backtesting
 ```bash
-# Quick backtest (auto-download data if needed)
+# Quick backtest (auto-download data from ThetaData if needed)
 uv run backtest run -n "TEST" -s 2025-12-01 -e 2026-02-01 -S GOOG
 
 # Skip data check (data already downloaded)
@@ -72,48 +72,57 @@ uv run backtest run -n "CHECK" -s 2025-12-01 -e 2026-02-01 -S GOOG --check-only
 
 # Multi-symbol, multi-strategy
 uv run backtest run -n "MULTI" -s 2025-12-01 -e 2026-02-01 -S GOOG -S SPY -S AAPL --strategy all -c 500000
+
+# Strategy version A/B comparison
+uv run backtest run -n "V_STOCK" -s 2025-12-01 -e 2026-02-01 -S GOOG --skip-download \
+  --strategy-version short_options_with_expire_itm_stock_trade
+uv run backtest run -n "V_CLOSE" -s 2025-12-01 -e 2026-02-01 -S GOOG --skip-download \
+  --strategy-version short_options_without_expire_itm_stock_trade
+```
+
+### Programmatic Backtest (Python API)
+```python
+from datetime import date
+from src.backtest import BacktestConfig, BacktestPipeline
+from src.engine.models.enums import StrategyType
+
+config = BacktestConfig(
+    name="TEST", start_date=date(2025, 12, 1), end_date=date(2026, 2, 1),
+    symbols=["GOOG", "SPY"], strategy_types=[StrategyType.SHORT_PUT, StrategyType.COVERED_CALL],
+    initial_capital=1_000_000, max_positions=20, max_margin_utilization=0.70,
+)
+result = BacktestPipeline(config).run(skip_data_check=True, generate_report=True)
 ```
 
 ## Architecture Overview
 
-This is an options quantitative trading system with two parallel execution paths:
+This is an options quantitative trading system (Python 3.11+, `uv` package manager) with four modules:
 
-### 1. Live Trading Path (`optrade` CLI)
-- **ScreeningPipeline**: Three-layer funnel (Market → Underlying → Contract filters)
-- **MonitoringPipeline**: Three-tier monitoring (Portfolio/Position/Capital levels)
-- **DecisionEngine**: Generates trading decisions (OPEN/CLOSE/ROLL) from screening signals and monitoring suggestions
-- **TradingProvider**: Executes orders via IBKR TWS or Futu OpenAPI
+| Module | Path | Role |
+|--------|------|------|
+| **Engine** | `src/engine/` | Pure calculations: BS pricing, Greeks, strategy metrics. Shared by both live and backtest. |
+| **Data** | `src/data/` | Multi-provider abstraction: Yahoo Finance, Futu OpenAPI, IBKR TWS (live); DuckDB/Parquet (backtest) |
+| **Business** | `src/business/` | Live trading: CLI (`optrade`), screening, monitoring, trading, notifications (Feishu) |
+| **Backtest** | `src/backtest/` | Simulation: CLI (`backtest`), executor, account/position/trade simulators, PnL attribution, HTML reports |
 
-### 2. Backtesting Path (`backtest` CLI)
-- **BacktestExecutor**: Orchestrates daily backtest loop using real-time pipelines
-- **Data Providers**: DuckDB (historical Parquet files) supports Point-in-Time queries to prevent look-ahead bias
-- **AccountSimulator**: Simulates margin, cash, position management
-- **TradeSimulator**: Simulates slippage and commission using IBKR fee schedules
+### Two Execution Paths
 
-### Shared Engine Layer (`src/engine/`)
-- **BS Model**: Black-Scholes pricing and Greeks calculations
-- **Strategy Classes**: ShortPutStrategy, CoveredCallStrategy, ShortStrangleStrategy (extend `OptionStrategy`)
-- **Position Calculations**: Greeks, risk-return metrics (TGR, PREI, SAS, ROC)
-- **Portfolio Calculations**: Aggregated Greeks, BWD%, Gamma%, Vega%, TGR, HHI
+**Live** (`optrade` CLI): ScreeningPipeline → MonitoringPipeline → DecisionEngine → TradingProvider (IBKR/Futu)
 
-### Data Flow
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         Configuration Layer                           │
-│  ConfigMode (LIVE/BACKTEST) → YAML configs (config/Screening/)      │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                    ↓
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                      Data Provider Interface                           │
-│  - Live: Yahoo Finance, IBKR TWS, Futu OpenAPI                     │
-│  - Backtest: DuckDBProvider (Parquet files with PIT queries)           │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                    ↓
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                          Engine Layer                                 │
-│  Black-Scholes → Strategy → Position → Portfolio → Account            │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+**Backtest** (`backtest` CLI): DuckDB (Parquet, PIT queries) → same Screening/Monitoring pipelines → TradeSimulator → AttributionCollector
+
+Both paths share the same `ScreeningPipeline` and `MonitoringPipeline` classes — only the data provider differs.
+
+### Business Strategy Abstraction (`src/business/strategy/`)
+
+`BaseOptionStrategy` defines the strategy interface with three methods:
+- `evaluate_positions()` — Monitor positions, generate close/roll signals
+- `find_opportunities()` — Screen market for entry opportunities
+- `generate_entry_signals()` — Size positions, generate open signals
+
+Strategy versions implement different behaviors (e.g., ITM expiry → accept stock assignment vs close before expiry). Versions live in `src/business/strategy/versions/` and are selected via `--strategy-version` CLI flag.
+
+Key design: monitoring suggestions (e.g., `take_profit`, `reduce`, `hedge`) are translated to standard `TradeAction.CLOSE` or `ROLL` actions. Position matching uses `position_id` as primary key to handle format differences between live brokers and backtest data.
 
 ## Backtest Daily Loop
 
@@ -174,24 +183,23 @@ Configurations use `ConfigMode.LIVE` (real trading) or `ConfigMode.BACKTEST` (hi
 | Provider | Use Case | Data Type |
 |----------|-----------|-----------|
 | DuckDBProvider | Backtest | Parquet files, Point-in-Time queries |
-| Yahoo Finance | Live | Fundamental, macro, historical K-lines |
+| ThetaData | Backtest data download | Stock EOD, Option EOD + Greeks (FREE tier: data after 2023-06-01) |
+| Yahoo Finance | Live + Backtest macro | Fundamental, macro (VIX/TNX), historical K-lines |
 | Futu OpenAPI | Live | HK options, real-time quotes |
 | IBKR TWS | Live | US trading, option Greeks |
 
 ## Important Patterns
 
-1. **Pipeline Pattern**: Both live and backtest paths use the same `ScreeningPipeline` and `MonitoringPipeline` classes. The difference is the data provider (live API vs DuckDB).
+1. **DataProvider Protocol**: All pipelines use `DataProvider` protocol. DuckDBProvider implements it for backtesting (with `set_as_of_date()` for PIT queries), live providers (Yahoo, IBKR, Futu) for real-time.
 
 2. **Three-Layer Architecture** in `BacktestExecutor`:
    - Trade Layer: `TradeSimulator` (execution, fees)
    - Position Layer: `PositionManager` (Greeks, margin, PnL)
    - Account Layer: `AccountSimulator` (cash, positions, equity snapshots)
 
-3. **Data Provider Interface**: All pipelines use `DataProvider` protocol. DuckDBProvider implements this interface for backtesting, while live providers (Yahoo, IBKR, Futu) implement it for real-time.
+3. **Observer Pattern**: `AttributionCollector` observes the backtest loop to capture daily position/portfolio snapshots for PnL attribution analysis.
 
-4. **Observer Pattern**: `AttributionCollector` observes the backtest loop to capture daily position/portfolio snapshots for PnL attribution analysis.
-
-5. **Factory Pattern**: `create_strategies_from_position()` in `src/engine/strategy/factory.py` reconstructs strategy instances from saved positions.
+4. **Factory Pattern**: `create_strategies_from_position()` in `src/engine/strategy/factory.py` reconstructs strategy instances from saved positions.
 
 ## Testing Guidelines
 
@@ -199,6 +207,8 @@ Configurations use `ConfigMode.LIVE` (real trading) or `ConfigMode.BACKTEST` (hi
 - Integration tests: `tests/backtest/test_backtest_e2e.py` for full backtest pipeline
 - Verification tests: `tests/verification/` for data accuracy and cross-validation
 - Business logic tests: `tests/business/screening/` validate filters against expected behavior
+
+**Known issues**: `test_backtest_e2e.py` and `test_executor_components.py` have import errors (PositionTracker module missing). Some test files (`test_analysis.py`, `test_optimization.py`) may hang without a real data connection.
 
 ## Environment Variables
 
@@ -215,6 +225,6 @@ FUTU_HOST=127.0.0.1
 FUTU_PORT=11111
 
 # Proxy (Yahoo Finance needs it)
-HTTP_PROXY=http://127.0.0.1:33210
-HTTPS_PROXY=http://127.0.0.1:33210
+HTTP_PROXY=http://127.0.0.1:7897
+HTTPS_PROXY=http://127.0.0.1:7897
 ```

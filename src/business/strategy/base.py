@@ -38,6 +38,31 @@ class BaseOptionStrategy(ABC):
         """策略的唯一标识符名称 (例如 'short_put_v9')"""
         pass
 
+    def get_monitoring_overrides(self) -> dict | None:
+        """返回策略版本级的监控阈值覆写（可选）
+
+        子类可覆写此方法，返回字典格式的阈值覆写，
+        将被 merge 到 MonitoringConfig.position 中。
+
+        返回 None 表示使用配置文件的默认值。
+
+        示例返回:
+            {
+                "otm_pct": {"enabled": False},
+                "pnl": {"red_below": -2.0},
+            }
+        """
+        return None
+
+    def _apply_monitoring_overrides(self, config: "MonitoringConfig", overrides: dict) -> None:
+        """将策略覆写应用到 MonitoringConfig.position 的对应 ThresholdRange 字段"""
+        for field_name, field_overrides in overrides.items():
+            if hasattr(config.position, field_name):
+                threshold = getattr(config.position, field_name)
+                for key, value in field_overrides.items():
+                    if hasattr(threshold, key):
+                        setattr(threshold, key, value)
+
     def set_configs(
         self,
         screening_config: "ScreeningConfig",
@@ -77,6 +102,12 @@ class BaseOptionStrategy(ABC):
         # 1. 使用注入的配置或从 YAML 加载监控配置 (带缓存)
         if self._monitoring_pipeline_instance is None:
             config = self._monitoring_config or MonitoringConfig.load(strategy_name=self.name)
+
+            # 应用策略版本级阈值覆写
+            overrides = self.get_monitoring_overrides()
+            if overrides:
+                self._apply_monitoring_overrides(config, overrides)
+
             self._monitoring_pipeline_instance = MonitoringPipeline(config)
 
         # 2. 运行监控管道获取持仓调整建议
@@ -224,6 +255,14 @@ class BaseOptionStrategy(ABC):
     # ==========================
     # 阶段 3：建仓信号生成
     # ==========================
+    def rank_candidates(self, candidates: List[ContractOpportunity]) -> List[ContractOpportunity]:
+        """对候选合约排序（模板方法，子类可覆写选优标准）
+
+        默认实现：按 Expected ROC / Annual ROC 降序排序。
+        子类可覆写为 TGR 最优、Sharpe 最优、多因子评分等。
+        """
+        return sorted(candidates, key=lambda x: getattr(x, 'expected_roc', 0) or x.annual_roc, reverse=True)
+
     def generate_entry_signals(
         self, 
         candidates: List[ContractOpportunity], 
@@ -238,9 +277,8 @@ class BaseOptionStrategy(ABC):
         if not candidates:
             return []
             
-        # V9 选优逻辑：按 AnnROC 排序取最高
-        # 确保 candidates 按照期望收益率降序排序（通常由 Pipeline 的 OutputConfig 控制，但为了安全再排一次）
-        sorted_candidates = sorted(candidates, key=lambda x: getattr(x, 'expected_roc', 0) or x.annual_roc, reverse=True)
+        # 使用模板方法排序（子类可覆写选优标准）
+        sorted_candidates = self.rank_candidates(candidates)
         best_candidate = sorted_candidates[0]
         
         # 仓位计算：复用核心底层 PositionSizer，确保风控及 Kelly 公式准确执行

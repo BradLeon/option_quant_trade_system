@@ -149,9 +149,13 @@ class PositionManager:
         self._current_date: date | None = None
         # 期权价格获取统计
         self._price_stats = OptionPriceStats()
+        # 技术面缓存：underlying -> (TechnicalScore, TechnicalSignal)，每日重置
+        self._technical_cache: dict[str, tuple] = {}
 
     def set_date(self, d: date) -> None:
         """设置当前日期"""
+        if self._current_date != d:
+            self._technical_cache.clear()
         self._current_date = d
 
     def _generate_position_id(self) -> str:
@@ -771,6 +775,9 @@ class PositionManager:
         # ====== 计算 iv_hv_ratio（从 DuckDB 获取 HV 数据）======
         self._enrich_iv_hv_ratio(pos_data, position.underlying, iv)
 
+        # ====== 补全技术面数据（RSI, ADX, Support/Resistance, 技术信号等）======
+        self._enrich_technical_data(pos_data, position.underlying)
+
         return pos_data
 
     def _enrich_iv_hv_ratio(
@@ -797,6 +804,47 @@ class PositionManager:
                 pos_data.iv_hv_ratio = PositionDataBuilder.calc_iv_hv_ratio(iv, stock_quote.volatility)
         except Exception as e:
             logger.debug(f"Failed to get HV for {underlying}: {e}")
+
+    def _enrich_technical_data(self, pos_data: PositionData, underlying: str) -> None:
+        """补全技术面分析字段（复用实盘 MonitoringDataBridge 的逻辑）
+
+        数据流: DuckDB K-line → TechnicalData → TechnicalScore/Signal → PositionData fields
+        使用 underlying 级缓存，同一 underlying 的多个持仓共享计算结果。
+        """
+        from src.business.monitoring.position_data_builder import PositionDataBuilder
+
+        try:
+            # 查缓存
+            if underlying in self._technical_cache:
+                score, signal = self._technical_cache[underlying]
+                PositionDataBuilder.populate_technical_fields(pos_data, score, signal)
+                return
+
+            from datetime import timedelta
+            from src.data.models.stock import KlineType
+            from src.data.models.technical import TechnicalData
+            from src.engine.position.technical.metrics import calc_technical_score, calc_technical_signal
+
+            # 获取至少 250 个交易日的 K-line（用于 MA200 + 余量）
+            ref_date = self._current_date or date.today()
+            start_date = ref_date - timedelta(days=400)
+            klines = self._data_provider.get_history_kline(
+                underlying, KlineType.DAY, start_date, ref_date
+            )
+            if not klines or len(klines) < 20:
+                return
+
+            tech_data = TechnicalData.from_klines(klines)
+            score = calc_technical_score(tech_data)
+            signal = calc_technical_signal(tech_data)
+
+            # 存入缓存
+            self._technical_cache[underlying] = (score, signal)
+
+            PositionDataBuilder.populate_technical_fields(pos_data, score, signal)
+
+        except Exception as e:
+            logger.debug(f"技术面分析失败 {underlying}: {e}")
 
     def _get_greeks(
         self,
@@ -975,3 +1023,4 @@ class PositionManager:
         self._position_counter = 0
         self._current_date = None
         self._price_stats = OptionPriceStats()
+        self._technical_cache.clear()

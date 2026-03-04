@@ -250,7 +250,6 @@ class MonitoringDataBridge:
             )
             self._enrich_volatility(position_data, underlying_symbol)
             self._enrich_technical(position_data, underlying_symbol)
-            self._enrich_technical_signal(position_data, underlying_symbol)
             self._enrich_fundamental(position_data, underlying_symbol)
             return [position_data]
 
@@ -308,9 +307,6 @@ class MonitoringDataBridge:
 
             # 填充技术面数据
             self._enrich_technical(position_data, underlying_symbol)
-
-            # 填充技术信号数据
-            self._enrich_technical_signal(position_data, underlying_symbol)
 
             # 填充基本面数据
             self._enrich_fundamental(position_data, underlying_symbol)
@@ -420,9 +416,6 @@ class MonitoringDataBridge:
         # 填充技术面数据
         self._enrich_technical(position_data, pos.symbol)
 
-        # 填充技术信号数据
-        self._enrich_technical_signal(position_data, pos.symbol)
-
         # 填充基本面数据
         self._enrich_fundamental(position_data, pos.symbol)
 
@@ -451,29 +444,21 @@ class MonitoringDataBridge:
         pos.volatility_rating = vol_score.rating.value if vol_score.rating else None
 
     def _enrich_technical(self, pos: PositionData, symbol: str) -> None:
-        """调用 calc_technical_score() 填充技术面字段
+        """调用 calc_technical_score() + calc_technical_signal() 填充技术面字段
 
         Args:
             pos: 待填充的 PositionData
             symbol: 标的 symbol
         """
+        from src.business.monitoring.position_data_builder import PositionDataBuilder
+
         tech_data = self._technical_cache.get(symbol)
         if not tech_data:
             return
 
-        # 调用统一出口算子
         tech_score = calc_technical_score(tech_data)
-
-        # 从 TechnicalScore 提取字段
-        pos.trend_signal = (
-            tech_score.trend_signal.value if tech_score.trend_signal else None
-        )
-        pos.ma_alignment = tech_score.ma_alignment
-        pos.rsi = tech_score.rsi
-        pos.rsi_zone = tech_score.rsi_zone
-        pos.adx = tech_score.adx
-        pos.support = tech_score.support
-        pos.resistance = tech_score.resistance
+        tech_signal = calc_technical_signal(tech_data)
+        PositionDataBuilder.populate_technical_fields(pos, tech_score, tech_signal)
 
     def _enrich_fundamental(self, pos: PositionData, symbol: str) -> None:
         """调用 evaluate_fundamentals() 填充基本面字段
@@ -497,27 +482,6 @@ class MonitoringDataBridge:
         # 从 FundamentalScore 提取字段
         pos.fundamental_score = fund_score.score
         pos.analyst_rating = fund_score.rating.value if fund_score.rating else None
-
-    def _enrich_technical_signal(self, pos: PositionData, symbol: str) -> None:
-        """调用 calc_technical_signal() 填充技术信号字段
-
-        Args:
-            pos: 待填充的 PositionData
-            symbol: 标的 symbol
-        """
-        tech_data = self._technical_cache.get(symbol)
-        if not tech_data:
-            return
-
-        # 调用统一出口算子
-        tech_signal = calc_technical_signal(tech_data)
-
-        # 从 TechnicalSignal 提取字段
-        pos.market_regime = tech_signal.market_regime
-        pos.tech_trend_strength = tech_signal.trend_strength
-        pos.sell_put_signal = tech_signal.sell_put_signal
-        pos.sell_call_signal = tech_signal.sell_call_signal
-        pos.is_dangerous_period = tech_signal.is_dangerous_period
 
     def clear_cache(self) -> None:
         """清除所有缓存"""

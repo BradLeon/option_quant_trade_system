@@ -24,6 +24,13 @@ class ShortOptionsWithoutExpireItmStockTrade(BaseOptionStrategy):
     def name(self) -> str:
         return "short_options_without_expire_itm_stock_trade"
 
+    def get_monitoring_overrides(self) -> dict | None:
+        """不接股版：启用 OTM% + 严格 P&L 止损"""
+        return {
+            "otm_pct": {"enabled": True, "red_below": 0.02},  # OTM < 2% 强制平仓
+            "pnl": {"enabled": True, "red_below": -1.0},       # 亏损 > 100% 止损
+        }
+
     # ==========================
     # 阶段 1：平仓监控与风控决策
     # ==========================

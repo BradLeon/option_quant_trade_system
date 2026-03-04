@@ -221,6 +221,35 @@ class PositionDataBuilder:
         return None
 
     @staticmethod
+    def populate_technical_fields(
+        pos_data: PositionData,
+        score: "TechnicalScore",
+        signal: "TechnicalSignal",
+    ) -> None:
+        """统一填充技术面字段到 PositionData
+
+        Args:
+            pos_data: 要填充的 PositionData 对象
+            score: calc_technical_score() 返回的技术评分
+            signal: calc_technical_signal() 返回的技术信号
+        """
+        # TechnicalScore fields
+        pos_data.rsi = score.rsi
+        pos_data.rsi_zone = score.rsi_zone
+        pos_data.adx = score.adx
+        pos_data.support = score.support
+        pos_data.resistance = score.resistance
+        pos_data.trend_signal = score.trend_signal.value if score.trend_signal else None
+        pos_data.ma_alignment = score.ma_alignment
+
+        # TechnicalSignal fields
+        pos_data.market_regime = signal.market_regime
+        pos_data.tech_trend_strength = signal.trend_strength
+        pos_data.sell_put_signal = signal.sell_put_signal
+        pos_data.sell_call_signal = signal.sell_call_signal
+        pos_data.is_dangerous_period = signal.is_dangerous_period
+
+    @staticmethod
     def calc_iv_hv_ratio(iv: Optional[float], hv: Optional[float]) -> Optional[float]:
         """计算 IV/HV 比率
 
