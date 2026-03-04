@@ -762,15 +762,66 @@ class PositionManager:
             margin=position.margin_required,
         )
 
-        # ====== 补充计算 MonitoringPipeline 所需的关键风控指标 ======
-        from src.engine.position.risk_return import calc_tgr
+        # ====== 使用原生 Strategy 对象计算完整监控指标 ======
+        time_to_expiry = max(0.01, dte / 365.0)
 
-        # 计算 TGR (Theta/Gamma Ratio)
-        pos_data.tgr = calc_tgr(pos_data)
+        # 尝试将对应的策略实例化以获取标准指标
+        try:
+            strategy_obj = None
+            premium = abs(position.current_price or position.entry_price)
 
-        # 计算 Gamma Risk % (|Gamma| / Margin)
-        if pos_data.gamma is not None and pos_data.margin and pos_data.margin > 0:
-            pos_data.gamma_risk_pct = abs(pos_data.gamma) / pos_data.margin
+            if strategy_type == StrategyType.SHORT_PUT:
+                from src.engine.strategy.short_put import ShortPutStrategy
+                strategy_obj = ShortPutStrategy(
+                    spot_price=underlying_price,
+                    strike_price=position.strike,
+                    premium=premium,
+                    volatility=iv or 0.2, # Fallback
+                    time_to_expiry=time_to_expiry,
+                    risk_free_rate=0.03,
+                    dte=dte,
+                    delta=delta,
+                    gamma=gamma,
+                    theta=theta,
+                    vega=vega,
+                )
+            elif strategy_type == StrategyType.NAKED_CALL:
+                from src.engine.strategy.short_call import ShortCallStrategy
+                strategy_obj = ShortCallStrategy(
+                    spot_price=underlying_price,
+                    strike_price=position.strike,
+                    premium=premium,
+                    volatility=iv or 0.2,
+                    time_to_expiry=time_to_expiry,
+                    risk_free_rate=0.03,
+                    dte=dte,
+                    delta=delta,
+                    gamma=gamma,
+                    theta=theta,
+                    vega=vega,
+                )
+            # 如果有更多如 Covered Call 等，可继续添加...
+
+            if strategy_obj:
+                metrics = strategy_obj.calc_metrics()
+                pos_data.prei = metrics.prei
+                pos_data.tgr = metrics.tgr
+                pos_data.sas = metrics.sas
+                pos_data.roc = metrics.roc
+                pos_data.expected_roc = metrics.expected_roc
+                pos_data.sharpe = metrics.sharpe_ratio
+                pos_data.kelly = metrics.kelly_fraction
+                pos_data.win_probability = metrics.win_probability
+                pos_data.expected_return = metrics.expected_return
+                pos_data.max_profit = metrics.max_profit
+                pos_data.max_loss = metrics.max_loss
+                pos_data.breakeven = metrics.breakeven
+                pos_data.return_std = metrics.return_std
+                
+                if pos_data.margin and pos_data.margin > 0 and pos_data.gamma:
+                    pos_data.gamma_risk_pct = abs(pos_data.gamma) / pos_data.margin
+        except Exception as e:
+            logger.debug(f"Failed to populate native strategy metrics for {position.symbol}: {e}")
 
         return pos_data
 
