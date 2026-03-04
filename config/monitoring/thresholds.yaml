@@ -186,19 +186,13 @@ position_level:
     yellow_action: "关注胜率变化"
 
   # DTE + 盈利联合止盈（独立规则）
-  # 按优先级从高到低匹配，先命中先返回，PnL 阈值提高到 70%
+  # DTE > 14 且已盈利 ≥ 70% → 落袋为安，无需等到期
   early_take_profit:
     enabled: true
     rules:
-      - dte_below: 14             # DTE < 14 天
+      - dte_above: 14             # DTE > 14 天
         pnl_above: 0.70           # 盈利 ≥ 70%
-        level: red                # 必须立即止盈（Gamma 加速区）
-      - dte_below: 21             # DTE < 21 天
-        pnl_above: 0.70           # 盈利 ≥ 70%
-        level: yellow             # 建议止盈（即将进入 Gamma 加速区）
-      - dte_below: 30             # DTE < 30 天
-        pnl_above: 0.80           # 盈利 ≥ 80%
-        level: green              # 可止盈（高盈利，不必等 Theta 加速）
+        level: green              # 浮盈达标即可止盈
 
 # 资金级监控阈值
 capital_level:
