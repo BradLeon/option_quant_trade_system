@@ -1,0 +1,8 @@
+# 策略专属风控配置: short_options_with_expire_itm_stock_trade
+#
+# 与 base_option_strategy.yaml 保持一致，后续可按需调整。
+
+risk_limits:
+  max_notional_pct_per_underlying: 0.5   # 5% of NLV (same as base)
+  kelly_fraction: 0.5                    # 1/4 Kelly (same as base)
+  max_contracts_per_underlying: 20        # 上限 10 张 (same as base)

@@ -159,6 +159,10 @@ class TechnicalScore:
     minus_di: Optional[float] = None  # -DI 空头方向指数
     sma_alignment: str = "neutral"  # strong_bullish / bullish / neutral / bearish / strong_bearish
     support_distance: Optional[float] = None  # 距离支撑位的百分比
+    sma20_value: Optional[float] = None  # SMA20 原始值
+    sma50_value: Optional[float] = None  # SMA50 原始值
+    sma200_value: Optional[float] = None  # SMA200 原始值
+    current_price_value: Optional[float] = None  # 当前价格（from engine TechnicalScore）
 
     @property
     def is_stabilizing(self) -> bool:
@@ -172,21 +176,17 @@ class TechnicalScore:
 
     @property
     def is_downtrend(self) -> bool:
-        """是否强下跌趋势（ADX >= 25 且 -DI > +DI）"""
-        if self.adx is None or self.adx < 25:
+        """是否下跌趋势（Price < SMA50 AND SMA20 < SMA50）"""
+        if self.current_price_value is None or self.sma20_value is None or self.sma50_value is None:
             return False
-        if self.plus_di is None or self.minus_di is None:
-            return False
-        return self.minus_di > self.plus_di
+        return self.current_price_value < self.sma50_value and self.sma20_value < self.sma50_value
 
     @property
     def is_uptrend(self) -> bool:
-        """是否强上涨趋势（ADX >= 25 且 +DI > -DI）"""
-        if self.adx is None or self.adx < 25:
+        """是否上涨趋势（Price > SMA50 AND SMA20 > SMA50）"""
+        if self.current_price_value is None or self.sma20_value is None or self.sma50_value is None:
             return False
-        if self.plus_di is None or self.minus_di is None:
-            return False
-        return self.plus_di > self.minus_di
+        return self.current_price_value > self.sma50_value and self.sma20_value > self.sma50_value
 
 
 @dataclass

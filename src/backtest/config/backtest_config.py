@@ -85,7 +85,7 @@ class BacktestConfig:
     initial_capital: float = 100_000.0  # 初始资金
     max_margin_utilization: float = 0.70  # 最大保证金使用率
     max_position_pct: float = 0.10  # 单标的最大仓位占比
-    max_positions: int = 10  # 最大持仓数量
+    max_positions: int = 20  # 最大持仓数量
 
     # ========== 执行配置 ==========
     slippage_pct: float = 0.001  # 滑点百分比 (0.1%)

@@ -38,6 +38,7 @@ from src.business.monitoring.models import (
     MonitorStatus,
     PositionData,
 )
+from src.engine.models.enums import StrategyType
 
 logger = logging.getLogger(__name__)
 
@@ -115,8 +116,11 @@ class PositionMonitor:
         9. Win Probability - 胜率
         10. Early Take Profit - DTE+盈利联合止盈（独立规则）
         """
-        # 跳过 Stock 类型持仓，PositionMonitor 只监控期权
+        # Stock 类型持仓：通过 technical_close.close_stock_enabled 控制
         if pos.is_stock:
+            config = self._base_thresholds.technical_close
+            if config.enabled and config.close_stock_enabled:
+                return self._check_stock_sma_exit(pos)
             return []
 
         alerts: list[Alert] = []
@@ -192,6 +196,9 @@ class PositionMonitor:
 
         # 10. Early Take Profit — DTE + 盈利联合止盈（独立于 DTE 和 P&L 检查）
         alerts.extend(self._check_early_take_profit(pos, thresholds))
+
+        # 11. Technical Close Signal — 技术面平仓信号
+        alerts.extend(self._check_technical_close_signal(pos, thresholds))
 
         return alerts
 
@@ -501,6 +508,87 @@ class PositionMonitor:
                     suggested_action=action_map.get(rule.level, "止盈平仓"),
                 )]
 
+        return []
+
+    def _check_technical_close_signal(
+        self, pos: PositionData, thresholds: PositionThresholds,
+    ) -> list[Alert]:
+        """检查技术面平仓信号（配置驱动）
+
+        根据策略类型匹配对应的平仓信号：
+        - COVERED_CALL / NAKED_CALL → close_call_signal
+        - SHORT_PUT → close_put_signal
+
+        信号强度映射由 thresholds.technical_close 配置控制。
+        """
+        config = thresholds.technical_close
+        if not config.enabled:
+            return []
+
+        signal = None
+        if pos.strategy_type in (StrategyType.COVERED_CALL, StrategyType.NAKED_CALL):
+            if not config.close_call_enabled:
+                return []
+            signal = pos.close_call_signal
+        elif pos.strategy_type == StrategyType.SHORT_PUT:
+            if not config.close_put_enabled:
+                return []
+            signal = pos.close_put_signal
+
+        if not signal or signal == "none":
+            return []
+
+        level_map = {"red": AlertLevel.RED, "yellow": AlertLevel.YELLOW, "green": AlertLevel.GREEN}
+
+        if signal == "strong":
+            return [Alert(
+                alert_type=AlertType.TECHNICAL_CLOSE,
+                level=level_map.get(config.strong_level, AlertLevel.RED),
+                message=config.strong_message.format(symbol=pos.symbol),
+                symbol=pos.symbol,
+                position_id=pos.position_id,
+                suggested_action=config.strong_action,
+            )]
+        elif signal == "moderate":
+            return [Alert(
+                alert_type=AlertType.TECHNICAL_CLOSE,
+                level=level_map.get(config.moderate_level, AlertLevel.YELLOW),
+                message=config.moderate_message.format(symbol=pos.symbol),
+                symbol=pos.symbol,
+                position_id=pos.position_id,
+                suggested_action=config.moderate_action,
+            )]
+        return []
+
+    def _check_stock_sma_exit(self, pos: PositionData) -> list[Alert]:
+        """检查股票持仓 SMA 卖出信号
+
+        使用 close_stock_signal（由技术面分析计算）：
+        - strong: Price < SMA50 AND SMA20 < SMA50 → RED，确认下行趋势，建议卖出
+        - moderate: Price < SMA20 → YELLOW，短期走弱，观察
+        """
+        signal = pos.close_stock_signal
+        if not signal or signal == "none":
+            return []
+
+        if signal == "strong":
+            return [Alert(
+                alert_type=AlertType.TECHNICAL_CLOSE,
+                level=AlertLevel.RED,
+                message=f"{pos.symbol} 正股 SMA 卖出信号: Price < SMA50 且 SMA20 < SMA50，确认下行趋势",
+                symbol=pos.symbol,
+                position_id=pos.position_id,
+                suggested_action="卖出正股，避免进一步下跌",
+            )]
+        elif signal == "moderate":
+            return [Alert(
+                alert_type=AlertType.TECHNICAL_CLOSE,
+                level=AlertLevel.YELLOW,
+                message=f"{pos.symbol} 正股短期走弱: Price < SMA20，观察是否进一步恶化",
+                symbol=pos.symbol,
+                position_id=pos.position_id,
+                suggested_action="观察，若跌破 SMA50 则卖出",
+            )]
         return []
 
     def _check_pnl(self, pos: PositionData, thresholds: PositionThresholds) -> list[Alert]:

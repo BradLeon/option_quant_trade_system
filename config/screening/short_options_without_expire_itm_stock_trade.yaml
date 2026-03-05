@@ -13,7 +13,7 @@ market_filter:
     - 0.0
     - 1.0
     vix3m_symbol: ^VIX3M
-    term_structure_threshold: 999
+    term_structure_threshold: 1.0   # VIX/VIX3M >= 1.0 (Backwardation) 停止开仓
     trend_indices:
     - symbol: SPY
       weight: 0.6

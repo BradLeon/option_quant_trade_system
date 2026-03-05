@@ -248,6 +248,9 @@ class PositionDataBuilder:
         pos_data.sell_put_signal = signal.sell_put_signal
         pos_data.sell_call_signal = signal.sell_call_signal
         pos_data.is_dangerous_period = signal.is_dangerous_period
+        pos_data.close_put_signal = signal.close_put_signal
+        pos_data.close_call_signal = signal.close_call_signal
+        pos_data.close_stock_signal = signal.close_stock_signal
 
     @staticmethod
     def calc_iv_hv_ratio(iv: Optional[float], hv: Optional[float]) -> Optional[float]:

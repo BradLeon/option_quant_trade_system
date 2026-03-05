@@ -1,7 +1,7 @@
 # 支持的交易方向
 strategy_types:
   - short_put
-  - covered_call
+  #- covered_call
 
 market_filter:
   us_market:
@@ -13,7 +13,7 @@ market_filter:
     - 0.0
     - 1.0
     vix3m_symbol: ^VIX3M
-    term_structure_threshold: 999
+    term_structure_threshold: 1.0   # VIX/VIX3M >= 1.0 (Backwardation) 停止开仓
     trend_indices:
     - symbol: SPY
       weight: 0.6
@@ -48,7 +48,7 @@ underlying_filter:
   max_iv_hv_ratio: 3.0
   min_iv_hv_ratio: 0.8
   technical:
-    enabled: false
+    enabled: true
   fundamental:
     enabled: false
 

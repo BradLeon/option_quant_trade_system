@@ -302,8 +302,11 @@ class UnderlyingFilter:
         if effective_config.technical.enabled:
             logger.debug(f"评估 {symbol} 技术面...")
             technical = self._evaluate_technical(symbol, effective_config.technical)
-            tech_warnings = self._check_technical(technical, effective_config.technical)
+            tech_warnings, tech_blocks = self._check_technical(
+                technical, effective_config.technical, strategy_type
+            )
             warnings.extend(tech_warnings)
+            disqualify_reasons.extend(tech_blocks)
 
         # 3. 获取基本面数据（只获取一次）
         fundamental_data = None
@@ -482,10 +485,14 @@ class UnderlyingFilter:
                 rsi_zone=rsi_zone,
                 bb_percent_b=score.bb_percent_b,
                 adx=score.adx,
-                plus_di=score.plus_di,  # 新增: +DI 方向指数
-                minus_di=score.minus_di,  # 新增: -DI 方向指数
+                plus_di=score.plus_di,
+                minus_di=score.minus_di,
                 sma_alignment=score.ma_alignment,
                 support_distance=support_distance,
+                sma20_value=score.sma20,
+                sma50_value=score.sma50,
+                sma200_value=score.sma200,
+                current_price_value=score.current_price,
             )
 
         except Exception as e:
@@ -496,15 +503,19 @@ class UnderlyingFilter:
         self,
         technical: TechnicalScore | None,
         config: TechnicalConfig,
-    ) -> list[str]:
+        strategy_type: StrategyType | None = None,
+    ) -> tuple[list[str], list[str]]:
         """检查技术面是否符合条件（业务层判断）
 
-        注意：技术面检查都是 P2/P3 级别，只返回警告不阻塞。
+        返回 (warnings, blocks):
+        - warnings: P2/P3 级别，只警告不阻塞
+        - blocks: P1 级别，阻塞入场（强方向趋势对特定策略）
         """
         warnings: list[str] = []
+        blocks: list[str] = []
 
         if technical is None:
-            return warnings  # 技术面数据缺失不作为警告条件
+            return warnings, blocks  # 技术面数据缺失不作为警告条件
 
         # P2: RSI 检查（策略区分）
         # Short Put: RSI 25-70, Covered Call: RSI 30-85
@@ -532,27 +543,39 @@ class UnderlyingFilter:
                     f"[P2] RSI={rsi:.1f} 超买区，Short Put 需谨慎"
                 )
 
-        # P2: ADX 检查（趋势过强不利于期权卖方）
-        if technical.adx is not None:
-            if technical.adx > config.max_adx:
-                warnings.append(f"[P2] ADX={technical.adx:.1f} 过高（>{config.max_adx}），趋势过强")
-            elif technical.adx >= 25:
-                # ADX >= 25 表示趋势市，添加方向信息
-                plus_di = technical.plus_di
-                minus_di = technical.minus_di
-                if plus_di is not None and minus_di is not None:
-                    if minus_di > plus_di:
-                        # 强下跌趋势: 禁止卖 Put，但允许卖 Call
-                        warnings.append(
-                            f"[P2] 强下跌趋势 ADX={technical.adx:.1f} "
-                            f"(+DI={plus_di:.1f} < -DI={minus_di:.1f})，卖 Put 风险高"
-                        )
-                    elif plus_di > minus_di:
-                        # 强上涨趋势: 禁止卖 Call，但允许卖 Put
-                        warnings.append(
-                            f"[P2] 强上涨趋势 ADX={technical.adx:.1f} "
-                            f"(+DI={plus_di:.1f} > -DI={minus_di:.1f})，卖 Call 风险高"
-                        )
+        # P2: ADX 过高警告（保留）
+        if technical.adx is not None and technical.adx > config.max_adx:
+            warnings.append(f"[P2] ADX={technical.adx:.1f} 过高（>{config.max_adx}），趋势过强")
+
+        # P1: SMA 均线趋势阻塞（替换原 ADX 方向阻塞）
+        price = technical.current_price_value
+        sma20 = technical.sma20_value
+        sma50 = technical.sma50_value
+
+        if price is not None and sma20 is not None and sma50 is not None:
+            # 下跌趋势: Price < SMA50 AND SMA20 < SMA50 → 阻塞 Short Put
+            if price < sma50 and sma20 < sma50:
+                if strategy_type == StrategyType.SHORT_PUT:
+                    blocks.append(
+                        f"[P1] 下跌趋势: Price={price:.1f} < SMA50={sma50:.1f}, "
+                        f"SMA20={sma20:.1f} < SMA50，禁止卖 Put"
+                    )
+                else:
+                    warnings.append(
+                        f"[P2] 下跌趋势: Price < SMA50, SMA20 < SMA50，卖 Put 风险高"
+                    )
+
+            # 上涨趋势: Price > SMA50 AND SMA20 > SMA50 → 阻塞 Covered Call
+            if price > sma50 and sma20 > sma50:
+                if strategy_type == StrategyType.COVERED_CALL:
+                    blocks.append(
+                        f"[P1] 上涨趋势: Price={price:.1f} > SMA50={sma50:.1f}, "
+                        f"SMA20={sma20:.1f} > SMA50，禁止卖 Call"
+                    )
+                else:
+                    warnings.append(
+                        f"[P2] 上涨趋势: Price > SMA50, SMA20 > SMA50，卖 Call 风险高"
+                    )
 
         # P3: 均线排列检查
         alignment_order = [
@@ -575,7 +598,7 @@ class UnderlyingFilter:
                         f"需至少 {min_alignment}"
                     )
 
-        return warnings
+        return warnings, blocks
 
     def _evaluate_fundamental_with_data(
         self,

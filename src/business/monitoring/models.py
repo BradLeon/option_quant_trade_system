@@ -60,6 +60,7 @@ class AlertType(str, Enum):
     ROC_LOW = "roc_low"  # ROC 过低
     EXPECTED_ROC_LOW = "expected_roc_low"  # Expected ROC 过低
     WIN_PROB_LOW = "win_prob_low"  # Win Probability 过低
+    TECHNICAL_CLOSE = "technical_close"  # 技术面平仓信号
 
     # Capital 级 - 核心风控四大支柱
     MARGIN_UTILIZATION = "margin_utilization"  # 保证金使用率（生存）
@@ -206,6 +207,9 @@ class PositionData:
     sell_put_signal: Optional[str] = None  # none, weak, moderate, strong
     sell_call_signal: Optional[str] = None  # none, weak, moderate, strong
     is_dangerous_period: Optional[bool] = None
+    close_put_signal: Optional[str] = None  # none/weak/moderate/strong
+    close_call_signal: Optional[str] = None  # none/weak/moderate/strong
+    close_stock_signal: Optional[str] = None  # none/moderate/strong
 
     # === 策略指标（由 engine 计算，存储在 StrategyMetricsData 子容器中）===
     # 扁平字段保留用于向后兼容（直接读写透传到 _strategy_metrics）

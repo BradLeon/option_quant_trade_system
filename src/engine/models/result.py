@@ -253,6 +253,7 @@ class TechnicalSignal:
     # 7. Close signals
     close_put_signal: str = "none"  # none, weak, moderate, strong
     close_call_signal: str = "none"  # none, weak, moderate, strong
+    close_stock_signal: str = "none"  # none, moderate, strong
     close_note: str = ""
 
     # 8. Danger period

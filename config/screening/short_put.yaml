@@ -73,7 +73,7 @@ backtest_overrides:
     us_market:
       vix_range: [0, 999]              # 禁用 VIX 范围过滤
       vix_percentile_range: [0.0, 1.0] # 禁用 VIX percentile 过滤
-      term_structure_threshold: 999    # 禁用期限结构过滤
+      term_structure_threshold: 1.2    # VIX/VIX3M >= 1.2 时阻止开仓（极端恐慌）
     macro_events:
       enabled: false                   # 禁用宏观事件黑名单
   underlying_filter:

@@ -406,10 +406,19 @@ class BacktestExecutor:
             else:
                 underlying_prices[symbol] = 0.0
                 
+        # 从 DuckDB 读取当日 VIX
+        vix_value = None
+        try:
+            vix_data = self._data_provider.get_macro_data("^VIX", current_date, current_date)
+            if vix_data:
+                vix_value = vix_data[-1].close
+        except Exception:
+            pass
+
         market_context = MarketContext(
             current_date=current_date,
             underlying_prices=underlying_prices,
-            vix_value=None,
+            vix_value=vix_value,
             market_trend=None
         )
 
@@ -1080,11 +1089,12 @@ class BacktestExecutor:
             # 1. Trade 层：模拟交易执行
             if position.is_stock:
                 # 股票持仓：使用股票交易路径 (lot_size=1)
+                # execute_stock_trade 期望 quantity 为正数，由 side 决定方向
                 from src.backtest.engine.trade_simulator import OrderSide
                 execution = self._trade_simulator.execute_stock_trade(
                     symbol=position.symbol,
                     side=OrderSide.SELL,
-                    quantity=signal.quantity,
+                    quantity=abs(signal.quantity),
                     price=position.current_price,
                     trade_date=trade_date,
                     reason=signal.reason or "strategy_close",

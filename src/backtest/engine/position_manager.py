@@ -676,7 +676,7 @@ class PositionManager:
         )
 
         if position.is_stock:
-            return PositionData(
+            pos_data = PositionData(
                 position_id=position.position_id,
                 symbol=position.symbol,
                 asset_type="stock",
@@ -692,6 +692,9 @@ class PositionManager:
                 underlying_price=position.current_price,
                 contract_multiplier=position.lot_size,
             )
+            # 补充技术面数据（SMA 卖出信号等）
+            self._enrich_technical_data(pos_data, position.symbol)
+            return pos_data
 
         # 以下为期权处理逻辑
         if position.expiration is None:

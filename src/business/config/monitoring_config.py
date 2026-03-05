@@ -481,6 +481,34 @@ class PositionThresholds:
         default_factory=lambda: EarlyTakeProfitConfig()
     )
 
+    # Technical Close — 技术面平仓信号
+    technical_close: "TechnicalCloseConfig" = field(
+        default_factory=lambda: TechnicalCloseConfig()
+    )
+
+
+@dataclass
+class TechnicalCloseConfig:
+    """技术面平仓信号配置
+
+    根据 close_put_signal / close_call_signal 强度触发 Alert：
+    - strong: SMA 均线趋势确认 → 建议平仓
+    - moderate: RSI 极端 → 关注平仓时机
+    """
+
+    enabled: bool = True
+    close_put_enabled: bool = False    # 单独控制 Short Put 平仓信号
+    close_call_enabled: bool = True   # 单独控制 Short Call 平仓信号
+    close_stock_enabled: bool = False  # 单独控制正股 SMA 卖出信号（Phase 2 启用）
+    # signal strength → AlertLevel 映射
+    strong_level: str = "red"      # red / yellow / green
+    moderate_level: str = "yellow"  # red / yellow / green
+    # 配置化消息
+    strong_message: str = "{symbol} SMA均线趋势确认，建议平仓"
+    moderate_message: str = "{symbol} RSI极端区域，关注平仓时机"
+    strong_action: str = "SMA趋势确认，立即平仓"
+    moderate_action: str = "RSI极端，密切关注"
+
 
 @dataclass
 class EarlyTakeProfitRule:
@@ -922,6 +950,22 @@ class MonitoringConfig:
                     default_range = getattr(defaults, attr_name)
                     parsed = cls._parse_threshold_range(pos[yaml_key], default_range)
                     setattr(config.position, attr_name, parsed)
+
+            # Technical Close（独立配置，非 ThresholdRange）
+            if "technical_close" in pos:
+                tc = pos["technical_close"]
+                config.position.technical_close = TechnicalCloseConfig(
+                    enabled=tc.get("enabled", True),
+                    close_put_enabled=tc.get("close_put_enabled", True),
+                    close_call_enabled=tc.get("close_call_enabled", True),
+                    close_stock_enabled=tc.get("close_stock_enabled", True),
+                    strong_level=tc.get("strong_level", "red"),
+                    moderate_level=tc.get("moderate_level", "yellow"),
+                    strong_message=tc.get("strong_message", TechnicalCloseConfig.strong_message),
+                    moderate_message=tc.get("moderate_message", TechnicalCloseConfig.moderate_message),
+                    strong_action=tc.get("strong_action", TechnicalCloseConfig.strong_action),
+                    moderate_action=tc.get("moderate_action", TechnicalCloseConfig.moderate_action),
+                )
 
             # Early Take Profit（独立规则，非 ThresholdRange）
             if "early_take_profit" in pos:

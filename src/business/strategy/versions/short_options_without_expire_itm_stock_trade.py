@@ -30,6 +30,7 @@ class ShortOptionsWithoutExpireItmStockTrade(BaseOptionStrategy):
             "otm_pct": {"enabled": False, "red_below": 0.02},  # 关闭 OTM 强制平仓
             "pnl": {"enabled": False, "red_below": -1.0},       # 关闭 亏损止损
             # win_probability 不再 override，使用 YAML 配置的 enabled: true
+            "technical_close": {"enabled": False},               # 不接股版也关闭技术面平仓（保持与关闭screening一致）
         }
 
     # ==========================

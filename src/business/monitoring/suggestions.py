@@ -108,6 +108,8 @@ ALERT_ACTION_MAP: dict[tuple[AlertType, AlertLevel], tuple[ActionType, UrgencyLe
     (AlertType.DELTA_EXPOSURE, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
     (AlertType.VEGA_EXPOSURE, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
     (AlertType.THETA_EXPOSURE, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
+    # Technical close signals
+    (AlertType.TECHNICAL_CLOSE, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
     # === YELLOW Alerts → 仅警告，不执行交易 ===
     (AlertType.DTE_PROFITABLE, AlertLevel.YELLOW): (ActionType.TAKE_PROFIT, UrgencyLevel.SOON),
     (AlertType.DTE_WARNING, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
@@ -125,6 +127,7 @@ ALERT_ACTION_MAP: dict[tuple[AlertType, AlertLevel], tuple[ActionType, UrgencyLe
     (AlertType.STRESS_TEST_LOSS, AlertLevel.YELLOW): (ActionType.REVIEW, UrgencyLevel.SOON),
     (AlertType.CONCENTRATION, AlertLevel.YELLOW): (ActionType.DIVERSIFY, UrgencyLevel.SOON),
     (AlertType.DELTA_EXPOSURE, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
+    (AlertType.TECHNICAL_CLOSE, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
     # === Position-level YELLOW/RED Alerts ===
     (AlertType.WIN_PROB_LOW, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.SOON),
     (AlertType.WIN_PROB_LOW, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),

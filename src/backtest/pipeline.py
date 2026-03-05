@@ -133,7 +133,7 @@ class BacktestPipeline:
     BETA_LOOKBACK_DAYS = 280
 
     # 默认宏观指标
-    DEFAULT_MACRO_INDICATORS = ["^VIX", "^TNX"]
+    DEFAULT_MACRO_INDICATORS = ["^VIX", "^VIX3M", "^TNX"]
 
     def __init__(
         self,
