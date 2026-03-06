@@ -724,6 +724,10 @@ class PositionManager:
             strategy_type = StrategyType.SHORT_PUT
         elif position.option_type == OptionType.CALL and position.is_short:
             strategy_type = StrategyType.NAKED_CALL
+        elif position.option_type == OptionType.PUT and not position.is_short:
+            strategy_type = StrategyType.LONG_PUT
+        elif position.option_type == OptionType.CALL and not position.is_short:
+            strategy_type = StrategyType.LONG_CALL
         else:
             strategy_type = StrategyType.UNKNOWN
 

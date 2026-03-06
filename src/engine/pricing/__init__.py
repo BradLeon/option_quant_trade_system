@@ -10,6 +10,8 @@ from src.engine.pricing.base import OptionPricer
 
 # Pricer implementations
 from src.engine.pricing.covered_call import CoveredCallPricer
+from src.engine.pricing.long_call import LongCallPricer
+from src.engine.pricing.long_put import LongPutPricer
 from src.engine.pricing.short_call import ShortCallPricer
 from src.engine.pricing.short_put import ShortPutPricer
 from src.engine.pricing.strangle import ShortStranglePricer
@@ -34,6 +36,8 @@ __all__ = [
     "ShortCallPricer",
     "CoveredCallPricer",
     "ShortStranglePricer",
+    "LongPutPricer",
+    "LongCallPricer",
     # Factory
     "PricerInstance",
     "create_pricers_from_position",

@@ -187,6 +187,10 @@ def classify_option_strategy(
     if position.option_type == "put" and position.quantity < 0:
         return StrategyType.SHORT_PUT
 
+    # Long Put: PUT + quantity > 0 (bought)
+    if position.option_type == "put" and position.quantity > 0:
+        return StrategyType.LONG_PUT
+
     # Covered Call / Partial / Naked Call: CALL + quantity < 0 (sold)
     if position.option_type == "call" and position.quantity < 0:
         # Check if we have the underlying stock
@@ -218,6 +222,10 @@ def classify_option_strategy(
                 return StrategyType.NAKED_CALL  # No coverage
         else:
             return StrategyType.NAKED_CALL  # No stock position
+
+    # Long Call: CALL + quantity > 0 (bought, not part of covered strategy)
+    if position.option_type == "call" and position.quantity > 0:
+        return StrategyType.LONG_CALL
 
     # Short Strangle: Check if there's both PUT and CALL short positions
     # (This is simplified - real detection would check strikes/expiries)
@@ -301,6 +309,10 @@ def create_pricers_from_position(
         return _create_naked_call_pricer(position, leg, params)
     elif strategy_type == StrategyType.SHORT_PUT:
         return _create_short_put_pricer(position, leg, params)
+    elif strategy_type == StrategyType.LONG_PUT:
+        return _create_long_put_pricer(position, leg, params)
+    elif strategy_type == StrategyType.LONG_CALL:
+        return _create_long_call_pricer(position, leg, params)
     else:
         logger.warning(f"{position.symbol}: Strategy type '{strategy_type}' not implemented")
         return []
@@ -595,5 +607,65 @@ def _create_short_put_pricer(
             pricer=pricer,
             quantity_ratio=1.0,
             description="short_put (100%)",
+        )
+    ]
+
+
+def _create_long_put_pricer(
+    position: AccountPosition, leg: OptionLeg, params: PricingParams
+) -> list[PricerInstance]:
+    """Create long put pricer instance."""
+    from src.engine.pricing.long_put import LongPutPricer
+
+    pricer = LongPutPricer(
+        spot_price=params.spot_price,
+        strike_price=leg.strike,
+        premium=leg.premium,
+        volatility=params.volatility,
+        time_to_expiry=params.time_to_expiry,
+        risk_free_rate=params.risk_free_rate,
+        hv=params.hv,
+        dte=params.dte,
+        delta=leg.delta,
+        gamma=leg.gamma,
+        theta=leg.theta,
+        vega=leg.vega,
+    )
+
+    return [
+        PricerInstance(
+            pricer=pricer,
+            quantity_ratio=1.0,
+            description="long_put (100%)",
+        )
+    ]
+
+
+def _create_long_call_pricer(
+    position: AccountPosition, leg: OptionLeg, params: PricingParams
+) -> list[PricerInstance]:
+    """Create long call pricer instance."""
+    from src.engine.pricing.long_call import LongCallPricer
+
+    pricer = LongCallPricer(
+        spot_price=params.spot_price,
+        strike_price=leg.strike,
+        premium=leg.premium,
+        volatility=params.volatility,
+        time_to_expiry=params.time_to_expiry,
+        risk_free_rate=params.risk_free_rate,
+        hv=params.hv,
+        dte=params.dte,
+        delta=leg.delta,
+        gamma=leg.gamma,
+        theta=leg.theta,
+        vega=leg.vega,
+    )
+
+    return [
+        PricerInstance(
+            pricer=pricer,
+            quantity_ratio=1.0,
+            description="long_call (100%)",
         )
     ]

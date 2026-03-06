@@ -14,7 +14,7 @@ import logging
 import math
 from typing import Optional
 
-from src.business.monitoring.models import PositionData, StrategyMetricsData
+from src.business.monitoring.models import PositionData
 from src.engine.models.enums import StrategyType
 
 logger = logging.getLogger(__name__)
@@ -205,6 +205,38 @@ class PositionDataBuilder:
             from src.engine.pricing.short_call import ShortCallPricer
 
             return ShortCallPricer(
+                spot_price=underlying_price,
+                strike_price=strike,
+                premium=abs_premium,
+                volatility=fallback_iv,
+                time_to_expiry=time_to_expiry,
+                risk_free_rate=risk_free_rate,
+                dte=dte,
+                delta=delta,
+                gamma=gamma,
+                theta=theta,
+                vega=vega,
+            )
+        elif strategy_type == StrategyType.LONG_PUT:
+            from src.engine.pricing.long_put import LongPutPricer
+
+            return LongPutPricer(
+                spot_price=underlying_price,
+                strike_price=strike,
+                premium=abs_premium,
+                volatility=fallback_iv,
+                time_to_expiry=time_to_expiry,
+                risk_free_rate=risk_free_rate,
+                dte=dte,
+                delta=delta,
+                gamma=gamma,
+                theta=theta,
+                vega=vega,
+            )
+        elif strategy_type == StrategyType.LONG_CALL:
+            from src.engine.pricing.long_call import LongCallPricer
+
+            return LongCallPricer(
                 spot_price=underlying_price,
                 strike_price=strike,
                 premium=abs_premium,
