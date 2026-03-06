@@ -21,7 +21,7 @@ class ShortOptionsWithExpireItmStockTrade(BaseOptionStrategy):
             "pnl": {"enabled": False},               # 行权接盘兜底，禁用 P&L 止损
             "win_probability": {"enabled": False},   # 允许胜率下降至行权（核心差异）
             "technical_close": {
-                "close_put_enabled": True,
-                "close_stock_enabled": True,        # Phase 1: 仅启用期权 SMA 平仓，正股暂不卖出
+                "close_put_enabled": False,
+                "close_stock_enabled": False,        # Phase 1: 仅启用期权 SMA 平仓，正股暂不卖出
             },
         }
