@@ -1,0 +1,59 @@
+# Long LEAPS Call + SMA Timing Strategy
+# 深度 ITM LEAPS Call + SMA200 均线择时
+strategy_types:
+  - long_call
+
+leaps_config:
+  use_synthetic: true            # Use B-S synthetic option chain (no ThetaData needed)
+
+  # SMA 信号参数
+  sma_period: 200              # SMA 周期
+  decision_frequency: 5        # 每 N 个交易日评估一次信号
+
+  # LEAPS 合约参数
+  target_moneyness: 0.85       # Strike = Spot x 0.85 (15% ITM)
+  target_dte: 252              # 目标 DTE (~1年)
+  min_dte: 180                 # 合约最小 DTE
+  max_dte: 400                 # 合约最大 DTE
+
+  # 杠杆与仓位
+  target_leverage: 3.0         # 目标 delta 暴露倍数
+  leverage_drift_threshold: 0.5
+  max_capital_pct: 0.95        # 最大投入资金比例
+
+  # Roll 参数
+  roll_dte_threshold: 60       # DTE <= 此值时滚仓
+
+# 兼容 BacktestExecutor 的最小化筛选配置
+market_filter:
+  us_market:
+    vix_range: [0, 999]
+    term_structure_threshold: 999
+    trend_indices:
+    - symbol: SPY
+      weight: 1.0
+    trend_required: any
+  hk_market:
+    volatility_source: 2800.HK
+    iv_calculation: atm_weighted
+    iv_range: [0, 999]
+    trend_indices:
+    - symbol: 2800.HK
+      weight: 1.0
+    trend_required: any
+
+underlying_filter:
+  iv_rank_enabled: false
+  iv_hv_enabled: false
+  technical:
+    enabled: false
+  fundamental:
+    enabled: false
+
+contract_filter:
+  liquidity:
+    min_open_interest: 0
+    max_bid_ask_spread: 1.0
+  metrics:
+    expected_roc_enabled: false
+    tgr_enabled: false
