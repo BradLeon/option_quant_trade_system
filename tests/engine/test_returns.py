@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from src.engine.strategy import ShortPutStrategy
+from src.engine.pricing import ShortPutPricer
 from src.engine.portfolio.returns import (
     calc_annualized_return,
     calc_calmar_ratio,
@@ -144,7 +144,7 @@ class TestOptionSharpeRatio:
 
         Example: Sell put K=550, C=6.5, S=580, σ=20%, T=30 days, r=3%
         """
-        strategy = ShortPutStrategy(
+        strategy = ShortPutPricer(
             spot_price=580,
             strike_price=550,
             premium=6.5,
@@ -159,7 +159,7 @@ class TestOptionSharpeRatio:
 
     def test_strategy_metrics(self):
         """Test full metrics calculation via Strategy class."""
-        strategy = ShortPutStrategy(
+        strategy = ShortPutPricer(
             spot_price=580,
             strike_price=550,
             premium=6.5,
@@ -178,7 +178,7 @@ class TestOptionSharpeRatio:
 
         SR_annual = SR / sqrt(T)
         """
-        strategy = ShortPutStrategy(
+        strategy = ShortPutPricer(
             spot_price=580,
             strike_price=550,
             premium=6.5,

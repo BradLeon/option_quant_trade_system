@@ -36,8 +36,8 @@ from src.data.models.enums import Market
 from src.data.models.account import AccountType
 from src.data.providers import IBKRProvider, FutuProvider, UnifiedDataProvider
 from src.data.utils import SymbolFormatter
-from src.engine.models.strategy import OptionLeg, StrategyParams
-from src.engine.strategy import ShortPutStrategy
+from src.engine.models.pricing import OptionLeg, PricingParams
+from src.engine.pricing import ShortPutPricer
 from src.engine.position.risk_return import calc_roc_from_dte
 
 # Configure logging

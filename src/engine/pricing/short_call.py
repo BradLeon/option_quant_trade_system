@@ -1,4 +1,4 @@
-"""Short Call (Naked Call) strategy implementation.
+"""Short Call (Naked Call) pricer implementation.
 
 Sell a call option to collect premium, with obligation to sell stock if exercised.
 High risk strategy with unlimited potential loss.
@@ -10,12 +10,12 @@ from src.data.models.option import Greeks, OptionType
 from src.engine.bs.core import calc_d1, calc_d2, calc_d3, calc_n
 from src.engine.models import BSParams
 from src.engine.models.enums import PositionSide
-from src.engine.models.strategy import OptionLeg, StrategyParams
-from src.engine.strategy.base import OptionStrategy
+from src.engine.models.pricing import OptionLeg, PricingParams
+from src.engine.pricing.base import OptionPricer
 
 
-class ShortCallStrategy(OptionStrategy):
-    """Short Call (Sell Call / Naked Call) strategy.
+class ShortCallPricer(OptionPricer):
+    """Short Call (Sell Call / Naked Call) pricer.
 
     Profit/Loss Profile:
     - Max Profit: Premium received (if stock stays below strike)
@@ -70,7 +70,7 @@ class ShortCallStrategy(OptionStrategy):
             premium=premium,
             greeks=Greeks(delta=delta, gamma=gamma, theta=theta, vega=vega),
         )
-        params = StrategyParams(
+        params = PricingParams(
             spot_price=spot_price,
             volatility=volatility,
             time_to_expiry=time_to_expiry,

@@ -1,4 +1,4 @@
-"""Covered Call strategy implementation.
+"""Covered Call pricer implementation.
 
 Own stock + Sell a call option to collect premium.
 """
@@ -9,12 +9,12 @@ from src.data.models.option import Greeks, OptionType
 from src.engine.bs.core import calc_d1, calc_d2, calc_d3, calc_n
 from src.engine.models import BSParams
 from src.engine.models.enums import PositionSide
-from src.engine.models.strategy import OptionLeg, StrategyParams
-from src.engine.strategy.base import OptionStrategy
+from src.engine.models.pricing import OptionLeg, PricingParams
+from src.engine.pricing.base import OptionPricer
 
 
-class CoveredCallStrategy(OptionStrategy):
-    """Covered Call strategy.
+class CoveredCallPricer(OptionPricer):
+    """Covered Call pricer.
 
     Long stock + Short call option.
 
@@ -74,7 +74,7 @@ class CoveredCallStrategy(OptionStrategy):
             premium=premium,
             greeks=Greeks(delta=delta, gamma=gamma, theta=theta, vega=vega),
         )
-        params = StrategyParams(
+        params = PricingParams(
             spot_price=spot_price,
             volatility=volatility,
             time_to_expiry=time_to_expiry,

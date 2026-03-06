@@ -26,7 +26,7 @@ Architecture:
     - sentiment: Market sentiment (VIX, Trend, PCR)
 
 - bs/: Black-Scholes model calculations
-- strategy/: Option strategy definitions
+- pricing/: Option pricing definitions
 """
 
 # Base types (from models)
@@ -177,17 +177,17 @@ from src.engine.bs import (
     calc_put_itm_prob,
 )
 
-# ===== Strategy Definitions =====
-from src.engine.strategy import (
-    CoveredCallStrategy,
+# ===== Pricing Definitions =====
+from src.engine.pricing import (
+    CoveredCallPricer,
     OptionLeg,
-    OptionStrategy,
+    OptionPricer,
     OptionType,
     PositionSide,
-    ShortPutStrategy,
-    ShortStrangleStrategy,
-    StrategyMetrics,
-    StrategyParams,
+    ShortPutPricer,
+    ShortStranglePricer,
+    PricingMetrics,
+    PricingParams,
 )
 
 __all__ = [
@@ -315,14 +315,14 @@ __all__ = [
     "calc_call_exercise_prob",
     "calc_put_itm_prob",
     "calc_call_itm_prob",
-    # Option Strategies
+    # Option Pricing
     "OptionType",
     "PositionSide",
     "OptionLeg",
-    "StrategyParams",
-    "StrategyMetrics",
-    "OptionStrategy",
-    "ShortPutStrategy",
-    "CoveredCallStrategy",
-    "ShortStrangleStrategy",
+    "PricingParams",
+    "PricingMetrics",
+    "OptionPricer",
+    "ShortPutPricer",
+    "CoveredCallPricer",
+    "ShortStranglePricer",
 ]

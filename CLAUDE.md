@@ -34,7 +34,7 @@ uv run pytest tests/backtest/ -v                         # Backtest tests
 uv run pytest tests/business/ -v                          # Business layer tests
 
 # Run single test
-uv run pytest tests/engine/test_strategy.py::test_short_put -v
+uv run pytest tests/engine/test_pricing.py::test_short_put -v
 
 # Linting/Formatting
 uv run black src tests
@@ -100,7 +100,7 @@ This is an options quantitative trading system (Python 3.11+, `uv` package manag
 
 | Module | Path | Role |
 |--------|------|------|
-| **Engine** | `src/engine/` | Pure calculations: BS pricing, Greeks, strategy metrics. Shared by both live and backtest. |
+| **Engine** | `src/engine/` | Pure calculations: BS pricing, Greeks, pricing metrics. Shared by both live and backtest. |
 | **Data** | `src/data/` | Multi-provider abstraction: Yahoo Finance, Futu OpenAPI, IBKR TWS (live); DuckDB/Parquet (backtest) |
 | **Business** | `src/business/` | Live trading: CLI (`optrade`), screening, monitoring, trading, notifications (Feishu) |
 | **Backtest** | `src/backtest/` | Simulation: CLI (`backtest`), executor, account/position/trade simulators, PnL attribution, HTML reports |
@@ -139,11 +139,11 @@ The `BacktestExecutor._run_single_day()` method implements the core backtest log
 8. Record DailySnapshot (NLV, cash, margin, PnL, positions)
 ```
 
-## Strategy Implementation
+## Pricing Implementation
 
-To add a new option strategy:
+To add a new option pricer:
 
-1. Extend `OptionStrategy` in `src/engine/strategy/` (see `short_put.py` for reference)
+1. Extend `OptionPricer` in `src/engine/pricing/` (see `short_put.py` for reference)
 2. Implement abstract methods:
    - `calc_expected_return()` - Expected PnL E[π]
    - `calc_return_variance()` - Variance Var[π]
@@ -151,7 +151,7 @@ To add a new option strategy:
    - `calc_max_loss()` - Maximum possible loss (positive number)
    - `calc_breakeven()` - Breakeven price(s)
    - `calc_win_probability()` - Probability of profit
-3. Add strategy to `src/engine/strategy/__init__.py` and `StrategyType` enum
+3. Add pricer to `src/engine/pricing/__init__.py` and `StrategyType` enum
 
 ## Configuration System
 
@@ -199,7 +199,7 @@ Configurations use `ConfigMode.LIVE` (real trading) or `ConfigMode.BACKTEST` (hi
 
 3. **Observer Pattern**: `AttributionCollector` observes the backtest loop to capture daily position/portfolio snapshots for PnL attribution analysis.
 
-4. **Factory Pattern**: `create_strategies_from_position()` in `src/engine/strategy/factory.py` reconstructs strategy instances from saved positions.
+4. **Factory Pattern**: `create_pricers_from_position()` in `src/engine/pricing/factory.py` reconstructs pricer instances from saved positions.
 
 ## Testing Guidelines
 

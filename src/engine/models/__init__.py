@@ -8,8 +8,8 @@ Models:
     BSParams: Black-Scholes calculation parameters
     Position: Portfolio position information
     OptionLeg: Single option leg in a strategy
-    StrategyParams: Common parameters for strategy calculations
-    StrategyMetrics: Calculated metrics for a strategy
+    PricingParams: Common parameters for pricing calculations
+    PricingMetrics: Calculated pricing metrics
     FundamentalScore: Fundamental analysis score result
     VolatilityScore: Volatility analysis score result
     TechnicalScore: Technical analysis score result
@@ -55,7 +55,7 @@ from src.engine.models.result import (
     TrendResult,
     VolatilityScore,
 )
-from src.engine.models.strategy import OptionLeg, StrategyMetrics, StrategyParams
+from src.engine.models.pricing import OptionLeg, PricingMetrics, PricingParams
 from src.engine.models.capital import CapitalMetrics
 from src.engine.models.portfolio import PortfolioMetrics
 
@@ -86,10 +86,10 @@ __all__ = [
     "MarketTrend",
     "PcrResult",
     "MarketSentiment",
-    # Strategy
+    # Pricing
     "OptionLeg",
-    "StrategyParams",
-    "StrategyMetrics",
+    "PricingParams",
+    "PricingMetrics",
     # Capital & Portfolio
     "CapitalMetrics",
     "PortfolioMetrics",

@@ -1,4 +1,4 @@
-"""Strategy-related models."""
+"""Pricing-related models."""
 
 from __future__ import annotations
 
@@ -261,7 +261,7 @@ class OptionLeg:
 
 
 @dataclass
-class StrategyParams:
+class PricingParams:
     """Common parameters for strategy calculations.
 
     Attributes:
@@ -290,7 +290,7 @@ class StrategyParams:
 
 
 @dataclass
-class StrategyMetrics:
+class PricingMetrics:
     """Calculated metrics for a strategy.
 
     Attributes:

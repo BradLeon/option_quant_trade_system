@@ -7,7 +7,7 @@
 - moneyness / OTM% 计算
 - unrealized_pnl_pct 计算
 - 策略指标批量填充 (tgr, prei, sas, roc 等)
-- 策略对象创建 (复用 engine/strategy 工厂)
+- 策略对象创建 (复用 engine/pricing 工厂)
 """
 
 import logging
@@ -186,9 +186,9 @@ class PositionDataBuilder:
         fallback_iv = iv or 0.2
 
         if strategy_type == StrategyType.SHORT_PUT:
-            from src.engine.strategy.short_put import ShortPutStrategy
+            from src.engine.pricing.short_put import ShortPutPricer
 
-            return ShortPutStrategy(
+            return ShortPutPricer(
                 spot_price=underlying_price,
                 strike_price=strike,
                 premium=abs_premium,
@@ -202,9 +202,9 @@ class PositionDataBuilder:
                 vega=vega,
             )
         elif strategy_type in (StrategyType.NAKED_CALL, StrategyType.COVERED_CALL):
-            from src.engine.strategy.short_call import ShortCallStrategy
+            from src.engine.pricing.short_call import ShortCallPricer
 
-            return ShortCallStrategy(
+            return ShortCallPricer(
                 spot_price=underlying_price,
                 strike_price=strike,
                 premium=abs_premium,

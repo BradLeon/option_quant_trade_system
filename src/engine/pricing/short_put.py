@@ -1,4 +1,4 @@
-"""Short Put strategy implementation.
+"""Short Put pricer implementation.
 
 Sell a put option to collect premium, with obligation to buy stock if exercised.
 
@@ -11,12 +11,12 @@ from src.data.models.option import Greeks, OptionType
 from src.engine.bs.core import calc_d1, calc_d2, calc_d3, calc_n
 from src.engine.models import BSParams
 from src.engine.models.enums import PositionSide
-from src.engine.models.strategy import OptionLeg, StrategyMetrics, StrategyParams
-from src.engine.strategy.base import OptionStrategy
+from src.engine.models.pricing import OptionLeg, PricingMetrics, PricingParams
+from src.engine.pricing.base import OptionPricer
 
 
-class ShortPutStrategy(OptionStrategy):
-    """Short Put (Sell Put) strategy.
+class ShortPutPricer(OptionPricer):
+    """Short Put (Sell Put) pricer.
 
     Profit/Loss Profile:
     - Max Profit: Premium received (if stock stays above strike)
@@ -69,7 +69,7 @@ class ShortPutStrategy(OptionStrategy):
             premium=premium,
             greeks=Greeks(delta=delta, gamma=gamma, theta=theta, vega=vega),
         )
-        params = StrategyParams(
+        params = PricingParams(
             spot_price=spot_price,
             volatility=volatility,
             time_to_expiry=time_to_expiry,

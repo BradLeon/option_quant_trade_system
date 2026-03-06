@@ -2,11 +2,11 @@
 
 Position-level module for evaluating option selling opportunities.
 
-Note: For strategy metrics calculations (expected return, Sharpe ratio, etc.),
-use Strategy classes directly:
-    >>> from src.engine.strategy import ShortPutStrategy
-    >>> strategy = ShortPutStrategy(spot_price=100, strike_price=95, ...)
-    >>> metrics = strategy.calc_metrics()
+Note: For pricing metrics calculations (expected return, Sharpe ratio, etc.),
+use Pricer classes directly:
+    >>> from src.engine.pricing import ShortPutPricer
+    >>> pricer = ShortPutPricer(spot_price=100, strike_price=95, ...)
+    >>> metrics = pricer.calc_metrics()
 """
 
 
@@ -32,9 +32,9 @@ def calc_sas(
         - Sharpe_Score = min(3.0, max(0, SR)) / 3.0 × 100
         - Win_Score = P(win) × 100
 
-    For model-based interface, use Strategy.calc_sas() method:
-        >>> strategy = ShortPutStrategy(spot_price=100, strike_price=95, ..., hv=0.20)
-        >>> sas = strategy.calc_sas()
+    For model-based interface, use Pricer.calc_sas() method:
+        >>> pricer = ShortPutPricer(spot_price=100, strike_price=95, ..., hv=0.20)
+        >>> sas = pricer.calc_sas()
 
     Args:
         iv: Implied volatility (e.g., 0.30 for 30%).

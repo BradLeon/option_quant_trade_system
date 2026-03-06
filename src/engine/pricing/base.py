@@ -1,6 +1,6 @@
-"""Base classes for option strategies.
+"""Base classes for option pricers.
 
-Contains the abstract OptionStrategy base class.
+Contains the abstract OptionPricer base class.
 For data models, import from src.engine.models directly.
 """
 
@@ -12,7 +12,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 from src.data.models.option import Greeks
-from src.engine.models.strategy import OptionLeg, StrategyMetrics, StrategyParams
+from src.engine.models.pricing import OptionLeg, PricingMetrics, PricingParams
 
 if TYPE_CHECKING:
     from src.data.models.margin import MarginRequirement
@@ -20,8 +20,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class OptionStrategy(ABC):
-    """Abstract base class for option strategies.
+class OptionPricer(ABC):
+    """Abstract base class for option pricers.
 
     Subclasses must implement:
     - calc_expected_return()
@@ -32,8 +32,8 @@ class OptionStrategy(ABC):
     - calc_win_probability()
     """
 
-    def __init__(self, legs: list[OptionLeg], params: StrategyParams):
-        """Initialize strategy.
+    def __init__(self, legs: list[OptionLeg], params: PricingParams):
+        """Initialize pricer.
 
         Args:
             legs: List of option legs in the strategy
@@ -447,16 +447,16 @@ class OptionStrategy(ABC):
 
         return abs(theta) / margin
 
-    def calc_metrics(self) -> StrategyMetrics:
+    def calc_metrics(self) -> PricingMetrics:
         """Calculate all metrics for the strategy.
 
         Extended metrics (prei, sas, tgr, roc) are calculated automatically
         if the required data is available in legs and params.
 
         Returns:
-            StrategyMetrics with all calculated values.
+            PricingMetrics with all calculated values.
         """
-        return StrategyMetrics(
+        return PricingMetrics(
             expected_return=self.calc_expected_return(),
             return_std=self.calc_return_std(),
             return_variance=self.calc_return_variance(),
