@@ -1,12 +1,12 @@
 import logging
-from src.business.strategy.base import BaseOptionStrategy
+from src.business.strategy.base import BaseTradeStrategy
 
 logger = logging.getLogger(__name__)
 
-class ShortOptionsWithExpireItmStockTrade(BaseOptionStrategy):
+class ShortOptionsWithExpireItmStockTrade(BaseTradeStrategy):
     """Short Options with ITM assignment
 
-    通过 BaseOptionStrategy 提供的标准交易管道执行，
+    通过 BaseTradeStrategy 提供的标准交易管道执行，
     默认持有至到期或触发行权信号。
     """
 

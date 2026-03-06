@@ -19,6 +19,9 @@ from src.business.monitoring.models import (
 )
 from src.business.monitoring.pipeline import MonitoringPipeline
 
+# Composable components for custom monitoring
+from src.business.monitoring import components as monitoring_components  # noqa: F401
+
 __all__ = [
     "MonitorStatus",
     "Alert",

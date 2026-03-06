@@ -10,16 +10,27 @@ if TYPE_CHECKING:
     from src.backtest.engine.account_simulator import AccountSimulator
     from src.business.config.screening_config import ScreeningConfig
     from src.business.config.monitoring_config import MonitoringConfig
+    from src.business.screening.pipeline import ScreeningPipeline
+    from src.business.monitoring.pipeline import MonitoringPipeline
+    from src.business.trading.decision.position_sizer import PositionSizer
 
 logger = logging.getLogger(__name__)
 
 
-class BaseOptionStrategy(ABC):
+class BaseTradeStrategy(ABC):
     """期权策略基类 (包含默认的通用 V9 交易逻辑)
 
     所有具体的策略版本（如 ShortPutV6, ShortPutV9）必须继承此基类。
     基类默认实现了当前最复杂的 V9 的「寻机-建仓-平仓」闭环。
     如果子版本逻辑有差异，可以通过 Override 具体的方法来实现隔离。
+
+    扩展机制:
+    1. 工厂方法: build_screening_pipeline(), build_monitoring_pipeline(), build_position_sizer()
+       — 策略可 override 返回自定义管道（如 ComposableScreeningPipeline）
+    2. Hook 方法: validate_opportunity(), filter_close_signals()
+       — 细粒度定制，无需 override 整个生命周期方法
+    3. 生命周期方法: evaluate_positions(), find_opportunities(), generate_entry_signals()
+       — 委托给 _default_* 实现，可完全 override
     """
 
     def __init__(self):
@@ -29,9 +40,12 @@ class BaseOptionStrategy(ABC):
         self._max_new_positions_per_day: int = 1
 
         # 性能优化：缓存高频调用的管道实例
-        self._screening_pipeline_instance = None
-        self._monitoring_pipeline_instance = None
-        self._position_sizer_instance = None
+        self._screening_pipeline_instance: Optional["ScreeningPipeline"] = None
+        self._monitoring_pipeline_instance: Optional["MonitoringPipeline"] = None
+        self._position_sizer_instance: Optional["PositionSizer"] = None
+
+        # evaluate_positions 中保存的持仓快照，供 filter_close_signals 使用
+        self._last_positions: List[PositionData] = []
 
     @property
     @abstractmethod
@@ -39,6 +53,99 @@ class BaseOptionStrategy(ABC):
         """策略的唯一标识符名称 (例如 'short_put_v9')"""
         pass
 
+    # ==========================
+    # 策略属性
+    # ==========================
+    @property
+    def position_side(self) -> str:
+        """默认持仓方向: 'SHORT'。买方策略 override 返回 'LONG'。"""
+        return "SHORT"
+
+    # ==========================
+    # 组件工厂方法 — 策略可 override 注入不同的管道
+    # ==========================
+    def build_screening_pipeline(self, data_provider: Any) -> "ScreeningPipeline":
+        """构建筛选管道。Override 可返回 ComposableScreeningPipeline 或自定义管道。
+
+        Args:
+            data_provider: 数据提供者
+
+        Returns:
+            ScreeningPipeline 或兼容接口的实例
+        """
+        from src.business.config.screening_config import ScreeningConfig
+        from src.business.screening.pipeline import ScreeningPipeline
+
+        config = self._screening_config or ScreeningConfig.load(strategy_name=self.name)
+        return ScreeningPipeline(config, data_provider)
+
+    def build_monitoring_pipeline(self) -> "MonitoringPipeline":
+        """构建监控管道。Override 可返回自定义监控管道。
+
+        Returns:
+            MonitoringPipeline 或兼容接口的实例
+        """
+        from src.business.monitoring.pipeline import MonitoringPipeline
+        from src.business.config.monitoring_config import MonitoringConfig
+
+        config = self._monitoring_config or MonitoringConfig.load(strategy_name=self.name)
+
+        # 应用策略版本级阈值覆写
+        overrides = self.get_monitoring_overrides()
+        if overrides:
+            self._apply_monitoring_overrides(config, overrides)
+
+        return MonitoringPipeline(config)
+
+    def build_position_sizer(self) -> "PositionSizer":
+        """构建仓位计算器。Override 可返回 PremiumRiskSizer 等买方策略用的 sizer。
+
+        Returns:
+            PositionSizer 或兼容接口的实例
+        """
+        from src.business.trading.decision.position_sizer import PositionSizer
+        from src.business.trading.config.decision_config import DecisionConfig
+
+        decision_config = DecisionConfig.load(strategy_name=self.name)
+        return PositionSizer(config=decision_config)
+
+    # ==========================
+    # 策略级 Hook — 细粒度定制
+    # ==========================
+    def validate_opportunity(self, opp: ContractOpportunity, context: MarketContext) -> bool:
+        """策略级风控验证。pipeline 筛选通过后、ranking 前调用。
+
+        返回 False 拒绝该机会。默认: 全部通过。
+
+        Args:
+            opp: 通过 pipeline 筛选的合约机会
+            context: 当前市场上下文
+
+        Returns:
+            True 接受，False 拒绝
+        """
+        return True
+
+    def filter_close_signals(self, signals: List[TradeSignal], context: MarketContext) -> List[TradeSignal]:
+        """后处理平仓信号。monitoring pipeline 转换后调用。
+
+        可添加策略特有的平仓逻辑（如 DTE=0 ITM 强制平仓）。
+        默认: 原样返回。
+
+        使用 self._last_positions 获取当前持仓快照。
+
+        Args:
+            signals: monitoring pipeline 生成的平仓信号列表
+            context: 当前市场上下文
+
+        Returns:
+            处理后的平仓信号列表
+        """
+        return signals
+
+    # ==========================
+    # 配置与覆写
+    # ==========================
     def get_monitoring_overrides(self) -> dict | None:
         """返回策略版本级的监控阈值覆写（可选）
 
@@ -98,21 +205,21 @@ class BaseOptionStrategy(ABC):
         3. PnL <= -200% 或单边风险暴露过大时止损
         4. 否则等待到期：ITM 行权接盘股票，OTM 价值归零
         """
+        return self._default_evaluate_positions(positions, context, data_provider)
+
+    def _default_evaluate_positions(
+        self, positions: List[PositionData], context: MarketContext, data_provider: Any = None
+    ) -> List[TradeSignal]:
+        """evaluate_positions 的默认实现"""
         signals = []
         from src.backtest.engine.trade_simulator import TradeAction
-        from src.business.monitoring.pipeline import MonitoringPipeline
-        from src.business.config.monitoring_config import MonitoringConfig
 
-        # 1. 使用注入的配置或从 YAML 加载监控配置 (带缓存)
+        # 保存持仓快照，供 filter_close_signals 使用
+        self._last_positions = list(positions)
+
+        # 1. 使用工厂方法构建监控管道 (带缓存)
         if self._monitoring_pipeline_instance is None:
-            config = self._monitoring_config or MonitoringConfig.load(strategy_name=self.name)
-
-            # 应用策略版本级阈值覆写
-            overrides = self.get_monitoring_overrides()
-            if overrides:
-                self._apply_monitoring_overrides(config, overrides)
-
-            self._monitoring_pipeline_instance = MonitoringPipeline(config)
+            self._monitoring_pipeline_instance = self.build_monitoring_pipeline()
 
         # 2. 运行监控管道获取持仓调整建议
         vix = context.vix_value
@@ -130,7 +237,7 @@ class BaseOptionStrategy(ABC):
                 pos = next((p for p in positions if p.position_id == getattr(suggestion, 'position_id', None)), None)
                 if not pos:
                     pos = next((p for p in positions if p.symbol == suggestion.symbol), None)
-                    
+
                 if pos:
                     # 如果动作为 TAKE_PROFIT (止盈), REDUCE (减仓) 等，本质上都是执行 CLOSE 单操作
                     # 这里简单将其归类为买入平仓操作
@@ -162,22 +269,27 @@ class BaseOptionStrategy(ABC):
                         )
                     )
 
+        # 4. 调用 hook: 策略级平仓信号后处理
+        signals = self.filter_close_signals(signals, context)
+
         return signals
 
     def get_position_side(self, opportunity: ContractOpportunity) -> Any:
         """获取开仓方向 (PositionSide)
-        
-        基类默认实现：返回 PositionSide.SHORT (卖出期权)。
-        未来如果是买方策略 (Long Option) 或多腿组合策略，子类只需重写此方法
+
+        读取 position_side 属性来确定方向。
+        未来如果是买方策略 (Long Option) 或多腿组合策略，子类只需重写 position_side 属性
         或直接重写 generate_entry_signals 即可。
-        
+
         Args:
             opportunity: 目标期权合约机会
-            
+
         Returns:
             PositionSide 枚举 (LONG 或 SHORT)
         """
         from src.engine.models.enums import PositionSide
+        if self.position_side == "LONG":
+            return PositionSide.LONG
         return PositionSide.SHORT
 
     # ==========================
@@ -196,15 +308,17 @@ class BaseOptionStrategy(ABC):
         - 为每个方向运行独立的筛选 Pipeline
         - 合并所有确认的机会
         """
-        from src.business.config.screening_config import ScreeningConfig
-        from src.business.screening.pipeline import ScreeningPipeline
-        from src.business.screening.models import MarketType
-        from src.engine.models.enums import StrategyType
+        return self._default_find_opportunities(symbols, data_provider, context)
 
-        # 1. 使用注入的配置或从 YAML 加载配置并初始化 Pipeline (带缓存)
+    def _default_find_opportunities(
+        self, symbols: List[str], data_provider: Any, context: MarketContext
+    ) -> List[ContractOpportunity]:
+        """find_opportunities 的默认实现"""
+        from src.business.screening.models import MarketType
+
+        # 1. 使用工厂方法构建筛选管道 (带缓存)
         if self._screening_pipeline_instance is None:
-            config = self._screening_config or ScreeningConfig.load(strategy_name=self.name)
-            self._screening_pipeline_instance = ScreeningPipeline(config, data_provider)
+            self._screening_pipeline_instance = self.build_screening_pipeline(data_provider)
 
         # 2. 获取支持的策略类型
         target_types = self._get_strategy_types()
@@ -230,8 +344,21 @@ class BaseOptionStrategy(ABC):
             except Exception as e:
                 logger.error(f"Strategy {self.name} screening failed for {stype.value}: {e}")
 
-        logger.info(f"总计找到 {len(all_confirmed)} 个机会")
-        return all_confirmed
+        # 4. 调用 hook: 策略级风控验证
+        validated = []
+        for opp in all_confirmed:
+            if self.validate_opportunity(opp, context):
+                validated.append(opp)
+            else:
+                logger.info(f"validate_opportunity 拒绝: {opp.symbol}")
+
+        if len(validated) != len(all_confirmed):
+            logger.info(
+                f"validate_opportunity 过滤: {len(all_confirmed)} → {len(validated)}"
+            )
+
+        logger.info(f"总计找到 {len(validated)} 个机会")
+        return validated
 
     def _get_strategy_types(self) -> List["StrategyType"]:
         """获取支持的策略类型列表
@@ -357,6 +484,15 @@ class BaseOptionStrategy(ABC):
 
         遍历排名前 _max_new_positions_per_day 个候选，每个独立计算仓位大小。
         """
+        return self._default_generate_entry_signals(candidates, account, context)
+
+    def _default_generate_entry_signals(
+        self,
+        candidates: List[ContractOpportunity],
+        account: "AccountSimulator",
+        context: MarketContext
+    ) -> List[TradeSignal]:
+        """generate_entry_signals 的默认实现"""
         if not candidates:
             return []
 
@@ -364,14 +500,11 @@ class BaseOptionStrategy(ABC):
         sorted_candidates = self.rank_candidates(candidates)
 
         # 仓位计算：复用核心底层 PositionSizer，确保风控及 Kelly 公式准确执行
-        from src.business.trading.decision.position_sizer import PositionSizer
         from src.business.trading.models.decision import AccountState
-        from src.business.trading.config.decision_config import DecisionConfig
 
-        # 加载决策配置（内含策略匹配的 risk_config），并缓存 Sizer 实例以提升性能
+        # 使用工厂方法构建 Sizer 实例 (带缓存)
         if self._position_sizer_instance is None:
-            decision_config = DecisionConfig.load(strategy_name=self.name)
-            self._position_sizer_instance = PositionSizer(config=decision_config)
+            self._position_sizer_instance = self.build_position_sizer()
 
         margin_util = account.margin_used / account.nlv if account.nlv > 0 else 0.0
         cash_ratio = account.cash / account.nlv if account.nlv > 0 else 0.0

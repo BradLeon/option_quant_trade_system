@@ -860,7 +860,7 @@ class BacktestExecutor:
     def _run_screening(self, current_date: date, context: MarketContext) -> ScreeningResult | None:
         """运行策略的内建筛选，寻找新机会
         
-        完全委托给 BaseOptionStrategy.find_opportunities()
+        完全委托给 BaseTradeStrategy.find_opportunities()
         """
         opportunities = self._strategy.find_opportunities(
             symbols=self._config.symbols,

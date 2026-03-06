@@ -1,4 +1,4 @@
-from src.business.strategy.base import BaseOptionStrategy
+from src.business.strategy.base import BaseTradeStrategy
 from src.business.strategy.versions.short_options_with_expire_itm_stock_trade import ShortOptionsWithExpireItmStockTrade
 from src.business.strategy.versions.short_options_without_expire_itm_stock_trade import ShortOptionsWithoutExpireItmStockTrade
 
@@ -14,7 +14,7 @@ class StrategyFactory:
     }
     
     @classmethod
-    def create(cls, name: str, **kwargs) -> BaseOptionStrategy:
+    def create(cls, name: str, **kwargs) -> BaseTradeStrategy:
         strategy_class = cls._registry.get(name.lower())
         if not strategy_class:
             available_strategies = list(cls._registry.keys())
