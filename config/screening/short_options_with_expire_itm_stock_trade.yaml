@@ -1,0 +1,93 @@
+# 支持的交易方向
+strategy_types:
+  - short_put
+  #- covered_call
+
+market_filter:
+  us_market:
+    vix_symbol: ^VIX
+    vix_range:
+    - 0
+    - 999
+    vix_percentile_range:
+    - 0.0
+    - 1.0
+    vix3m_symbol: ^VIX3M
+    term_structure_threshold: 1.0   # VIX/VIX3M >= 1.0 (Backwardation) 停止开仓
+    trend_indices:
+    - symbol: SPY
+      weight: 0.6
+    - symbol: QQQ
+      weight: 0.4
+    trend_required: bullish_or_neutral
+    pcr_symbol: SPY
+    pcr_range:
+    - 0.8
+    - 1.2
+  hk_market:
+    volatility_source: 2800.HK
+    iv_calculation: atm_weighted
+    iv_range:
+    - 18
+    - 32
+    iv_percentile_range:
+    - 0.3
+    - 0.8
+    trend_indices:
+    - symbol: 2800.HK
+      weight: 0.5
+    - symbol: 3033.HK
+      weight: 0.5
+    trend_required: bullish_or_neutral
+  macro_events:
+    enabled: false
+
+underlying_filter:
+  iv_rank_enabled: false
+  iv_hv_enabled: true
+  max_iv_hv_ratio: 3.0
+  min_iv_hv_ratio: 0.8
+  technical:
+    enabled: true
+  fundamental:
+    enabled: false
+
+contract_filter:
+  liquidity:
+    min_open_interest: 0
+    max_bid_ask_spread: 0.3
+  metrics:
+    expected_roc_enabled: false
+    tgr_enabled: false
+
+# 方向特定参数覆盖
+directional_overrides:
+  short_put:
+    market_filter:
+      us_market:
+        trend_required: bullish_or_neutral
+      hk_market:
+        trend_required: bullish_or_neutral
+    underlying_filter:
+      technical:
+        min_rsi: 30
+        max_rsi: 70
+        max_adx: 45
+    contract_filter:
+      delta_range: [0.15, 0.35]
+  covered_call:
+    market_filter:
+      us_market:
+        trend_required: neutral_or_bearish
+      hk_market:
+        trend_required: neutral_or_bearish
+    underlying_filter:
+      trend_override:
+        bullish:
+          min_iv_rank: 0
+      technical:
+        min_rsi: 45
+        max_rsi: 75
+        max_adx: 40
+    contract_filter:
+      delta_range: [0.20, 0.40]

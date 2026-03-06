@@ -72,11 +72,12 @@ src/business/config/
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import yaml
 
-from src.business.config.config_mode import ConfigMode
+if TYPE_CHECKING:
+    from src.engine.models.enums import StrategyType
 
 
 @dataclass
@@ -162,6 +163,8 @@ class MarketFilterConfig:
 class TechnicalConfig:
     """技术面配置"""
 
+    enabled: bool = True  # 是否启用技术面检查（False 时跳过所有 RSI/ADX/SMA 检查）
+
     # RSI 策略区分阈值
     # Short Put: 允许更深超卖（RSI 25 是底部反弹信号）
     short_put_rsi_min: float = 25.0
@@ -200,14 +203,58 @@ class EventCalendarConfig:
 
 @dataclass
 class UnderlyingFilterConfig:
-    """标的过滤器配置"""
+    """标的过滤器配置
 
+    趋势覆盖 (trend_override):
+        根据市场趋势自动调整 min_iv_rank。
+        YAML 示例:
+            trend_override:
+              bullish:  { min_iv_rank: 15 }
+              bearish:  { min_iv_rank: 40 }
+        strong_bullish / strong_bearish 自动回退到 bullish / bearish。
+    """
+
+    iv_rank_enabled: bool = True  # 是否启用 IV Rank 检查 (P1)
     min_iv_rank: float = 30.0  # P1: IV Rank 阻塞条件，卖方必须卖"贵"的东西
+    iv_hv_enabled: bool = True  # 是否启用 IV/HV 比率检查 (P1)
     max_iv_hv_ratio: float = 2.0
     min_iv_hv_ratio: float = 0.8
+    trend_override: dict[str, dict[str, float]] = field(default_factory=dict)
     technical: TechnicalConfig = field(default_factory=TechnicalConfig)
     fundamental: FundamentalConfig = field(default_factory=FundamentalConfig)
     event_calendar: EventCalendarConfig = field(default_factory=EventCalendarConfig)
+
+    # -- 趋势 fallback 映射 --
+    _TREND_FALLBACK: dict[str, str] = field(
+        default_factory=lambda: {
+            "strong_bullish": "bullish",
+            "strong_bearish": "bearish",
+        },
+        init=False,
+        repr=False,
+    )
+
+    def get_min_iv_rank(self, trend: str | None = None) -> float:
+        """返回考虑趋势覆盖后的有效 min_iv_rank。
+
+        Args:
+            trend: TrendStatus.value，如 "bullish" / "strong_bearish" / None
+
+        Returns:
+            有效的 min_iv_rank 阈值
+        """
+        if trend is None or not self.trend_override:
+            return self.min_iv_rank
+
+        override = self.trend_override.get(trend)
+        if override is None:
+            fallback_key = self._TREND_FALLBACK.get(trend)
+            if fallback_key:
+                override = self.trend_override.get(fallback_key)
+
+        if override is not None:
+            return override.get("min_iv_rank", self.min_iv_rank)
+        return self.min_iv_rank
 
 
 @dataclass
@@ -232,28 +279,38 @@ class MetricsConfig:
     - P2: Annual ROC（重要条件）
     - P3: Sharpe Ratio, Premium Rate, Win Probability, Theta/Premium, Kelly（参考条件）
           Sharpe/PremRate 降级原因：卖方收益非正态分布，费率已被 AnnROC 包含
+
+    每个指标都有独立的 enabled 开关，设为 False 时跳过该检查。
     """
 
+    # P0: 期望收益率必须足够高
+    expected_roc_enabled: bool = True
+    min_expected_roc: float = 0.10
+    # P1: Theta/Gamma 比率（标准化公式：|Theta| / (|Gamma| × S² × σ_daily) × 100）
+    tgr_enabled: bool = True
+    min_tgr: float = 0.5
+    # P2: 年化收益率
+    annual_roc_enabled: bool = True
+    min_annual_roc: float = 0.15
     # P3: 年化夏普比率（参考条件，卖方收益非正态分布）
+    sharpe_enabled: bool = True
     min_sharpe_ratio: float = 0.5
+    # P3: 胜率
+    win_probability_enabled: bool = True
+    min_win_probability: float = 0.65
+    # P3: 费率（参考条件，已被 Annual ROC 包含）
+    premium_rate_enabled: bool = True
+    min_premium_rate: float = 0.01
+    # P3: Theta/Premium 比率 (每天)
+    theta_premium_enabled: bool = True
+    min_theta_premium_ratio: float = 0.01
+    # P3: Kelly 仓位上限
+    kelly_enabled: bool = True
+    max_kelly_fraction: float = 0.25
     # P2: 策略吸引力评分
     min_sas: float = 50.0
     # P2: 风险暴露指数 (越低越好)
     max_prei: float = 75.0
-    # P1: Theta/Gamma 比率（标准化公式：|Theta| / (|Gamma| × S² × σ_daily) × 100）
-    min_tgr: float = 0.5
-    # P3: Kelly 仓位上限
-    max_kelly_fraction: float = 0.25
-    # P0: 期望收益率必须足够高
-    min_expected_roc: float = 0.10
-    # P2: 年化收益率
-    min_annual_roc: float = 0.15
-    # P3: 胜率
-    min_win_probability: float = 0.65
-    # P3: Theta/Premium 比率 (每天)
-    min_theta_premium_ratio: float = 0.01
-    # P3: 费率（参考条件，已被 Annual ROC 包含）
-    min_premium_rate: float = 0.01
 
 
 @dataclass
@@ -282,13 +339,18 @@ class OutputConfig:
     """输出配置"""
 
     max_opportunities: int = 10
-    sort_by: str = "annual_roc"
+    sort_by: str = "tgr"
     sort_order: str = "desc"
 
 
 @dataclass
 class ScreeningConfig:
-    """筛选配置"""
+    """筛选配置
+
+    支持多交易方向配置:
+    - strategy_types: 支持的策略类型列表（如 ["short_put", "covered_call"]）
+    - directional_overrides: 方向特定的参数覆盖
+    """
 
     market_filter: MarketFilterConfig = field(default_factory=MarketFilterConfig)
     underlying_filter: UnderlyingFilterConfig = field(
@@ -297,36 +359,38 @@ class ScreeningConfig:
     contract_filter: ContractFilterConfig = field(default_factory=ContractFilterConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
 
+    # 新增：支持的策略类型列表
+    strategy_types: list[str] = field(default_factory=lambda: ["short_put"])
+
+    # 新增：方向特定参数覆盖
+    directional_overrides: dict[str, dict] = field(default_factory=dict)
+
     @classmethod
     def from_yaml(
         cls,
         path: str | Path,
-        mode: ConfigMode = ConfigMode.LIVE,
     ) -> "ScreeningConfig":
         """从 YAML 文件加载配置
 
         Args:
             path: YAML 文件路径
-            mode: 配置模式 (LIVE 或 BACKTEST)
 
         Returns:
             ScreeningConfig 实例
         """
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
-        return cls.from_dict(data, mode=mode)
+        return cls.from_dict(data)
 
     @classmethod
     def from_dict(
         cls,
         data: dict[str, Any],
-        mode: ConfigMode = ConfigMode.LIVE,
     ) -> "ScreeningConfig":
         """从字典创建配置
 
         Args:
             data: 配置字典
-            mode: 配置模式 (LIVE 或 BACKTEST)
 
         Returns:
             ScreeningConfig 实例
@@ -338,16 +402,7 @@ class ScreeningConfig:
               ...
             contract_filter:
               ...
-            # 可选: 回测覆盖
-            backtest_overrides:
-              contract_filter:
-                liquidity:
-                  min_open_interest: 0
         """
-        # 如果是 BACKTEST 模式，合并 backtest_overrides
-        if mode == ConfigMode.BACKTEST and "backtest_overrides" in data:
-            data = cls._merge_backtest_overrides(data, data["backtest_overrides"])
-
         config = cls()
 
         if "market_filter" in data:
@@ -377,16 +432,27 @@ class ScreeningConfig:
                     ],
                     trend_required=hk.get("trend_required", "bullish_or_neutral"),
                 )
+            if "macro_events" in mf:
+                me = mf["macro_events"]
+                config.market_filter.macro_events = MacroEventConfig(
+                    enabled=me.get("enabled", True),
+                    blackout_days=me.get("blackout_days", 2),
+                    blackout_events=me.get("blackout_events", ["FOMC", "CPI", "NFP"]),
+                )
 
         if "underlying_filter" in data:
             uf = data["underlying_filter"]
             tech = uf.get("technical", {})
             fund = uf.get("fundamental", {})
             config.underlying_filter = UnderlyingFilterConfig(
+                iv_rank_enabled=uf.get("iv_rank_enabled", True),
                 min_iv_rank=uf.get("min_iv_rank", 50),
+                iv_hv_enabled=uf.get("iv_hv_enabled", True),
                 max_iv_hv_ratio=uf.get("max_iv_hv_ratio", 2.0),
                 min_iv_hv_ratio=uf.get("min_iv_hv_ratio", 0.8),
+                trend_override=uf.get("trend_override", {}),
                 technical=TechnicalConfig(
+                    enabled=tech.get("enabled", True),
                     min_rsi=tech.get("min_rsi", 30),
                     max_rsi=tech.get("max_rsi", 70),
                     rsi_stabilizing_range=tuple(tech.get("rsi_stabilizing_range", [30, 45])),
@@ -416,16 +482,24 @@ class ScreeningConfig:
                     min_volume=liq.get("min_volume", 10),
                 ),
                 metrics=MetricsConfig(
+                    expected_roc_enabled=met.get("expected_roc_enabled", True),
+                    min_expected_roc=met.get("min_expected_roc", 0.10),
+                    tgr_enabled=met.get("tgr_enabled", True),
+                    min_tgr=met.get("min_tgr", 0.5),
+                    annual_roc_enabled=met.get("annual_roc_enabled", True),
+                    min_annual_roc=met.get("min_annual_roc", 0.15),
+                    sharpe_enabled=met.get("sharpe_enabled", True),
                     min_sharpe_ratio=met.get("min_sharpe_ratio", 0.5),
+                    win_probability_enabled=met.get("win_probability_enabled", True),
+                    min_win_probability=met.get("min_win_probability", 0.65),
+                    premium_rate_enabled=met.get("premium_rate_enabled", True),
+                    min_premium_rate=met.get("min_premium_rate", 0.01),
+                    theta_premium_enabled=met.get("theta_premium_enabled", True),
+                    min_theta_premium_ratio=met.get("min_theta_premium_ratio", 0.01),
+                    kelly_enabled=met.get("kelly_enabled", True),
+                    max_kelly_fraction=met.get("max_kelly_fraction", 0.25),
                     min_sas=met.get("min_sas", 50),
                     max_prei=met.get("max_prei", 75),
-                    min_tgr=met.get("min_tgr", 0.5),
-                    max_kelly_fraction=met.get("max_kelly_fraction", 0.25),
-                    min_expected_roc=met.get("min_expected_roc", 0.10),
-                    min_annual_roc=met.get("min_annual_roc", 0.15),
-                    min_win_probability=met.get("min_win_probability", 0.65),
-                    min_theta_premium_ratio=met.get("min_theta_premium_ratio", 0.01),
-                    min_premium_rate=met.get("min_premium_rate", 0.01),
                 ),
             )
 
@@ -433,55 +507,201 @@ class ScreeningConfig:
             out = data["output"]
             config.output = OutputConfig(
                 max_opportunities=out.get("max_opportunities", 10),
-                sort_by=out.get("sort_by", "expected_roc"),
+                sort_by=out.get("sort_by", "tgr"),
                 sort_order=out.get("sort_order", "desc"),
             )
 
+        # 解析 strategy_types
+        if "strategy_types" in data:
+            config.strategy_types = data["strategy_types"]
+
+        # 解析 directional_overrides
+        if "directional_overrides" in data:
+            config.directional_overrides = data["directional_overrides"]
+
         return config
+
+    def get_market_filter(
+        self, strategy_type: "StrategyType"
+    ) -> MarketFilterConfig:
+        """获取指定策略类型的市场环境筛选参数
+
+        Args:
+            strategy_type: 策略类型 (SHORT_PUT / COVERED_CALL)
+
+        Returns:
+            合并后的 MarketFilterConfig
+        """
+        import copy
+
+        direction = strategy_type.value
+
+        # 检查是否有方向特定覆盖
+        if direction in self.directional_overrides:
+            overrides = self.directional_overrides[direction]
+            if "market_filter" in overrides:
+                # 深拷贝基础配置，避免修改原配置
+                merged = copy.deepcopy(self.market_filter)
+                mf_override = overrides["market_filter"]
+
+                # 合并 US Market
+                if "us_market" in mf_override:
+                    if "trend_required" in mf_override["us_market"]:
+                        merged.us_market.trend_required = mf_override["us_market"]["trend_required"]
+                    if "vix_range" in mf_override["us_market"]:
+                        merged.us_market.vix_range = tuple(mf_override["us_market"]["vix_range"])
+
+                # 合并 HK Market
+                if "hk_market" in mf_override:
+                    if "trend_required" in mf_override["hk_market"]:
+                        merged.hk_market.trend_required = mf_override["hk_market"]["trend_required"]
+
+                return merged
+
+        return self.market_filter
+
+    def get_contract_filter(
+        self, strategy_type: "StrategyType"
+    ) -> ContractFilterConfig:
+        """获取指定策略类型的合约筛选参数
+
+        支持方向特定参数覆盖，如:
+        - directional_overrides.covered_call.contract_filter.delta_range
+
+        Args:
+            strategy_type: 策略类型 (SHORT_PUT / COVERED_CALL)
+
+        Returns:
+            合并后的 ContractFilterConfig
+        """
+        from src.engine.models.enums import StrategyType
+        import copy
+
+        direction = strategy_type.value
+
+        # 检查是否有方向特定覆盖
+        if direction in self.directional_overrides:
+            overrides = self.directional_overrides[direction]
+            if "contract_filter" in overrides:
+                # 深拷贝基础配置，避免修改原配置
+                merged = copy.deepcopy(self.contract_filter)
+                cf_override = overrides["contract_filter"]
+
+                # 合并各字段
+                if "delta_range" in cf_override:
+                    merged.delta_range = tuple(cf_override["delta_range"])
+                if "optimal_delta_range" in cf_override:
+                    merged.optimal_delta_range = tuple(cf_override["optimal_delta_range"])
+                if "dte_range" in cf_override:
+                    merged.dte_range = tuple(cf_override["dte_range"])
+                if "optimal_dte_range" in cf_override:
+                    merged.optimal_dte_range = tuple(cf_override["optimal_dte_range"])
+                if "otm_range" in cf_override:
+                    merged.otm_range = tuple(cf_override["otm_range"])
+
+                # 合并 liquidity
+                if "liquidity" in cf_override:
+                    liq = cf_override["liquidity"]
+                    if "max_bid_ask_spread" in liq:
+                        merged.liquidity.max_bid_ask_spread = liq["max_bid_ask_spread"]
+                    if "min_open_interest" in liq:
+                        merged.liquidity.min_open_interest = liq["min_open_interest"]
+                    if "min_volume" in liq:
+                        merged.liquidity.min_volume = liq["min_volume"]
+
+                # 合并 metrics
+                if "metrics" in cf_override:
+                    met = cf_override["metrics"]
+                    for key in [
+                        "expected_roc_enabled", "min_expected_roc",
+                        "tgr_enabled", "min_tgr",
+                        "annual_roc_enabled", "min_annual_roc",
+                        "sharpe_enabled", "min_sharpe_ratio",
+                        "win_probability_enabled", "min_win_probability",
+                        "premium_rate_enabled", "min_premium_rate",
+                        "theta_premium_enabled", "min_theta_premium_ratio",
+                        "kelly_enabled", "max_kelly_fraction",
+                        "min_sas", "max_prei",
+                    ]:
+                        if key in met:
+                            setattr(merged.metrics, key, met[key])
+
+                return merged
+
+        return self.contract_filter
+
+    def get_underlying_filter(
+        self, strategy_type: "StrategyType"
+    ) -> UnderlyingFilterConfig:
+        """获取指定策略类型的标的分析参数
+
+        支持方向特定参数覆盖，如:
+        - directional_overrides.covered_call.underlying_filter.trend_override
+
+        Args:
+            strategy_type: 策略类型 (SHORT_PUT / COVERED_CALL)
+
+        Returns:
+            合并后的 UnderlyingFilterConfig
+        """
+        from src.engine.models.enums import StrategyType
+        import copy
+
+        direction = strategy_type.value
+
+        # 检查是否有方向特定覆盖
+        if direction in self.directional_overrides:
+            overrides = self.directional_overrides[direction]
+            if "underlying_filter" in overrides:
+                # 深拷贝基础配置，避免修改原配置
+                merged = copy.deepcopy(self.underlying_filter)
+                uf_override = overrides["underlying_filter"]
+
+                # 合并基础字段
+                if "iv_rank_enabled" in uf_override:
+                    merged.iv_rank_enabled = uf_override["iv_rank_enabled"]
+                if "min_iv_rank" in uf_override:
+                    merged.min_iv_rank = uf_override["min_iv_rank"]
+                if "iv_hv_enabled" in uf_override:
+                    merged.iv_hv_enabled = uf_override["iv_hv_enabled"]
+                if "max_iv_hv_ratio" in uf_override:
+                    merged.max_iv_hv_ratio = uf_override["max_iv_hv_ratio"]
+                if "min_iv_hv_ratio" in uf_override:
+                    merged.min_iv_hv_ratio = uf_override["min_iv_hv_ratio"]
+                if "trend_override" in uf_override:
+                    # 合并 trend_override（不是替换）
+                    merged.trend_override = {**merged.trend_override, **uf_override["trend_override"]}
+                if "technical" in uf_override:
+                    tech = uf_override["technical"]
+                    if "enabled" in tech:
+                        merged.technical.enabled = tech["enabled"]
+                    if "min_rsi" in tech:
+                        merged.technical.min_rsi = tech["min_rsi"]
+                    if "max_rsi" in tech:
+                        merged.technical.max_rsi = tech["max_rsi"]
+                    if "max_adx" in tech:
+                        merged.technical.max_adx = tech["max_adx"]
+
+                return merged
+
+        return self.underlying_filter
 
     @classmethod
     def load(
         cls,
-        strategy: str = "short_put",
-        mode: ConfigMode = ConfigMode.LIVE,
+        strategy_name: str = "short_put",
     ) -> "ScreeningConfig":
         """加载指定策略的配置
 
         Args:
-            strategy: 策略名称 (short_put, covered_call, etc.)
-            mode: 配置模式 (LIVE 或 BACKTEST)
+            strategy_name: 具体的策略名称 (如 short_put_v9)
 
         Returns:
             ScreeningConfig 实例
         """
         config_dir = Path(__file__).parent.parent.parent.parent / "config" / "screening"
-        config_file = config_dir / f"{strategy}.yaml"
+        config_file = config_dir / f"{strategy_name}.yaml"
         if config_file.exists():
-            return cls.from_yaml(config_file, mode=mode)
+            return cls.from_yaml(config_file)
         return cls()
 
-    @staticmethod
-    def _merge_backtest_overrides(
-        base: dict[str, Any],
-        overrides: dict[str, Any],
-    ) -> dict[str, Any]:
-        """递归合并 backtest_overrides 到基础配置
-
-        Args:
-            base: 基础配置字典
-            overrides: 覆盖字典
-
-        Returns:
-            合并后的配置字典
-        """
-        result = base.copy()
-        for key, value in overrides.items():
-            if key == "backtest_overrides":
-                continue  # 跳过 backtest_overrides 本身
-            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-                # 递归合并嵌套字典
-                result[key] = ScreeningConfig._merge_backtest_overrides(result[key], value)
-            else:
-                # 直接覆盖
-                result[key] = value
-        return result

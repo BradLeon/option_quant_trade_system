@@ -1,0 +1,44 @@
+# 风控配置（LIVE 基准值）
+#
+# 配置模式:
+# - LIVE: 使用下方主配置 (严格的生产环境值)
+# - BACKTEST: 自动合并 backtest_overrides (放宽参数)
+
+risk_limits:
+  # Layer 1: Account-Level Limits
+  max_margin_utilization: 0.70      # 70% - 超过则禁止开仓
+  min_cash_ratio: 0.10              # 10% - 低于则禁止开仓
+  max_gross_leverage: 4.0           # 4x - 超过则禁止开仓
+  max_stress_test_loss: 0.20        # 20% - 压力测试最大损失
+
+  # Layer 2: Position-Level Limits
+  max_contracts_per_underlying: 10  # 单标的最大合约数
+  max_notional_pct_per_underlying: 0.05  # 5% of NLV
+  max_total_option_positions: 100   # 期权持仓总数上限
+  max_concentration_pct: 0.20       # 20% - 单标的最大集中度
+
+  # Layer 3: Order-Level Limits
+  max_projected_margin_utilization: 0.80  # 80%
+  max_price_deviation_pct: 0.05     # 5%
+  max_order_value_pct: 0.10         # 10% of NLV
+
+  # Margin Estimation (IBKR Reg T)
+  margin_rate_stock_option: 0.20
+  margin_rate_index_option: 0.15
+  margin_rate_minimum: 0.10
+  margin_safety_buffer: 0.80
+
+  # Emergency Thresholds
+  emergency_margin_utilization: 0.85
+  emergency_cash_ratio: 0.05
+
+  # Kelly Criterion
+  kelly_fraction: 0.25              # 1/4 Kelly - 保守策略
+
+# ============================================================
+# 回测模式覆盖 (仅在 BACKTEST 模式下生效)
+# ============================================================
+backtest_overrides:
+  risk_limits:
+    max_notional_pct_per_underlying: 0.50  # 50% (live: 5%)
+    kelly_fraction: 0.75                    # 3/4 Kelly (live: 1/4)

@@ -33,6 +33,7 @@ from src.backtest.attribution.models import (
     TradeEntryQuality,
     TradeExitQuality,
 )
+from src.backtest.engine.trade_simulator import TradeAction
 
 if TYPE_CHECKING:
     from src.backtest.engine.trade_simulator import TradeRecord
@@ -81,7 +82,7 @@ class StrategyDiagnosis:
                 continue
             if pid not in info:
                 info[pid] = {}
-            if record.action == "open":
+            if record.action == TradeAction.OPEN:
                 info[pid]["entry_date"] = record.trade_date
                 info[pid]["entry_price"] = record.price
                 info[pid]["quantity"] = record.quantity
@@ -94,7 +95,7 @@ class StrategyDiagnosis:
                     if hasattr(record.option_type, "value")
                     else str(record.option_type)
                 )
-            elif record.action in ("close", "expire"):
+            elif record.action in (TradeAction.CLOSE, TradeAction.EXPIRE, TradeAction.ASSIGN_PUT, TradeAction.ASSIGN_CALL):
                 info[pid]["exit_date"] = record.trade_date
                 info[pid]["exit_reason"] = record.reason
                 info[pid]["exit_price"] = record.price

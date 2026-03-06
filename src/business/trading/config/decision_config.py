@@ -9,7 +9,6 @@ import os
 from dataclasses import dataclass, field, fields
 from typing import Any
 
-from src.business.config.config_mode import ConfigMode
 from src.business.trading.config.risk_config import RiskConfig
 
 
@@ -107,24 +106,54 @@ class DecisionConfig:
     @classmethod
     def load(
         cls,
-        mode: ConfigMode = ConfigMode.LIVE,
+        strategy_name: str | None = None,
         risk_config: RiskConfig | None = None,
     ) -> "DecisionConfig":
         """加载配置
 
         Args:
-            mode: 配置模式 (LIVE 或 BACKTEST)
-            risk_config: 可选的 RiskConfig 实例，如果不提供则根据 mode 加载
+            strategy_name: 策略名称 (如 short_put_v9)
+            risk_config: 可选的 RiskConfig 实例，如果不提供则根据 strategy_name 加载
 
         Returns:
             DecisionConfig 实例
 
-        优先级: 传入的 risk_config > 环境变量 > dataclass 字段默认值
+        优先级: 传入的 risk_config > 环境变量 > 策略 YAML 覆盖 > base_option_strategy YAML > dataclass 字段默认值
         环境变量命名规则: DECISION_ + 字段名大写，如 DECISION_DEFAULT_BROKER
         """
-        # 使用传入的 RiskConfig 或根据 mode 加载
-        risk = risk_config if risk_config is not None else RiskConfig.load(mode=mode)
-        kwargs: dict[str, Any] = {"risk": risk}
+        # 1. 解析 YAML 覆盖 (Decision 特定配置通常也在 risk_limits 外层，比如 base_option_strategy.yaml 中定义)
+        from pathlib import Path
+        import yaml
+        from src.business.config.config_utils import merge_overrides
+
+        config_dir = Path(__file__).parent.parent.parent.parent.parent / "config" / "trading"
+        
+        base_data = {}
+        base_file = config_dir / "base_option_strategy.yaml"
+        if base_file.exists():
+            with open(base_file, "r", encoding="utf-8") as f:
+                base_data = yaml.safe_load(f) or {}
+
+        if strategy_name:
+            strategy_file = config_dir / f"{strategy_name}.yaml"
+            if strategy_file.exists():
+                with open(strategy_file, "r", encoding="utf-8") as f:
+                    strategy_data = yaml.safe_load(f) or {}
+                base_data = merge_overrides(base_data, strategy_data)
+                
+        if not base_data:
+            legacy_file = config_dir / "risk.yaml"
+            if legacy_file.exists():
+                with open(legacy_file, "r", encoding="utf-8") as f:
+                    base_data = yaml.safe_load(f) or {}
+                    
+        # 2. 构造 Decision 级参数
+        # 提取决策特有的非 risk 字段进行覆盖
+        # (risk 部分由下面的 RiskConfig 承担)
+        valid_fields = {f.name for f in fields(cls)} - {"risk"}
+        kwargs = {k: v for k, v in base_data.items() if k in valid_fields}
+
+        # 3. 环境变量覆盖
         for f in fields(cls):
             if f.name == "risk":
                 continue
@@ -135,23 +164,27 @@ class DecisionConfig:
                     kwargs[f.name] = val.lower() in ("true", "1", "yes")
                 else:
                     kwargs[f.name] = val
+                    
+        # 4. 组装 Risk
+        # 默认使用合并出的 RiskConfig.load 也就是同样的 base_option_strategy + override 后计算出来的配置
+        risk = risk_config if risk_config is not None else RiskConfig.load(strategy_name)
+        kwargs["risk"] = risk
+        
         return cls(**kwargs)
 
     @classmethod
     def from_dict(
         cls,
         data: dict[str, Any],
-        mode: ConfigMode = ConfigMode.LIVE,
     ) -> "DecisionConfig":
         """从字典创建配置 (用于测试)
 
         Args:
             data: 配置字典
-            mode: 配置模式 (LIVE 或 BACKTEST)
 
         只覆盖字典中存在的字段，缺失字段使用 dataclass 默认值。
         """
-        risk = RiskConfig.from_dict(data, mode=mode)
+        risk = RiskConfig.from_dict(data)
         valid_fields = {f.name for f in fields(cls)} - {"risk"}
         kwargs = {k: v for k, v in data.items() if k in valid_fields}
         kwargs["risk"] = risk

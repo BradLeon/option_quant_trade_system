@@ -37,7 +37,7 @@ from src.backtest.engine.account_simulator import (
 )
 from src.backtest.engine.trade_simulator import TradeExecution
 from src.business.monitoring.models import PositionData
-from src.data.models import StockQuote
+from src.data.models import OptionChain, StockQuote
 from src.data.models.option import OptionType
 from src.data.providers.base import DataProvider
 from src.engine.models.enums import StrategyType
@@ -84,6 +84,43 @@ class PositionPnL:
     realized_pnl_pct: float | None = None
 
 
+@dataclass
+class OptionPriceStats:
+    """期权价格获取统计"""
+
+    total_queries: int = 0
+    successful: int = 0
+    missing: int = 0
+    invalid: int = 0  # price <= 0
+
+    @property
+    def success_rate(self) -> float:
+        """成功率"""
+        return self.successful / self.total_queries if self.total_queries > 0 else 0.0
+
+    @property
+    def missing_rate(self) -> float:
+        """缺失率"""
+        return self.missing / self.total_queries if self.total_queries > 0 else 0.0
+
+    @property
+    def invalid_rate(self) -> float:
+        """无效率"""
+        return self.invalid / self.total_queries if self.total_queries > 0 else 0.0
+
+    def to_dict(self) -> dict:
+        """转换为字典"""
+        return {
+            "total_queries": self.total_queries,
+            "successful": self.successful,
+            "missing": self.missing,
+            "invalid": self.invalid,
+            "success_rate": f"{self.success_rate:.1%}",
+            "missing_rate": f"{self.missing_rate:.1%}",
+            "invalid_rate": f"{self.invalid_rate:.1%}",
+        }
+
+
 class PositionManager:
     """持仓管理器 - 纯持仓生命周期管理，不包装账户
 
@@ -110,9 +147,15 @@ class PositionManager:
         self._price_mode = price_mode
         self._position_counter = 0
         self._current_date: date | None = None
+        # 期权价格获取统计
+        self._price_stats = OptionPriceStats()
+        # 技术面缓存：underlying -> (TechnicalScore, TechnicalSignal)，每日重置
+        self._technical_cache: dict[str, tuple] = {}
 
     def set_date(self, d: date) -> None:
         """设置当前日期"""
+        if self._current_date != d:
+            self._technical_cache.clear()
         self._current_date = d
 
     def _generate_position_id(self) -> str:
@@ -180,6 +223,7 @@ class PositionManager:
         position = SimulatedPosition(
             position_id=position_id,
             symbol=execution.symbol,
+            asset_type=execution.asset_type,  # 资产类型（期权或股票）
             underlying=execution.underlying,
             option_type=execution.option_type,
             strike=execution.strike,
@@ -272,12 +316,41 @@ class PositionManager:
     ) -> None:
         """从市场数据更新单个持仓价格
 
+        支持期权和股票持仓。
+
         Args:
             position: 持仓
 
         Raises:
             DataNotFoundError: 当关键市场数据缺失时
         """
+        # 股票持仓：直接更新股票价格
+        if position.is_stock:
+            stock_quote = self._data_provider.get_stock_quote(position.symbol)
+            if stock_quote is None:
+                raise DataNotFoundError(
+                    f"Stock quote not found for {position.symbol} "
+                    f"on {self._current_date}"
+                )
+
+            stock_price = self._get_price_by_mode(stock_quote)
+            if stock_price is None or stock_price <= 0:
+                raise DataNotFoundError(
+                    f"Invalid stock price for {position.symbol}: "
+                    f"mode={self._price_mode.value}, quote={stock_quote}"
+                )
+
+            # 更新股票市值（无需 underlying_price）
+            position.update_market_value(current_price=stock_price, underlying_price=0.0)
+            return
+
+        # 期权持仓：获取期权价格和标的价格
+        # 断言：期权持仓的 underlying, option_type, strike, expiration 必须非空
+        assert position.underlying is not None, "Option position must have underlying"
+        assert position.option_type is not None, "Option position must have option_type"
+        assert position.strike is not None, "Option position must have strike"
+        assert position.expiration is not None, "Option position must have expiration"
+
         # 获取标的报价
         stock_quote = self._data_provider.get_stock_quote(position.underlying)
         if stock_quote is None:
@@ -302,19 +375,20 @@ class PositionManager:
             expiration=position.expiration,
         )
 
-        if option_price is not None:
+        if option_price is not None and option_price > 0:
             position.update_market_value(option_price, underlying_price)
         else:
-            # 期权价格缺失时使用内在价值
+            # 期权价格缺失或为0时使用内在价值 (期权如果是虚值，内在价值为0)
+            # 如果是到期日前，给一个极小的非零值避免算作100%盈利
             if position.option_type == OptionType.PUT:
-                intrinsic = max(0, position.strike - underlying_price)
+                intrinsic = max(0.01, position.strike - underlying_price)
             else:
-                intrinsic = max(0, underlying_price - position.strike)
+                intrinsic = max(0.01, underlying_price - position.strike)
 
             logger.warning(
-                f"Option price not found for {position.underlying} "
+                f"Option price invalid or missing for {position.underlying} "
                 f"{position.option_type.value} K={position.strike} exp={position.expiration} "
-                f"on {self._current_date}, using intrinsic value: {intrinsic:.2f}"
+                f"on {self._current_date} (quote price: {option_price}), using intrinsic/minimum value: {intrinsic:.2f}"
             )
             position.update_market_value(intrinsic, underlying_price)
 
@@ -324,11 +398,150 @@ class PositionManager:
     ) -> None:
         """更新所有持仓的市场数据
 
+        优化：按 underlying 分组批量查询，避免 N+1 问题。
+
         Args:
             positions: 持仓字典 (从 AccountSimulator.positions 获取)
         """
-        for position in positions.values():
-            self.update_position_market_data(position)
+        from collections import defaultdict
+
+        # 按 underlying 分组（期权持仓）
+        by_underlying: dict[str, list[SimulatedPosition]] = defaultdict(list)
+        stock_positions: list[SimulatedPosition] = []
+
+        for pos in positions.values():
+            if pos.is_stock:
+                stock_positions.append(pos)
+            elif pos.underlying:
+                by_underlying[pos.underlying].append(pos)
+
+        # 批量处理期权持仓
+        for underlying, pos_list in by_underlying.items():
+            # 获取标的价格（一次查询，DuckDBProvider 有缓存）
+            stock_quote = self._data_provider.get_stock_quote(underlying)
+            underlying_price = self._get_price_by_mode(stock_quote) if stock_quote else None
+
+            if underlying_price is None or underlying_price <= 0:
+                # 标的价格无效，回退到逐个处理（会抛出 DataNotFoundError）
+                for pos in pos_list:
+                    self.update_position_market_data(pos)
+                continue
+
+            # 计算需要的 expiry 范围
+            expirations = {pos.expiration for pos in pos_list if pos.expiration}
+            if not expirations:
+                continue
+
+            # 获取期权链（一次查询覆盖所有到期日，DuckDBProvider 会缓存全链）
+            chain = self._data_provider.get_option_chain(
+                underlying=underlying,
+                expiry_start=min(expirations),
+                expiry_end=max(expirations),
+            )
+
+            # 从 chain 中提取每个持仓的价格
+            for pos in pos_list:
+                self._update_position_from_chain(
+                    pos, chain, underlying_price, stock_quote
+                )
+
+        # 处理股票持仓（数量通常较少，逐个处理即可）
+        for pos in stock_positions:
+            self.update_position_market_data(pos)
+
+    def _update_position_from_chain(
+        self,
+        position: SimulatedPosition,
+        chain: OptionChain | None,
+        underlying_price: float,
+        stock_quote: StockQuote | None,
+    ) -> None:
+        """从预取的期权链更新持仓市场数据
+
+        Args:
+            position: 持仓
+            chain: 期权链（可能为 None）
+            underlying_price: 标的价格
+            stock_quote: 标的报价（用于错误信息）
+
+        Raises:
+            DataNotFoundError: 当期权数据缺失且无法使用内在价值时
+        """
+        # 断言：期权持仓的必要字段
+        assert position.underlying is not None, "Option position must have underlying"
+        assert position.option_type is not None, "Option position must have option_type"
+        assert position.strike is not None, "Option position must have strike"
+        assert position.expiration is not None, "Option position must have expiration"
+
+        self._price_stats.total_queries += 1
+
+        option_price: float | None = None
+
+        if chain is not None:
+            contracts = chain.puts if position.option_type == OptionType.PUT else chain.calls
+
+            for quote in contracts:
+                if (
+                    quote.contract.strike_price == position.strike
+                    and quote.contract.expiry_date == position.expiration
+                ):
+                    # 根据 price_mode 提取价格
+                    if self._price_mode == PriceMode.OPEN:
+                        open_price = getattr(quote, "open", None)
+                        if open_price is not None and open_price > 0:
+                            option_price = open_price
+                        else:
+                            option_price = quote.last_price or quote.close
+
+                    elif self._price_mode == PriceMode.MID:
+                        if (
+                            quote.bid
+                            and quote.ask
+                            and quote.bid > 0
+                            and quote.ask > 0
+                        ):
+                            option_price = (quote.bid + quote.ask) / 2
+                        else:
+                            option_price = getattr(quote, "close", None) or quote.last_price
+
+                    else:  # CLOSE
+                        close_price = getattr(quote, "close", None)
+                        if close_price is not None and close_price > 0:
+                            option_price = close_price
+                        else:
+                            option_price = quote.last_price
+
+                    # 检查价格有效性
+                    if option_price is not None and option_price <= 0:
+                        self._price_stats.invalid += 1
+                        option_price = None
+                    elif option_price is not None:
+                        self._price_stats.successful += 1
+                    else:
+                        self._price_stats.missing += 1
+
+                    break
+            else:
+                # 未在链中找到合约
+                self._price_stats.missing += 1
+        else:
+            self._price_stats.missing += 1
+
+        if option_price is not None and option_price > 0:
+            position.update_market_value(option_price, underlying_price)
+        else:
+            # 期权价格缺失或为0时使用内在价值
+            if position.option_type == OptionType.PUT:
+                intrinsic = max(0.01, position.strike - underlying_price)
+            else:
+                intrinsic = max(0.01, underlying_price - position.strike)
+
+            logger.warning(
+                f"Option price invalid or missing for {position.underlying} "
+                f"{position.option_type.value} K={position.strike} exp={position.expiration} "
+                f"on {self._current_date} (quote price: {option_price}), using intrinsic/minimum value: {intrinsic:.2f}"
+            )
+            position.update_market_value(intrinsic, underlying_price)
 
     def _get_price_by_mode(self, quote: StockQuote) -> float | None:
         """根据 price_mode 获取价格"""
@@ -350,6 +563,7 @@ class PositionManager:
         expiration: date,
     ) -> float | None:
         """从期权链获取期权价格"""
+        self._price_stats.total_queries += 1
         try:
             chain = self._data_provider.get_option_chain(
                 underlying=underlying,
@@ -358,6 +572,7 @@ class PositionManager:
             )
 
             if chain is None:
+                self._price_stats.missing += 1
                 return None
 
             contracts = chain.puts if option_type == OptionType.PUT else chain.calls
@@ -367,11 +582,13 @@ class PositionManager:
                     quote.contract.strike_price == strike
                     and quote.contract.expiry_date == expiration
                 ):
+                    price = None
                     if self._price_mode == PriceMode.OPEN:
                         open_price = getattr(quote, "open", None)
                         if open_price is not None and open_price > 0:
-                            return open_price
-                        return quote.last_price
+                            price = open_price
+                        else:
+                            price = quote.last_price or quote.close
 
                     elif self._price_mode == PriceMode.MID:
                         if (
@@ -380,20 +597,41 @@ class PositionManager:
                             and quote.bid > 0
                             and quote.ask > 0
                         ):
-                            return (quote.bid + quote.ask) / 2
-                        return quote.last_price
+                            price = (quote.bid + quote.ask) / 2
+                        else:
+                            price = getattr(quote, "close", None) or quote.last_price
 
                     else:  # CLOSE
                         close_price = getattr(quote, "close", None)
                         if close_price is not None and close_price > 0:
-                            return close_price
-                        return quote.last_price
+                            price = close_price
+                        else:
+                            price = quote.last_price
 
+                    # 如果获取到的价格 <= 0，认为无效，返回 None 以触发内在价值兜底
+                    if price is not None and price <= 0:
+                        # 除非是到期日当天，可以等于0
+                        self._price_stats.invalid += 1
+                        price = None
+                    elif price is not None:
+                        self._price_stats.successful += 1
+                    else:
+                        self._price_stats.missing += 1
+
+                    return price
+
+            self._price_stats.missing += 1
             return None
 
         except Exception as e:
+            self._price_stats.missing += 1
             logger.warning(f"Failed to get option price: {e}")
             return None
+
+    @property
+    def price_stats(self) -> OptionPriceStats:
+        """获取期权价格统计"""
+        return self._price_stats
 
     def get_position_data_for_monitoring(
         self,
@@ -427,55 +665,69 @@ class PositionManager:
         ref_date: date,
     ) -> PositionData:
         """将 SimulatedPosition 转换为 PositionData"""
+        from src.business.monitoring.position_data_builder import PositionDataBuilder
+
+        # 计算盈亏百分比
+        unrealized_pnl_pct = PositionDataBuilder.calc_unrealized_pnl_pct(
+            position.unrealized_pnl,
+            position.quantity,
+            position.entry_price,
+            position.lot_size,
+        )
+
+        if position.is_stock:
+            pos_data = PositionData(
+                position_id=position.position_id,
+                symbol=position.symbol,
+                asset_type="stock",
+                quantity=position.quantity,
+                entry_price=position.entry_price,
+                current_price=position.current_price,
+                market_value=position.market_value,
+                unrealized_pnl=position.unrealized_pnl,
+                unrealized_pnl_pct=unrealized_pnl_pct,
+                currency="USD",
+                broker="backtest",
+                timestamp=datetime.now(),
+                underlying_price=position.current_price,
+                contract_multiplier=position.lot_size,
+            )
+            # 补充技术面数据（SMA 卖出信号等）
+            self._enrich_technical_data(pos_data, position.symbol)
+            return pos_data
+
+        # 以下为期权处理逻辑
+        if position.expiration is None:
+            raise ValueError(f"Option position {position.symbol} has no expiration, skipping")
+
         # 计算 DTE
         dte = (position.expiration - ref_date).days
 
         # 获取 Greeks
         delta, gamma, theta, vega, iv = self._get_greeks(position)
 
-        # 计算 moneyness 和 OTM%
+        # 计算 moneyness 和 OTM%（使用 PositionDataBuilder 统一逻辑）
         underlying_price = position.underlying_price or position.strike
-        moneyness = (underlying_price - position.strike) / position.strike
-
-        if position.option_type == OptionType.PUT:
-            otm_pct = (
-                (underlying_price - position.strike) / underlying_price
-                if underlying_price > 0
-                else 0.0
-            )
-        else:
-            otm_pct = (
-                (position.strike - underlying_price) / underlying_price
-                if underlying_price > 0
-                else 0.0
-            )
-
-        # 计算盈亏百分比
-        entry_value = abs(position.quantity * position.entry_price * position.lot_size)
-        unrealized_pnl_pct = (
-            position.unrealized_pnl / entry_value if entry_value > 0 else 0.0
+        moneyness = PositionDataBuilder.calc_moneyness(underlying_price, position.strike)
+        otm_pct = PositionDataBuilder.calc_otm_pct(
+            underlying_price, position.strike, position.option_type.value,
         )
 
         # 构建期权 symbol
         expiry_str = position.expiration.strftime("%Y%m%d")
-        option_symbol = (
-            f"{position.underlying} "
-            f"{expiry_str} "
-            f"{position.strike:.1f}{position.option_type.value[0].upper()}"
+        option_symbol = PositionDataBuilder.build_option_symbol(
+            position.underlying, expiry_str, position.strike, position.option_type.value,
         )
 
         # 推断策略类型
-        # 注意: StrategyType 枚举只有 SHORT_PUT, NAKED_CALL, COVERED_CALL 等
-        # 没有 LONG_PUT/LONG_CALL (长期权一般不作为独立策略)
         if position.option_type == OptionType.PUT and position.is_short:
             strategy_type = StrategyType.SHORT_PUT
         elif position.option_type == OptionType.CALL and position.is_short:
-            strategy_type = StrategyType.NAKED_CALL  # 裸卖 Call
+            strategy_type = StrategyType.NAKED_CALL
         else:
-            # 长期权标记为 UNKNOWN
             strategy_type = StrategyType.UNKNOWN
 
-        return PositionData(
+        pos_data = PositionData(
             position_id=position.position_id,
             symbol=option_symbol,
             asset_type="option",
@@ -506,6 +758,97 @@ class PositionManager:
             margin=position.margin_required,
         )
 
+        # ====== 使用 PositionDataBuilder 统一创建策略对象并填充指标 ======
+        premium = abs(position.current_price or position.entry_price)
+        strategy_obj = PositionDataBuilder.create_strategy_object(
+            strategy_type=strategy_type,
+            underlying_price=underlying_price,
+            strike=position.strike,
+            premium=premium,
+            iv=iv,
+            dte=dte,
+            delta=delta,
+            gamma=gamma,
+            theta=theta,
+            vega=vega,
+        )
+        if strategy_obj:
+            PositionDataBuilder.populate_strategy_metrics(pos_data, strategy_obj)
+
+        # ====== 计算 iv_hv_ratio（从 DuckDB 获取 HV 数据）======
+        self._enrich_iv_hv_ratio(pos_data, position.underlying, iv)
+
+        # ====== 补全技术面数据（RSI, ADX, Support/Resistance, 技术信号等）======
+        self._enrich_technical_data(pos_data, position.underlying)
+
+        return pos_data
+
+    def _enrich_iv_hv_ratio(
+        self,
+        pos_data: PositionData,
+        underlying: str,
+        iv: float | None,
+    ) -> None:
+        """为回测 PositionData 补充 iv_hv_ratio
+
+        从 DuckDB 获取 HV 数据并计算 IV/HV 比率。
+        """
+        from src.business.monitoring.position_data_builder import PositionDataBuilder
+
+        if iv is None:
+            return
+        try:
+            stock_quote = self._data_provider.get_stock_quote(underlying)
+            if stock_quote and hasattr(stock_quote, 'hv') and stock_quote.hv:
+                pos_data.hv = stock_quote.hv
+                pos_data.iv_hv_ratio = PositionDataBuilder.calc_iv_hv_ratio(iv, stock_quote.hv)
+            elif stock_quote and hasattr(stock_quote, 'volatility') and stock_quote.volatility:
+                pos_data.hv = stock_quote.volatility
+                pos_data.iv_hv_ratio = PositionDataBuilder.calc_iv_hv_ratio(iv, stock_quote.volatility)
+        except Exception as e:
+            logger.debug(f"Failed to get HV for {underlying}: {e}")
+
+    def _enrich_technical_data(self, pos_data: PositionData, underlying: str) -> None:
+        """补全技术面分析字段（复用实盘 MonitoringDataBridge 的逻辑）
+
+        数据流: DuckDB K-line → TechnicalData → TechnicalScore/Signal → PositionData fields
+        使用 underlying 级缓存，同一 underlying 的多个持仓共享计算结果。
+        """
+        from src.business.monitoring.position_data_builder import PositionDataBuilder
+
+        try:
+            # 查缓存
+            if underlying in self._technical_cache:
+                score, signal = self._technical_cache[underlying]
+                PositionDataBuilder.populate_technical_fields(pos_data, score, signal)
+                return
+
+            from datetime import timedelta
+            from src.data.models.stock import KlineType
+            from src.data.models.technical import TechnicalData
+            from src.engine.position.technical.metrics import calc_technical_score, calc_technical_signal
+
+            # 获取至少 250 个交易日的 K-line（用于 MA200 + 余量）
+            ref_date = self._current_date or date.today()
+            start_date = ref_date - timedelta(days=400)
+            klines = self._data_provider.get_history_kline(
+                underlying, KlineType.DAY, start_date, ref_date
+            )
+            if not klines or len(klines) < 20:
+                return
+
+            tech_data = TechnicalData.from_klines(klines)
+            score = calc_technical_score(tech_data)
+            signal = calc_technical_signal(tech_data)
+
+            # 存入缓存
+            self._technical_cache[underlying] = (score, signal)
+
+            PositionDataBuilder.populate_technical_fields(pos_data, score, signal)
+
+        except Exception as e:
+            logger.debug(f"技术面分析失败 {underlying}: {e}")
+
     def _get_greeks(
         self,
         position: SimulatedPosition,
@@ -532,25 +875,14 @@ class PositionManager:
                 ):
                     greeks = quote.greeks if hasattr(quote, "greeks") else None
                     if greeks:
-                        raw_delta = greeks.delta if greeks.delta is not None else None
-                        position_delta = (
-                            raw_delta * position.quantity if raw_delta else None
-                        )
-                        position_gamma = (
-                            greeks.gamma * abs(position.quantity) if greeks.gamma else None
-                        )
-                        position_theta = (
-                            greeks.theta * position.quantity if greeks.theta else None
-                        )
-                        position_vega = (
-                            greeks.vega * abs(position.quantity) if greeks.vega else None
-                        )
-
+                        # Return raw per-share Greeks (without quantity multiplication).
+                        # The engine layer's calc_portfolio_*() functions handle
+                        # quantity × contract_multiplier correctly.
                         return (
-                            position_delta,
-                            position_gamma,
-                            position_theta,
-                            position_vega,
+                            greeks.delta,
+                            greeks.gamma,
+                            greeks.theta,
+                            greeks.vega,
                             quote.iv,
                         )
 
@@ -591,10 +923,10 @@ class PositionManager:
             positions: 持仓字典
 
         Returns:
-            到期的持仓列表
+            到期的持仓列表（仅期权持仓，股票没有到期日）
         """
         ref_date = self._current_date or date.today()
-        return [pos for pos in positions.values() if pos.expiration == ref_date]
+        return [pos for pos in positions.values() if pos.expiration is not None and pos.expiration == ref_date]
 
     def get_positions_by_underlying(
         self,
@@ -693,3 +1025,5 @@ class PositionManager:
         """重置管理器状态"""
         self._position_counter = 0
         self._current_date = None
+        self._price_stats = OptionPriceStats()
+        self._technical_cache.clear()

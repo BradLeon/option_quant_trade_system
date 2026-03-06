@@ -433,15 +433,39 @@ def calc_technical_signal(
     close_call_signal = "none"
     close_notes = []
 
-    # Close Put on trend reversal to bearish
-    if market_regime == "trending_down" and adx is not None and adx > thresholds.close_adx_threshold:
-        close_put_signal = "strong"
-        close_notes.append(f"趋势转空+ADX>{thresholds.close_adx_threshold:.0f}: 建议平仓Short Put")
+    # Close Put: 下跌趋势 (Price < SMA50 AND SMA20 < SMA50)
+    sma20_val = score.sma20
+    sma50_val = score.sma50
+    if current_price and sma20_val and sma50_val:
+        if current_price < sma50_val and sma20_val < sma50_val:
+            close_put_signal = "strong"
+            close_notes.append(
+                f"Price={current_price:.1f} < SMA50={sma50_val:.1f}, "
+                f"SMA20={sma20_val:.1f} < SMA50: 建议平仓Short Put"
+            )
 
-    # Close Call on trend reversal to bullish
-    if market_regime == "trending_up" and adx is not None and adx > thresholds.close_adx_threshold:
-        close_call_signal = "strong"
-        close_notes.append(f"趋势转多+ADX>{thresholds.close_adx_threshold:.0f}: 建议平仓Short Call")
+        # Close Call: 上涨趋势 (Price > SMA50 AND SMA20 > SMA50)
+        if current_price > sma50_val and sma20_val > sma50_val:
+            close_call_signal = "strong"
+            close_notes.append(
+                f"Price={current_price:.1f} > SMA50={sma50_val:.1f}, "
+                f"SMA20={sma20_val:.1f} > SMA50: 建议平仓Short Call"
+            )
+
+    # Close Stock: 下跌趋势 (同 Close Put 逻辑，用于正股持仓卖出)
+    close_stock_signal = "none"
+    if current_price and sma20_val and sma50_val:
+        if current_price < sma50_val and sma20_val < sma50_val:
+            close_stock_signal = "strong"
+            close_notes.append(
+                f"Stock: Price={current_price:.1f} < SMA50={sma50_val:.1f}, "
+                f"SMA20={sma20_val:.1f} < SMA50: 建议卖出正股"
+            )
+        elif current_price < sma20_val:
+            close_stock_signal = "moderate"
+            close_notes.append(
+                f"Stock: Price={current_price:.1f} < SMA20={sma20_val:.1f}: 短期走弱，观察"
+            )
 
     # RSI extreme close signals
     if rsi is not None:
@@ -582,6 +606,7 @@ def calc_technical_signal(
         stop_loss_note=stop_loss_note,
         close_put_signal=close_put_signal,
         close_call_signal=close_call_signal,
+        close_stock_signal=close_stock_signal,
         close_note=close_note,
         is_dangerous_period=is_dangerous_period,
         danger_warnings=danger_warnings if danger_warnings else None,

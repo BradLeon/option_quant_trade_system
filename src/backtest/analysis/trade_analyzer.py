@@ -18,6 +18,8 @@ Usage:
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
+
+from src.backtest.engine.trade_simulator import TradeAction
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -120,9 +122,11 @@ class TradeAnalyzer:
             close_record = None
 
             for record in records:
-                if record.action == "open":
+                # 开仓类：期权开仓 + 股票买入
+                if record.action in (TradeAction.OPEN, TradeAction.STOCK_BUY):
                     open_record = record
-                elif record.action in ("close", "expire"):
+                # 平仓类：期权平仓/到期/行权 + 股票卖出
+                elif record.action in (TradeAction.CLOSE, TradeAction.EXPIRE, TradeAction.ASSIGN_PUT, TradeAction.ASSIGN_CALL, TradeAction.STOCK_SELL):
                     close_record = record
 
             if open_record and close_record:

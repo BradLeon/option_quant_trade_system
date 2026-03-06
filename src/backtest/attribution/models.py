@@ -244,6 +244,8 @@ class TradeAttribution:
     exit_underlying: float = 0.0
     entry_iv_rank: float | None = None
     quantity: int = 0
+    entry_price: float = 0.0  # 期权开仓价格 (per share)
+    lot_size: int = 100  # 合约乘数
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -269,6 +271,8 @@ class TradeAttribution:
             "exit_underlying": self.exit_underlying,
             "entry_iv_rank": self.entry_iv_rank,
             "quantity": self.quantity,
+            "entry_price": self.entry_price,
+            "lot_size": self.lot_size,
         }
 
 

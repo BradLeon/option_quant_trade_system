@@ -97,27 +97,45 @@ class CoveredCallStrategy(OptionStrategy):
             is_call=True,
         )
 
-        # Cache B-S parameters
+        # Cache B-S parameters (IV-based, for variance/greeks)
         self._d1 = calc_d1(self._bs_params)
         self._d2 = calc_d2(self._bs_params, self._d1) if self._d1 else None
         self._d3 = calc_d3(self._bs_params, self._d2) if self._d2 else None
 
+        # Cache HV-based d1/d2 for expected return (physical measure)
+        # Using HV captures volatility risk premium that option sellers earn
+        sigma_real = hv if hv and hv > 0 else volatility
+        if sigma_real != volatility:
+            bs_params_hv = BSParams(
+                spot_price=spot_price,
+                strike_price=strike_price,
+                risk_free_rate=risk_free_rate,
+                volatility=sigma_real,
+                time_to_expiry=time_to_expiry,
+                is_call=True,
+            )
+            self._d1_hv = calc_d1(bs_params_hv)
+            self._d2_hv = calc_d2(bs_params_hv, self._d1_hv) if self._d1_hv else None
+        else:
+            self._d1_hv = self._d1
+            self._d2_hv = self._d2
+
     def calc_expected_return(self) -> float:
-        """Calculate expected return for covered call.
+        """Calculate expected return for covered call (physical measure).
+
+        Uses HV-based d1/d2 to reflect real-world exercise probability,
+        capturing the volatility risk premium (IV > HV) that option sellers earn.
 
         For covered call (long stock + short call):
-        E[π] = E[Stock Return] + E[Call Premium]
-             = E[S_T] - S + C - E[max(S_T - K, 0)]
+        E[π] = E[S_T] - S + C - E[max(S_T - K, 0)]
 
-        Using B-S framework:
-        E[π] = C + S × (e^(rT) - 1) - [S × e^(rT) × N(d1) - K × N(d2)]
-             = C + S × e^(rT) × (1 - N(d1)) - S + K × N(d2)
-             = C + S × e^(rT) × N(-d1) - S + K × N(d2)
+        Using B-S framework with HV:
+        E[π] = C + S × e^(rT) × N(-d1_hv) - S + K × N(d2_hv)
 
         Returns:
             Expected return in dollar amount per share.
         """
-        if self._d1 is None or self._d2 is None:
+        if self._d1_hv is None or self._d2_hv is None:
             return 0.0
 
         c = self.leg.premium
@@ -126,16 +144,15 @@ class CoveredCallStrategy(OptionStrategy):
         r = self.params.risk_free_rate
         t = self.params.time_to_expiry
 
-        n_d1 = calc_n(self._d1)
-        n_d2 = calc_n(self._d2)
-        n_minus_d1 = calc_n(-self._d1)
+        n_d1 = calc_n(self._d1_hv)
+        n_d2 = calc_n(self._d2_hv)
 
         exp_rt = math.exp(r * t)
 
-        # Expected stock value at expiry under risk-neutral measure
+        # Expected stock value at expiry under physical measure
         expected_stock = s * exp_rt
 
-        # Expected call payoff = S × e^(rT) × N(d1) - K × N(d2)
+        # Expected call payoff using HV-based probabilities
         expected_call_payoff = s * exp_rt * n_d1 - k * n_d2
 
         # Covered call return = Stock gain + Premium - Call payoff

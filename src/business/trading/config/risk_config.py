@@ -10,14 +10,19 @@ Risk Configuration - 风控配置
 - Emergency: 紧急平仓触发阈值
 
 配置模式:
-- LIVE: 使用严格的生产环境默认值
-- BACKTEST: 应用 _BACKTEST_OVERRIDES 放宽某些参数
+- LIVE: 使用 YAML 主配置（fallback 到 dataclass 默认值）
+- BACKTEST: 自动合并 YAML backtest_overrides 节
+
+配置文件: config/trading/risk.yaml
 """
 
 from dataclasses import dataclass, fields
-from typing import Any, ClassVar
+from pathlib import Path
+from typing import Any
 
-from src.business.config.config_mode import ConfigMode
+import yaml
+
+from src.business.config.config_utils import merge_overrides
 
 
 @dataclass
@@ -27,15 +32,13 @@ class RiskConfig:
     所有风控参数的唯一配置源。
 
     配置来源 (优先级高→低):
-    - LIVE 模式: dataclass 默认值
-    - BACKTEST 模式: _BACKTEST_OVERRIDES > dataclass 默认值
+    1. {strategy_name}.yaml (如果存在)
+    2. base_option_strategy.yaml (默认基准值)
+    3. dataclass 默认值 (代码 fallback)
 
     示例:
-        # Live 模式 (严格默认值)
-        config = RiskConfig.load()
-
-        # Backtest 模式 (放宽参数)
-        config = RiskConfig.load(mode=ConfigMode.BACKTEST)
+        # 常规加载 (根据策略名称合并)
+        config = RiskConfig.load("short_put_v9")
 
         # 从字典加载 (可覆盖任意字段)
         config = RiskConfig.from_dict({"max_notional_pct_per_underlying": 0.70})
@@ -94,61 +97,88 @@ class RiskConfig:
 
     kelly_fraction: float = 0.25  # 1/4 Kelly - 保守策略
 
-    # =========================================================================
-    # Backtest Overrides (回测模式覆盖值)
-    # 这些值在 BACKTEST 模式下会覆盖上面的默认值
-    # =========================================================================
-
-    _BACKTEST_OVERRIDES: ClassVar[dict[str, Any]] = {
-        # 放宽单标的敞口限制，便于回测测试
-        "max_notional_pct_per_underlying": 0.50,  # 50% (live: 5%)
-    }
+    @classmethod
+    def _apply_dict(cls, config: "RiskConfig", data: dict[str, Any]) -> "RiskConfig":
+        """将字典中的值覆盖到 config 实例上（内部方法）"""
+        risk_limits = data.get("risk_limits", data)
+        valid_fields = {f.name for f in fields(cls) if not f.name.startswith("_")}
+        for key, value in risk_limits.items():
+            if key in valid_fields:
+                setattr(config, key, value)
+        return config
 
     @classmethod
-    def load(cls, mode: ConfigMode = ConfigMode.LIVE) -> "RiskConfig":
-        """加载配置
+    def from_yaml(
+        cls,
+        path: str | Path,
+    ) -> "RiskConfig":
+        """从 YAML 文件加载配置
 
         Args:
-            mode: 配置模式 (LIVE 或 BACKTEST)
+            path: YAML 文件路径
 
         Returns:
             RiskConfig 实例
         """
-        if mode == ConfigMode.LIVE:
-            # Live 模式: 使用 dataclass 默认值 (严格)
-            return cls()
-        else:
-            # Backtest 模式: 应用 backtest 覆盖
-            return cls(**cls._BACKTEST_OVERRIDES)
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+
+        return cls._apply_dict(cls(), data)
+
+    @classmethod
+    def load(cls, strategy_name: str | None = None) -> "RiskConfig":
+        """加载配置
+
+        优先加载 base_option_strategy.yaml，然后被具体的 {strategy_name}.yaml 覆盖。
+
+        Args:
+            strategy_name: 策略名称 (如 short_put_v9)
+
+        Returns:
+            RiskConfig 实例
+        """
+        config_dir = Path(__file__).parent.parent.parent.parent.parent / "config" / "trading"
+        
+        # 1. 尝试加载基础配置
+        base_file = config_dir / "base_option_strategy.yaml"
+        base_data = {}
+        if base_file.exists():
+            with open(base_file, "r", encoding="utf-8") as f:
+                base_data = yaml.safe_load(f) or {}
+                
+        # 2. 尝试加载策略专属的覆盖配置
+        if strategy_name:
+            strategy_file = config_dir / f"{strategy_name}.yaml"
+            if strategy_file.exists():
+                with open(strategy_file, "r", encoding="utf-8") as f:
+                    strategy_data = yaml.safe_load(f) or {}
+                # 合并字典
+                base_data = merge_overrides(base_data, strategy_data)
+                
+        # 3. 如果没找到专属和基础配置，兼容查一下历史的 risk.yaml
+        if not base_data:
+            legacy_file = config_dir / "risk.yaml"
+            if legacy_file.exists():
+                with open(legacy_file, "r", encoding="utf-8") as f:
+                    base_data = yaml.safe_load(f) or {}
+
+        # 4. 应用最终字典
+        return cls._apply_dict(cls(), base_data)
 
     @classmethod
     def from_dict(
         cls,
         data: dict[str, Any],
-        mode: ConfigMode = ConfigMode.LIVE,
     ) -> "RiskConfig":
-        """从字典创建配置
+        """从字典创建配置 (用于测试与覆盖)
 
         Args:
             data: 配置字典 (支持嵌套 risk_limits 或扁平结构)
-            mode: 配置模式
 
         Returns:
             RiskConfig 实例
         """
-        # 先获取基础配置
-        base = cls.load(mode)
-
-        # 支持嵌套结构 (risk_limits) 和扁平结构
-        risk_limits = data.get("risk_limits", data)
-
-        # 用字典中的值覆盖
-        valid_fields = {f.name for f in fields(cls) if not f.name.startswith("_")}
-        for key, value in risk_limits.items():
-            if key in valid_fields:
-                setattr(base, key, value)
-
-        return base
+        return cls._apply_dict(cls(), data)
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典"""

@@ -216,4 +216,5 @@ openspec/
 
 # Local data directory (root level only)
 /data/
+/reports/
 creds.txt

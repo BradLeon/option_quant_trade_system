@@ -203,24 +203,21 @@ class MonitoringDataBridge:
         Returns:
             转换后的 PositionData 列表
         """
+        from src.business.monitoring.position_data_builder import PositionDataBuilder
+
         # 基础字段
         dte = calc_dte_from_expiry(pos.expiry) if pos.expiry else None
         underlying_symbol = pos.underlying or pos.symbol
 
-        # 计算 moneyness (旧公式，保留兼容)
+        # 计算 moneyness 和 otm_pct（使用 PositionDataBuilder 统一逻辑）
         moneyness = None
-        if pos.underlying_price and pos.strike:
-            moneyness = (pos.underlying_price - pos.strike) / pos.strike
-
-        # 计算 otm_pct (新统一公式)
-        # Put: OTM% = (S-K)/S (正值表示 OTM)
-        # Call: OTM% = (K-S)/S (正值表示 OTM)
         otm_pct = None
-        if pos.underlying_price and pos.strike and pos.underlying_price > 0:
-            if pos.option_type == "put":
-                otm_pct = (pos.underlying_price - pos.strike) / pos.underlying_price
-            elif pos.option_type == "call":
-                otm_pct = (pos.strike - pos.underlying_price) / pos.underlying_price
+        if pos.underlying_price and pos.strike:
+            moneyness = PositionDataBuilder.calc_moneyness(pos.underlying_price, pos.strike)
+            if pos.option_type:
+                otm_pct = PositionDataBuilder.calc_otm_pct(
+                    pos.underlying_price, pos.strike, pos.option_type,
+                )
 
         # 计算 PnL%
         unrealized_pnl_pct = 0.0
@@ -253,7 +250,6 @@ class MonitoringDataBridge:
             )
             self._enrich_volatility(position_data, underlying_symbol)
             self._enrich_technical(position_data, underlying_symbol)
-            self._enrich_technical_signal(position_data, underlying_symbol)
             self._enrich_fundamental(position_data, underlying_symbol)
             return [position_data]
 
@@ -312,44 +308,19 @@ class MonitoringDataBridge:
             # 填充技术面数据
             self._enrich_technical(position_data, underlying_symbol)
 
-            # 填充技术信号数据
-            self._enrich_technical_signal(position_data, underlying_symbol)
-
             # 填充基本面数据
             self._enrich_fundamental(position_data, underlying_symbol)
 
-            # 填充策略指标
+            # 填充策略指标（使用 PositionDataBuilder 统一逻辑）
+            # 先计算 margin 供 populate_strategy_metrics 使用
             try:
-                metrics = strategy.calc_metrics()
-                position_data.prei = metrics.prei
-                position_data.tgr = metrics.tgr
-                position_data.sas = metrics.sas
-                position_data.roc = metrics.roc
-                position_data.expected_roc = metrics.expected_roc
-                position_data.sharpe = metrics.sharpe_ratio
-                position_data.kelly = metrics.kelly_fraction
-                position_data.win_probability = metrics.win_probability
-                position_data.expected_return = metrics.expected_return
-                position_data.max_profit = metrics.max_profit
-                position_data.max_loss = metrics.max_loss
-                position_data.breakeven = metrics.breakeven
-                position_data.return_std = metrics.return_std
+                margin_per_contract = strategy.calc_margin_requirement()
+                position_data.margin = margin_per_contract * ratio
+                position_data.capital_at_risk = strategy._calc_capital_at_risk()
+            except Exception as margin_error:
+                logger.debug(f"Could not calculate margin for {pos.symbol}: {margin_error}")
 
-                # 资金相关指标
-                try:
-                    margin_per_contract = strategy.calc_margin_requirement()
-                    position_data.margin = margin_per_contract * ratio
-                    position_data.capital_at_risk = strategy._calc_capital_at_risk()
-
-                    # 计算 gamma_risk_pct: |Gamma| / Margin
-                    # 只有当 margin > 0 时才计算
-                    if position_data.margin and position_data.margin > 0 and position_data.gamma:
-                        position_data.gamma_risk_pct = abs(position_data.gamma) / position_data.margin
-                except Exception as margin_error:
-                    logger.debug(f"Could not calculate margin for {pos.symbol}: {margin_error}")
-
-            except Exception as e:
-                logger.warning(f"Failed to calc metrics for {pos.symbol} {strategy_type}: {e}")
+            PositionDataBuilder.populate_strategy_metrics(position_data, strategy)
 
             result.append(position_data)
 
@@ -445,9 +416,6 @@ class MonitoringDataBridge:
         # 填充技术面数据
         self._enrich_technical(position_data, pos.symbol)
 
-        # 填充技术信号数据
-        self._enrich_technical_signal(position_data, pos.symbol)
-
         # 填充基本面数据
         self._enrich_fundamental(position_data, pos.symbol)
 
@@ -476,29 +444,21 @@ class MonitoringDataBridge:
         pos.volatility_rating = vol_score.rating.value if vol_score.rating else None
 
     def _enrich_technical(self, pos: PositionData, symbol: str) -> None:
-        """调用 calc_technical_score() 填充技术面字段
+        """调用 calc_technical_score() + calc_technical_signal() 填充技术面字段
 
         Args:
             pos: 待填充的 PositionData
             symbol: 标的 symbol
         """
+        from src.business.monitoring.position_data_builder import PositionDataBuilder
+
         tech_data = self._technical_cache.get(symbol)
         if not tech_data:
             return
 
-        # 调用统一出口算子
         tech_score = calc_technical_score(tech_data)
-
-        # 从 TechnicalScore 提取字段
-        pos.trend_signal = (
-            tech_score.trend_signal.value if tech_score.trend_signal else None
-        )
-        pos.ma_alignment = tech_score.ma_alignment
-        pos.rsi = tech_score.rsi
-        pos.rsi_zone = tech_score.rsi_zone
-        pos.adx = tech_score.adx
-        pos.support = tech_score.support
-        pos.resistance = tech_score.resistance
+        tech_signal = calc_technical_signal(tech_data)
+        PositionDataBuilder.populate_technical_fields(pos, tech_score, tech_signal)
 
     def _enrich_fundamental(self, pos: PositionData, symbol: str) -> None:
         """调用 evaluate_fundamentals() 填充基本面字段
@@ -522,27 +482,6 @@ class MonitoringDataBridge:
         # 从 FundamentalScore 提取字段
         pos.fundamental_score = fund_score.score
         pos.analyst_rating = fund_score.rating.value if fund_score.rating else None
-
-    def _enrich_technical_signal(self, pos: PositionData, symbol: str) -> None:
-        """调用 calc_technical_signal() 填充技术信号字段
-
-        Args:
-            pos: 待填充的 PositionData
-            symbol: 标的 symbol
-        """
-        tech_data = self._technical_cache.get(symbol)
-        if not tech_data:
-            return
-
-        # 调用统一出口算子
-        tech_signal = calc_technical_signal(tech_data)
-
-        # 从 TechnicalSignal 提取字段
-        pos.market_regime = tech_signal.market_regime
-        pos.tech_trend_strength = tech_signal.trend_strength
-        pos.sell_put_signal = tech_signal.sell_put_signal
-        pos.sell_call_signal = tech_signal.sell_call_signal
-        pos.is_dangerous_period = tech_signal.is_dangerous_period
 
     def clear_cache(self) -> None:
         """清除所有缓存"""

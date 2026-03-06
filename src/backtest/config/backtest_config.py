@@ -26,7 +26,6 @@ from typing import Any, Literal
 
 import yaml
 
-from src.business.config.config_mode import ConfigMode
 from src.engine.models.enums import StrategyType
 
 
@@ -75,6 +74,8 @@ class BacktestConfig:
     strategy_types: list[StrategyType] = field(
         default_factory=lambda: [StrategyType.SHORT_PUT]
     )
+    # 策略架构版本（决定监控/筛选配置和行为差异）
+    strategy_version: str = "short_options_with_expire_itm_stock_trade"
     # 指向监控配置文件
     monitoring_config: str = "config/monitoring/thresholds.yaml"
     # 已废弃: 使用 strategy_types 代替
@@ -84,7 +85,7 @@ class BacktestConfig:
     initial_capital: float = 100_000.0  # 初始资金
     max_margin_utilization: float = 0.70  # 最大保证金使用率
     max_position_pct: float = 0.10  # 单标的最大仓位占比
-    max_positions: int = 10  # 最大持仓数量
+    max_positions: int = 20  # 最大持仓数量
 
     # ========== 执行配置 ==========
     slippage_pct: float = 0.001  # 滑点百分比 (0.1%)
@@ -108,15 +109,14 @@ class BacktestConfig:
     # - "mid": 中间价
     price_mode: str = "close"
 
+    # ========== 策略行为 ==========
+    max_new_positions_per_day: int = 1  # 每日最大新开仓数量
+
     # ========== 其他选项 ==========
     random_seed: int | None = None  # 随机种子 (用于可重复性)
     verbose: bool = False  # 详细日志
     skip_market_check: bool = False  # 跳过筛选的市场环境检查
-
-    # ========== 配置模式 (始终为 BACKTEST) ==========
-    # BacktestConfig 始终使用 BACKTEST 模式
-    # 该字段不可在初始化时修改
-    config_mode: ConfigMode = field(default=ConfigMode.BACKTEST, init=False)
+    benchmark_symbol: str = "QQQ"  # 基准标的 (QQQ / SPY)
 
     # ========== 配置覆盖 (优先级最高) ==========
     # 这些覆盖会应用在 BACKTEST 模式默认值之上
@@ -228,6 +228,7 @@ class BacktestConfig:
             "symbols": self.symbols,
             "market": self.market,
             "strategy_types": [st.value for st in self.strategy_types],
+            "strategy_version": self.strategy_version,
             "monitoring_config": self.monitoring_config,
             "initial_capital": self.initial_capital,
             "max_margin_utilization": self.max_margin_utilization,
@@ -241,9 +242,11 @@ class BacktestConfig:
             "stock_commission_min_per_order": self.stock_commission_min_per_order,
             "data_dir": self.data_dir,
             "price_mode": self.price_mode,
+            "max_new_positions_per_day": self.max_new_positions_per_day,
             "random_seed": self.random_seed,
             "verbose": self.verbose,
             "skip_market_check": self.skip_market_check,
+            "benchmark_symbol": self.benchmark_symbol,
             # 配置覆盖
             "risk_overrides": self.risk_overrides,
             "screening_overrides": self.screening_overrides,

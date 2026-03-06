@@ -109,8 +109,18 @@ class DuckDBProvider(DataProvider):
         # 缓存
         self._trading_days_cache: list[date] | None = None
         self._stock_quote_cache: dict[tuple[str, date], StockQuote | None] = {}
-        self._option_chain_cache: dict[tuple[str, date, date | None, date | None], OptionChain | None] = {}
+        self._option_chain_cache: dict[tuple[str, date], OptionChain | None] = {}
         self._cache_max_size = 1000  # 最大缓存条目数
+
+        # 全序列缓存（不随 set_as_of_date 清除，历史数据不可变）
+        self._kline_series_cache: dict[str, list[tuple]] = {}  # symbol -> [(date, open, high, low, close, volume), ...]
+        self._kline_dict_cache: dict[str, dict[date, tuple]] = {}  # symbol -> {date: row}
+        self._macro_series_cache: dict[str, list[tuple]] = {}  # indicator -> [(date, open, high, low, close), ...]
+        self._stock_volatility_cache: dict[tuple[str, date], StockVolatility | None] = {}  # (symbol, date) -> result
+        self._stock_beta_cache: dict[tuple[str, date | None], float | None] = {}  # (symbol, as_of_date) -> beta
+        self._fundamental_cache: dict[tuple[str, date], Fundamental | None] = {}  # (symbol, as_of_date) -> Fundamental
+        self._macro_blackout_cache: dict[date, tuple[bool, list]] = {}  # date -> (is_blackout, events)
+        self._blackout_prefetched: bool = False  # 防止重复预取
 
         # 已尝试下载的 symbol 缓存 (避免重复下载失败的 symbol)
         self._fundamental_download_attempted: set[str] = set()
@@ -153,16 +163,24 @@ class DuckDBProvider(DataProvider):
         if d != self._as_of_date:
             self._as_of_date = d
             # 清除日期相关缓存 (trading_days 缓存保留)
+            # 全序列缓存 (_kline_series_cache, _macro_series_cache) 保留 — 历史数据不可变
+            # stock_volatility_cache 保留 — 按 (symbol, date) 缓存，不会有冲突
             self._stock_quote_cache.clear()
             self._option_chain_cache.clear()
             logger.debug(f"DuckDBProvider as_of_date set to {d}, cache cleared")
 
     def clear_cache(self) -> None:
-        """清除所有缓存"""
+        """清除所有缓存（包括全序列缓存）"""
         self._stock_quote_cache.clear()
         self._option_chain_cache.clear()
         self._trading_days_cache = None
-        logger.debug("DuckDBProvider cache cleared")
+        self._kline_series_cache.clear()
+        self._kline_dict_cache.clear()
+        self._macro_series_cache.clear()
+        self._stock_volatility_cache.clear()
+        self._macro_blackout_cache.clear()
+        self._blackout_prefetched = False
+        logger.debug("DuckDBProvider all caches cleared")
 
     # ========== Fundamental Auto-Download ==========
 
@@ -292,63 +310,37 @@ class DuckDBProvider(DataProvider):
         """
         symbol = symbol.upper()
 
-        # 检查缓存
-        cache_key = (symbol, self._as_of_date)
-        if cache_key in self._stock_quote_cache:
-            return self._stock_quote_cache[cache_key]
+        # Optimization: Fetch full kline series into memory and use dictionary for O(1) lookup
+        if symbol not in self._kline_series_cache:
+            self._kline_series_cache[symbol] = self._load_full_kline_series(symbol)
+            
+            # 建立基于日期的 O(1) 索引字典
+            date_dict = {}
+            for row in self._kline_series_cache[symbol]:
+                date_val = row[0]
+                if isinstance(date_val, str):
+                    date_val = date.fromisoformat(date_val)
+                elif isinstance(date_val, datetime):
+                    date_val = date_val.date()
+                date_dict[date_val] = row
+            self._kline_dict_cache[symbol] = date_dict
 
-        parquet_path = self._data_dir / "stock_daily.parquet"
-
-        if not parquet_path.exists():
-            logger.warning(f"Stock data not found: {parquet_path}")
-            self._stock_quote_cache[cache_key] = None
+        # 直接从全量内存字典中取当天数据
+        row = self._kline_dict_cache[symbol].get(self._as_of_date)
+        
+        if row is None:
             return None
 
-        try:
-            conn = self._get_conn()
-            # 优化: 列过滤在 WHERE 之前，减少数据扫描
-            result = conn.execute(
-                f"""
-                SELECT symbol, date, open, high, low, close, volume
-                FROM read_parquet('{parquet_path}')
-                WHERE date = ? AND symbol = ?
-                LIMIT 1
-                """,
-                [self._as_of_date, symbol],
-            ).fetchone()
-
-            if result is None:
-                self._stock_quote_cache[cache_key] = None
-                return None
-
-            # 明确指定列顺序: symbol, date, open, high, low, close, volume
-            # 日期可能是 date 对象或字符串
-            date_val = result[1]
-            if isinstance(date_val, str):
-                date_val = date.fromisoformat(date_val)
-            elif isinstance(date_val, datetime):
-                date_val = date_val.date()
-
-            quote = StockQuote(
-                symbol=result[0],
-                timestamp=datetime.combine(date_val, datetime.min.time()),
-                open=result[2],
-                high=result[3],
-                low=result[4],
-                close=result[5],
-                volume=result[6],
-                source="duckdb",
-            )
-
-            # 缓存结果 (限制缓存大小)
-            if len(self._stock_quote_cache) < self._cache_max_size:
-                self._stock_quote_cache[cache_key] = quote
-
-            return quote
-
-        except Exception as e:
-            logger.error(f"Failed to get stock quote for {symbol}: {e}")
-            return None
+        return StockQuote(
+            symbol=symbol,
+            timestamp=datetime.combine(self._as_of_date, datetime.min.time()),
+            open=row[1],
+            high=row[2],
+            low=row[3],
+            close=row[4],
+            volume=row[5],
+            source="duckdb",
+        )
 
     def get_stock_quotes(self, symbols: list[str]) -> list[StockQuote]:
         """获取多只股票报价
@@ -366,6 +358,39 @@ class DuckDBProvider(DataProvider):
                 results.append(quote)
         return results
 
+    def _load_full_kline_series(self, symbol: str) -> list[tuple]:
+        """加载某个 symbol 的全部日线数据到内存
+
+        一次性从 stock_daily.parquet 读取该 symbol 的所有行，
+        后续查询直接在内存中按日期过滤。
+
+        Args:
+            symbol: 股票代码 (大写)
+
+        Returns:
+            [(date, open, high, low, close, volume), ...] 按日期升序
+        """
+        parquet_path = self._data_dir / "stock_daily.parquet"
+        if not parquet_path.exists():
+            return []
+
+        try:
+            conn = self._get_conn()
+            rows = conn.execute(
+                f"""
+                SELECT date, open, high, low, close, volume
+                FROM read_parquet('{parquet_path}')
+                WHERE symbol = ?
+                ORDER BY date
+                """,
+                [symbol],
+            ).fetchall()
+            logger.debug(f"Loaded full kline series for {symbol}: {len(rows)} rows")
+            return rows
+        except Exception as e:
+            logger.error(f"Failed to load kline series for {symbol}: {e}")
+            return []
+
     def get_history_kline(
         self,
         symbol: str,
@@ -376,6 +401,7 @@ class DuckDBProvider(DataProvider):
         """获取历史 K 线数据
 
         注意: 只返回 <= as_of_date 的数据 (避免未来数据泄露)
+        使用全序列内存缓存，首次加载后不再查询 DuckDB。
 
         Args:
             symbol: 股票代码
@@ -391,46 +417,30 @@ class DuckDBProvider(DataProvider):
             return []
 
         symbol = symbol.upper()
-        parquet_path = self._data_dir / "stock_daily.parquet"
 
-        if not parquet_path.exists():
-            return []
+        # 首次调用时加载全序列到缓存
+        if symbol not in self._kline_series_cache:
+            self._kline_series_cache[symbol] = self._load_full_kline_series(symbol)
 
         # 限制 end_date 不超过 as_of_date
         effective_end = min(end_date, self._as_of_date)
 
-        try:
-            conn = self._get_conn()
-            rows = conn.execute(
-                f"""
-                SELECT symbol, date, open, high, low, close, volume
-                FROM read_parquet('{parquet_path}')
-                WHERE symbol = ?
-                  AND date >= ?
-                  AND date <= ?
-                ORDER BY date
-                """,
-                [symbol, start_date, effective_end],
-            ).fetchall()
-
-            return [
-                KlineBar(
-                    symbol=row[0],
-                    timestamp=datetime.combine(row[1], datetime.min.time()),
-                    ktype=KlineType.DAY,
-                    open=row[2],
-                    high=row[3],
-                    low=row[4],
-                    close=row[5],
-                    volume=row[6],
-                    source="duckdb",
-                )
-                for row in rows
-            ]
-
-        except Exception as e:
-            logger.error(f"Failed to get kline for {symbol}: {e}")
-            return []
+        # 在内存中按日期范围过滤
+        return [
+            KlineBar(
+                symbol=symbol,
+                timestamp=datetime.combine(row[0], datetime.min.time()),
+                ktype=KlineType.DAY,
+                open=row[1],
+                high=row[2],
+                low=row[3],
+                close=row[4],
+                volume=row[5],
+                source="duckdb",
+            )
+            for row in self._kline_series_cache[symbol]
+            if start_date <= row[0] <= effective_end
+        ]
 
     # ========== Option Data Methods ==========
 
@@ -467,167 +477,168 @@ class DuckDBProvider(DataProvider):
         if expiry_max_days is not None and expiry_end is None:
             expiry_end = self._as_of_date + timedelta(days=expiry_max_days)
 
-        # 检查缓存
-        cache_key = (underlying, self._as_of_date, expiry_start, expiry_end)
-        if cache_key in self._option_chain_cache:
-            return self._option_chain_cache[cache_key]
-
-        # 查找期权数据
-        option_dir = self._data_dir / "option_daily" / underlying
-        if not option_dir.exists():
-            logger.warning(f"Option data not found for {underlying}")
-            self._option_chain_cache[cache_key] = None
-            return None
-
-        # 确定要读取的 Parquet 文件
-        year = self._as_of_date.year
-        parquet_files = []
-
-        # 优先读取当年的文件
-        year_file = option_dir / f"{year}.parquet"
-        if year_file.exists():
-            parquet_files.append(year_file)
-
-        # 如果当年文件不存在，尝试读取所有文件
-        if not parquet_files:
-            parquet_files = list(option_dir.glob("*.parquet"))
-
-        if not parquet_files:
-            logger.warning(f"No parquet files found for {underlying}")
-            self._option_chain_cache[cache_key] = None
-            return None
-
-        try:
-            # 构建查询条件
-            conditions = ["date = ?"]
-            params: list[Any] = [self._as_of_date]
-
-            if expiry_start:
-                conditions.append("expiration >= ?")
-                params.append(expiry_start)
-            if expiry_end:
-                conditions.append("expiration <= ?")
-                params.append(expiry_end)
-
-            where_clause = " AND ".join(conditions)
-
-            # 合并多个 Parquet 文件的查询
-            parquet_list = ", ".join([f"'{pf}'" for pf in parquet_files])
-
-            conn = self._get_conn()
-            rows = conn.execute(
-                f"""
-                SELECT
-                    symbol, expiration, strike, option_type, date,
-                    open, high, low, close, volume, count,
-                    bid, ask, delta, gamma, theta, vega, rho,
-                    implied_vol, underlying_price, open_interest
-                FROM read_parquet([{parquet_list}])
-                WHERE {where_clause}
-                ORDER BY expiration, strike, option_type
-                """,
-                params,
-            ).fetchall()
-
-            if not rows:
+        # 检查全链缓存 (Optimization: Fetch whole chain once per day to avoid multiple DuckDB queries)
+        cache_key = (underlying, self._as_of_date)
+        
+        chain = self._option_chain_cache.get(cache_key)
+        
+        if chain is None and cache_key not in self._option_chain_cache:
+            # 查找期权数据
+            option_dir = self._data_dir / "option_daily" / underlying
+            if not option_dir.exists():
+                logger.warning(f"Option data not found for {underlying}")
                 self._option_chain_cache[cache_key] = None
                 return None
 
-            # 构建 OptionChain
-            calls: list[OptionQuote] = []
-            puts: list[OptionQuote] = []
-            expiry_dates: set[date] = set()
+            # 确定要读取的 Parquet 文件
+            year = self._as_of_date.year
+            parquet_files = []
 
-            for row in rows:
-                (
-                    symbol,
-                    expiration,
-                    strike,
-                    opt_type,
-                    data_date,
-                    open_price,
-                    high,
-                    low,
-                    close,
-                    volume,
-                    count,
-                    bid,
-                    ask,
-                    delta,
-                    gamma,
-                    theta,
-                    vega,
-                    rho,
-                    implied_vol,
-                    underlying_price,
-                    open_interest,
-                ) = row
+            # 优先读取当年的文件
+            year_file = option_dir / f"{year}.parquet"
+            if year_file.exists():
+                parquet_files.append(year_file)
 
-                expiry_dates.add(expiration)
+            # 如果当年文件不存在，尝试读取所有文件
+            if not parquet_files:
+                parquet_files = list(option_dir.glob("*.parquet"))
 
-                # 构建期权符号 (简化格式)
-                option_symbol = (
-                    f"{underlying}{expiration.strftime('%y%m%d')}"
-                    f"{'C' if opt_type == 'call' else 'P'}{int(strike * 1000):08d}"
-                )
+            if not parquet_files:
+                logger.warning(f"No parquet files found for {underlying}")
+                self._option_chain_cache[cache_key] = None
+                return None
 
-                contract = OptionContract(
-                    symbol=option_symbol,
+            try:
+                # 构建查询条件: 获取当天该标的的所有期权合约（不在这里过滤日期，而在内存中过滤）
+                conditions = ["date = ?"]
+                params: list[Any] = [self._as_of_date]
+
+                where_clause = " AND ".join(conditions)
+
+                # 合并多个 Parquet 文件的查询
+                parquet_list = ", ".join([f"'{pf}'" for pf in parquet_files])
+
+                conn = self._get_conn()
+                rows = conn.execute(
+                    f"""
+                    SELECT
+                        symbol, expiration, strike, option_type, date,
+                        open, high, low, close, volume, count,
+                        bid, ask, delta, gamma, theta, vega, rho,
+                        implied_vol, underlying_price, open_interest
+                    FROM read_parquet([{parquet_list}])
+                    WHERE {where_clause}
+                    ORDER BY expiration, strike, option_type
+                    """,
+                    params,
+                ).fetchall()
+
+                if not rows:
+                    self._option_chain_cache[cache_key] = None
+                    return None
+
+                # 构建 OptionChain
+                calls: list[OptionQuote] = []
+                puts: list[OptionQuote] = []
+                expiry_dates: set[date] = set()
+
+                for row in rows:
+                    (
+                        symbol, expiration, strike, opt_type, data_date,
+                        open_price, high, low, close, volume, count,
+                        bid, ask, delta, gamma, theta, vega, rho,
+                        implied_vol, underlying_price, open_interest,
+                    ) = row
+
+                    expiry_dates.add(expiration)
+
+                    # 构建期权符号 (简化格式)
+                    option_symbol = (
+                        f"{underlying}{expiration.strftime('%y%m%d')}"
+                        f"{'C' if opt_type == 'call' else 'P'}{int(strike * 1000):08d}"
+                    )
+
+                    contract = OptionContract(
+                        symbol=option_symbol,
+                        underlying=underlying,
+                        option_type=OptionType.CALL if opt_type == "call" else OptionType.PUT,
+                        strike_price=strike,
+                        expiry_date=expiration,
+                    )
+
+                    greeks = Greeks(
+                        delta=delta, gamma=gamma, theta=theta, vega=vega, rho=rho,
+                    )
+
+                    quote = OptionQuote(
+                        contract=contract,
+                        timestamp=datetime.combine(data_date, datetime.min.time()),
+                        last_price=close,
+                        bid=bid, ask=ask, volume=volume, open_interest=open_interest,
+                        iv=implied_vol, greeks=greeks, source="duckdb",
+                        open=open_price, high=high, low=low, close=close,
+                    )
+
+                    if opt_type == "call":
+                        calls.append(quote)
+                    else:
+                        puts.append(quote)
+
+                chain = OptionChain(
                     underlying=underlying,
-                    option_type=OptionType.CALL if opt_type == "call" else OptionType.PUT,
-                    strike_price=strike,
-                    expiry_date=expiration,
+                    timestamp=datetime.combine(self._as_of_date, datetime.min.time()),
+                    expiry_dates=sorted(expiry_dates),
+                    calls=calls, puts=puts, source="duckdb",
                 )
 
-                greeks = Greeks(
-                    delta=delta,
-                    gamma=gamma,
-                    theta=theta,
-                    vega=vega,
-                    rho=rho,
-                )
-
-                quote = OptionQuote(
-                    contract=contract,
-                    timestamp=datetime.combine(data_date, datetime.min.time()),
-                    last_price=close,
-                    bid=bid,
-                    ask=ask,
-                    volume=volume,
-                    open_interest=open_interest,
-                    iv=implied_vol,
-                    greeks=greeks,
-                    source="duckdb",
-                    # OHLC 价格 (用于回测 price_mode)
-                    open=open_price,
-                    high=high,
-                    low=low,
-                    close=close,
-                )
-
-                if opt_type == "call":
-                    calls.append(quote)
-                else:
-                    puts.append(quote)
-
-            chain = OptionChain(
-                underlying=underlying,
-                timestamp=datetime.combine(self._as_of_date, datetime.min.time()),
-                expiry_dates=sorted(expiry_dates),
-                calls=calls,
-                puts=puts,
-                source="duckdb",
-            )
-
-            # 缓存结果
-            if len(self._option_chain_cache) < self._cache_max_size:
+                # 缓存全链结果
+                if len(self._option_chain_cache) >= self._cache_max_size:
+                    keys_to_remove = list(self._option_chain_cache.keys())[: self._cache_max_size // 2]
+                    for k in keys_to_remove:
+                        del self._option_chain_cache[k]
+                        
                 self._option_chain_cache[cache_key] = chain
 
-            return chain
+            except Exception as e:
+                logger.error(f"Failed to get option chain for {underlying}: {e}")
+                self._option_chain_cache[cache_key] = None
+                return None
 
-        except Exception as e:
-            logger.error(f"Failed to get option chain for {underlying}: {e}")
+        if not chain:
             return None
+
+        # 内存中按到期日过滤
+        if expiry_start is None and expiry_end is None:
+            return chain
+            
+        filtered_calls = []
+        filtered_puts = []
+        filtered_expiries = set()
+        
+        for quote in chain.calls:
+            if expiry_start and quote.contract.expiry_date < expiry_start:
+                continue
+            if expiry_end and quote.contract.expiry_date > expiry_end:
+                continue
+            filtered_calls.append(quote)
+            filtered_expiries.add(quote.contract.expiry_date)
+            
+        for quote in chain.puts:
+            if expiry_start and quote.contract.expiry_date < expiry_start:
+                continue
+            if expiry_end and quote.contract.expiry_date > expiry_end:
+                continue
+            filtered_puts.append(quote)
+            filtered_expiries.add(quote.contract.expiry_date)
+            
+        return OptionChain(
+            underlying=chain.underlying,
+            timestamp=chain.timestamp,
+            expiry_dates=sorted(filtered_expiries),
+            calls=filtered_calls,
+            puts=filtered_puts,
+            source=chain.source,
+        )
 
     def get_option_quote(self, symbol: str) -> OptionQuote | None:
         """获取单个期权合约报价
@@ -670,6 +681,11 @@ class DuckDBProvider(DataProvider):
         if not self._ensure_fundamental_data(symbol):
             logger.debug(f"No fundamental data available for {symbol}")
             return None
+
+        # Optimization: Memory cache lookup
+        cache_key = (symbol.upper(), self._as_of_date)
+        if hasattr(self, "_fundamental_cache") and cache_key in self._fundamental_cache:
+            return self._fundamental_cache[cache_key]
 
         eps_path = self._data_dir / "fundamental_eps.parquet"
         revenue_path = self._data_dir / "fundamental_revenue.parquet"
@@ -758,7 +774,7 @@ class DuckDBProvider(DataProvider):
                 pe_ratio = stock_quote.close / eps_value
 
             # 5. 构建 Fundamental 对象
-            return Fundamental(
+            fund_obj = Fundamental(
                 symbol=symbol,
                 date=self._as_of_date,
                 eps=eps_value,
@@ -767,9 +783,14 @@ class DuckDBProvider(DataProvider):
                 ex_dividend_date=ex_dividend_date,
                 source="duckdb",
             )
+            if hasattr(self, "_fundamental_cache"):
+                self._fundamental_cache[cache_key] = fund_obj
+            return fund_obj
 
         except Exception as e:
             logger.error(f"Failed to get fundamental data for {symbol}: {e}")
+            if hasattr(self, "_fundamental_cache"):
+                self._fundamental_cache[cache_key] = None
             return None
 
     def get_historical_eps(
@@ -889,6 +910,39 @@ class DuckDBProvider(DataProvider):
             logger.error(f"Failed to get dividend dates for {symbol}: {e}")
             return []
 
+    def _load_full_macro_series(self, indicator: str) -> list[tuple]:
+        """加载某个指标的全部宏观数据到内存
+
+        一次性从 macro_daily.parquet 读取该 indicator 的所有行，
+        后续查询直接在内存中按日期过滤。
+
+        Args:
+            indicator: 宏观指标 (如 ^VIX, ^TNX, SPY)
+
+        Returns:
+            [(date, open, high, low, close), ...] 按日期升序
+        """
+        parquet_path = self._data_dir / "macro_daily.parquet"
+        if not parquet_path.exists():
+            return []
+
+        try:
+            conn = self._get_conn()
+            rows = conn.execute(
+                f"""
+                SELECT date, open, high, low, close
+                FROM read_parquet('{parquet_path}')
+                WHERE indicator = ?
+                ORDER BY date
+                """,
+                [indicator],
+            ).fetchall()
+            logger.debug(f"Loaded full macro series for {indicator}: {len(rows)} rows")
+            return rows
+        except Exception as e:
+            logger.error(f"Failed to load macro series for {indicator}: {e}")
+            return []
+
     def get_macro_data(
         self,
         indicator: str,
@@ -899,6 +953,7 @@ class DuckDBProvider(DataProvider):
 
         从 macro_daily.parquet 读取历史数据。
         注意: 只返回 <= as_of_date 的数据 (避免未来数据泄露)
+        使用全序列内存缓存，首次加载后不再查询 DuckDB。
 
         Args:
             indicator: 宏观指标 (如 ^VIX, ^TNX, SPY)
@@ -908,56 +963,40 @@ class DuckDBProvider(DataProvider):
         Returns:
             MacroData 列表 (按日期升序)
         """
-        parquet_path = self._data_dir / "macro_daily.parquet"
+        # 首次调用时加载全序列到缓存
+        if indicator not in self._macro_series_cache:
+            self._macro_series_cache[indicator] = self._load_full_macro_series(indicator)
 
-        if not parquet_path.exists():
-            logger.warning(f"Macro data not found: {parquet_path}")
+        if not self._macro_series_cache[indicator]:
             return []
 
         # 限制 end_date 不超过 as_of_date
         effective_end = min(end_date, self._as_of_date)
 
-        try:
-            conn = self._get_conn()
-            rows = conn.execute(
-                f"""
-                SELECT indicator, date, open, high, low, close
-                FROM read_parquet('{parquet_path}')
-                WHERE indicator = ?
-                  AND date >= ?
-                  AND date <= ?
-                ORDER BY date
-                """,
-                [indicator, start_date, effective_end],
-            ).fetchall()
+        # 在内存中按日期范围过滤
+        results = []
+        for row in self._macro_series_cache[indicator]:
+            # row: (date, open, high, low, close)
+            data_date = row[0]
+            if isinstance(data_date, str):
+                data_date = date.fromisoformat(data_date)
+            elif isinstance(data_date, datetime):
+                data_date = data_date.date()
 
-            results = []
-            for row in rows:
-                # row: (indicator, date, open, high, low, close)
-                data_date = row[1]
-                if isinstance(data_date, str):
-                    data_date = date.fromisoformat(data_date)
-                elif isinstance(data_date, datetime):
-                    data_date = data_date.date()
-
-                macro = MacroData(
-                    indicator=row[0],
+            if start_date <= data_date <= effective_end:
+                results.append(MacroData(
+                    indicator=indicator,
                     date=data_date,
-                    value=row[5],  # close 作为 value
-                    open=row[2],
-                    high=row[3],
-                    low=row[4],
-                    close=row[5],
+                    value=row[4],  # close 作为 value
+                    open=row[1],
+                    high=row[2],
+                    low=row[3],
+                    close=row[4],
                     volume=None,
                     source="duckdb",
-                )
-                results.append(macro)
+                ))
 
-            return results
-
-        except Exception as e:
-            logger.error(f"Failed to get macro data for {indicator}: {e}")
-            return []
+        return results
 
     def get_available_macro_indicators(self) -> list[str]:
         """获取可用的宏观指标列表
@@ -1322,6 +1361,71 @@ class DuckDBProvider(DataProvider):
 
         return results
 
+    def _prefetch_economic_calendar(
+        self,
+        blackout_days: int,
+        blackout_events: list[str],
+    ) -> None:
+        """从本地 economic_calendar.json 加载经济日历，预计算所有交易日的黑名单状态
+
+        首次调用 check_macro_blackout 时触发。数据来源于数据下载阶段
+        (scripts/download_backtest_data.py) 预生成的 JSON 文件，不需要在线 API。
+        """
+        from datetime import timedelta
+
+        try:
+            import json
+
+            from src.data.models.event import EconomicEventType, EventCalendar
+
+            # 1. 从本地 JSON 加载经济日历
+            cal_path = self._data_dir / "economic_calendar.json"
+            if not cal_path.exists():
+                logger.warning(f"Economic calendar not found: {cal_path}, blackout check disabled")
+                return
+
+            with open(cal_path, "r", encoding="utf-8") as f:
+                cal_data = json.load(f)
+
+            calendar = EventCalendar.from_dict(cal_data)
+            logger.info(
+                f"Economic calendar loaded from {cal_path.name}: "
+                f"{len(calendar.events)} events ({calendar.start_date} ~ {calendar.end_date})"
+            )
+
+            # 2. 按 event_types 过滤 (e.g. ["FOMC", "CPI", "NFP"])
+            type_map = {t.name: t for t in EconomicEventType}
+            filter_types = [type_map[t] for t in blackout_events if t in type_map]
+            if filter_types:
+                calendar = calendar.filter_by_type(filter_types)
+
+            all_events = calendar.events
+            if not all_events:
+                logger.info("No matching economic events found for blackout check")
+                return
+
+            # 3. 获取交易日列表
+            if self._trading_days_cache:
+                trading_days = self._trading_days_cache
+            else:
+                trading_days = self.get_trading_days(
+                    calendar.start_date, calendar.end_date
+                )
+
+            # 4. 为每个交易日预计算黑名单状态
+            for day in trading_days:
+                day_end = day + timedelta(days=blackout_days)
+                causing = [e for e in all_events if day <= e.event_date <= day_end]
+                self._macro_blackout_cache[day] = (len(causing) > 0, causing)
+
+            logger.info(
+                f"Economic calendar prefetched: {len(trading_days)} days cached, "
+                f"{len(all_events)} events matched ({', '.join(blackout_events)})"
+            )
+
+        except Exception as e:
+            logger.warning(f"Failed to prefetch economic calendar: {e}")
+
     def check_macro_blackout(
         self,
         target_date: date | None = None,
@@ -1331,7 +1435,7 @@ class DuckDBProvider(DataProvider):
         """检查是否处于宏观事件黑名单期
 
         使用 EconomicCalendarProvider 检查指定日期是否处于重大宏观事件
-        (FOMC/CPI/NFP) 的黑名单期。支持 FRED API + 静态 FOMC 日历。
+        (FOMC/CPI/NFP) 的黑名单期。首次调用时一次性预取整个回测期间的日历。
 
         Args:
             target_date: 要检查的日期 (默认 as_of_date)
@@ -1344,39 +1448,20 @@ class DuckDBProvider(DataProvider):
         if target_date is None:
             target_date = self._as_of_date
 
-        try:
-            from src.data.providers.economic_calendar_provider import EconomicCalendarProvider
+        if blackout_events is None:
+            blackout_events = ["FOMC", "CPI", "NFP"]
 
-            # 懒加载 EconomicCalendarProvider
-            if not hasattr(self, "_economic_calendar"):
-                self._economic_calendar: EconomicCalendarProvider | None = None
+        # 首次调用时从本地 JSON 预取整个回测期间的经济日历
+        if not self._blackout_prefetched:
+            self._blackout_prefetched = True
+            self._prefetch_economic_calendar(blackout_days, blackout_events)
 
-            if self._economic_calendar is None:
-                try:
-                    self._economic_calendar = EconomicCalendarProvider()
-                    if not self._economic_calendar.is_available:
-                        logger.debug("EconomicCalendarProvider not available (no FRED API key or FOMC calendar)")
-                        self._economic_calendar = None
-                except Exception as e:
-                    logger.warning(f"Failed to initialize EconomicCalendarProvider: {e}")
-                    self._economic_calendar = None
+        # 从缓存返回
+        if target_date in self._macro_blackout_cache:
+            return self._macro_blackout_cache[target_date]
 
-            if self._economic_calendar is None:
-                # Fail-open: 无法检查时允许交易
-                return False, []
-
-            return self._economic_calendar.check_blackout_period(
-                target_date=target_date,
-                blackout_days=blackout_days,
-                blackout_events=blackout_events,
-            )
-
-        except ImportError:
-            logger.debug("EconomicCalendarProvider not available")
-            return False, []
-        except Exception as e:
-            logger.warning(f"Error checking macro blackout: {e}")
-            return False, []
+        # 缓存未命中（日期不在交易日列表中）— fall-open
+        return False, []
 
     def get_stock_beta(self, symbol: str, as_of_date: date | None = None) -> float | None:
         """获取股票 Beta 值
@@ -1391,6 +1476,11 @@ class DuckDBProvider(DataProvider):
         Returns:
             Beta 值或 None
         """
+        # Optimization: Memory cache lookup
+        cache_key = (symbol.upper(), as_of_date)
+        if hasattr(self, "_stock_beta_cache") and cache_key in self._stock_beta_cache:
+            return self._stock_beta_cache[cache_key]
+
         conn = self._get_conn()
 
         # 优先使用动态滚动 Beta (stock_beta_daily.parquet)
@@ -1419,7 +1509,10 @@ class DuckDBProvider(DataProvider):
                     ).fetchone()
 
                 if result:
-                    return float(result[0])
+                    beta_val = float(result[0])
+                    if hasattr(self, "_stock_beta_cache"):
+                        self._stock_beta_cache[cache_key] = beta_val
+                    return beta_val
             except Exception as e:
                 logger.warning(f"Failed to get rolling beta for {symbol}: {e}")
 
@@ -1432,11 +1525,16 @@ class DuckDBProvider(DataProvider):
                     [symbol.upper()],
                 ).fetchone()
                 if result:
-                    return float(result[0])
+                    beta_val = float(result[0])
+                    if hasattr(self, "_stock_beta_cache"):
+                        self._stock_beta_cache[cache_key] = beta_val
+                    return beta_val
             except Exception as e:
                 logger.warning(f"Failed to get static beta for {symbol}: {e}")
 
         logger.debug(f"Beta data not found for {symbol}")
+        if hasattr(self, "_stock_beta_cache"):
+            self._stock_beta_cache[cache_key] = None
         return None
 
     def get_stock_volatility(self, symbol: str) -> StockVolatility | None:
@@ -1446,6 +1544,8 @@ class DuckDBProvider(DataProvider):
         - HV: 20 日历史波动率 (从 stock_daily 计算)
         - IV: ATM 期权的平均隐含波动率 (从 option_daily 获取)
 
+        结果按 (symbol, as_of_date) 缓存，避免重复计算 IV Rank 等昂贵操作。
+
         Args:
             symbol: 股票代码
 
@@ -1454,10 +1554,16 @@ class DuckDBProvider(DataProvider):
         """
         symbol = symbol.upper()
 
-        # 1. 计算 20 日历史波动率
-        hv = self._calculate_historical_volatility(symbol, lookback_days=20)
+        # 检查缓存
+        cache_key = (symbol, self._as_of_date)
+        if cache_key in self._stock_volatility_cache:
+            return self._stock_volatility_cache[cache_key]
+
+        # 1. 计算 60 日历史波动率
+        hv = self._calculate_historical_volatility(symbol, lookback_days=60)
         if hv is None:
             logger.debug(f"Cannot calculate HV for {symbol}, insufficient data")
+            self._stock_volatility_cache[cache_key] = None
             return None
 
         # 2. 获取 ATM 期权的 IV
@@ -1469,7 +1575,7 @@ class DuckDBProvider(DataProvider):
         if iv is not None:
             iv_rank, iv_percentile = self._calculate_iv_rank(symbol, iv)
 
-        return StockVolatility(
+        result = StockVolatility(
             symbol=symbol,
             timestamp=datetime.combine(self._as_of_date, datetime.min.time()),
             iv=iv,
@@ -1479,6 +1585,8 @@ class DuckDBProvider(DataProvider):
             pcr=None,  # 需要成交量数据计算
             source="duckdb",
         )
+        self._stock_volatility_cache[cache_key] = result
+        return result
 
     def _calculate_historical_volatility(
         self,
@@ -1488,6 +1596,7 @@ class DuckDBProvider(DataProvider):
         """计算历史波动率 (年化)
 
         使用最近 N 天的收盘价计算日收益率标准差，再年化。
+        利用 kline 全序列缓存，避免重复查询 DuckDB。
 
         Args:
             symbol: 股票代码
@@ -1496,29 +1605,24 @@ class DuckDBProvider(DataProvider):
         Returns:
             年化历史波动率 (小数形式) 或 None
         """
-        stock_path = self._data_dir / "stock_daily.parquet"
-        if not stock_path.exists():
+        # 确保 kline 缓存已加载
+        if symbol not in self._kline_series_cache:
+            self._kline_series_cache[symbol] = self._load_full_kline_series(symbol)
+
+        series = self._kline_series_cache[symbol]
+        if not series:
             return None
 
         try:
-            conn = self._get_conn()
-            rows = conn.execute(
-                f"""
-                SELECT date, close
-                FROM read_parquet('{stock_path}')
-                WHERE symbol = ? AND date <= ?
-                ORDER BY date DESC
-                LIMIT ?
-                """,
-                [symbol, self._as_of_date, lookback_days + 1],
-            ).fetchall()
+            # 过滤 <= as_of_date 的数据 (series 已按日期升序)
+            eligible = [row for row in series if row[0] <= self._as_of_date]
 
-            if len(rows) < lookback_days + 1:
-                logger.debug(f"Not enough data for HV calculation: got {len(rows)}, need {lookback_days + 1}")
+            if len(eligible) < lookback_days + 1:
+                logger.debug(f"Not enough data for HV calculation: got {len(eligible)}, need {lookback_days + 1}")
                 return None
 
-            # 按日期升序排列
-            closes = [row[1] for row in reversed(rows)]
+            # 取最近 N+1 天的收盘价 (close 在 index 4)
+            closes = [row[4] for row in eligible[-(lookback_days + 1):]]
 
             # 计算日收益率
             returns = np.diff(np.log(closes))

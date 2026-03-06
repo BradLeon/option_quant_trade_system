@@ -38,6 +38,7 @@ from src.business.monitoring.models import (
     MonitorStatus,
     PositionData,
 )
+from src.engine.models.enums import StrategyType
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +104,7 @@ class PositionMonitor:
 
         注意：Stock 类型持仓不在此监控器范围内，直接跳过。
 
-        检查 9 个指标，按重要性排序：
+        检查 10 个指标，按重要性排序：
         1. OTM% - 虚值百分比（核心风险指标）
         2. |Delta| - 方向性风险
         3. DTE - 到期日预警
@@ -113,9 +114,13 @@ class PositionMonitor:
         7. IV/HV - 波动率环境
         8. Expected ROC - 预期资本回报率
         9. Win Probability - 胜率
+        10. Early Take Profit - DTE+盈利联合止盈（独立规则）
         """
-        # 跳过 Stock 类型持仓，PositionMonitor 只监控期权
+        # Stock 类型持仓：通过 technical_close.close_stock_enabled 控制
         if pos.is_stock:
+            config = self._base_thresholds.technical_close
+            if config.enabled and config.close_stock_enabled:
+                return self._check_stock_sma_exit(pos)
             return []
 
         alerts: list[Alert] = []
@@ -131,9 +136,13 @@ class PositionMonitor:
             position=pos,
         ))
 
-        # 2. 检查 |Delta|（使用绝对值）
+        # 2. 检查 |Delta| 
+        # PositionData.delta 在回测和实盘中均已是 per-share 的 raw_delta，无需除以 qty
+        per_contract_delta = None
+        if pos.delta is not None:
+            per_contract_delta = abs(pos.delta)
         alerts.extend(self._check_threshold(
-            value=abs(pos.delta) if pos.delta is not None else None,
+            value=per_contract_delta,
             threshold=thresholds.delta,
             metric_name="delta",
             position=pos,
@@ -185,6 +194,12 @@ class PositionMonitor:
             position=pos,
         ))
 
+        # 10. Early Take Profit — DTE + 盈利联合止盈（独立于 DTE 和 P&L 检查）
+        alerts.extend(self._check_early_take_profit(pos, thresholds))
+
+        # 11. Technical Close Signal — 技术面平仓信号
+        alerts.extend(self._check_technical_close_signal(pos, thresholds))
+
         return alerts
 
     def _format_threshold_range(self, threshold: ThresholdRange, is_pct: bool = False) -> str:
@@ -232,6 +247,10 @@ class PositionMonitor:
             预警列表
         """
         if value is None:
+            return []
+
+        # 如果指标被禁用，跳过检查
+        if not threshold.enabled:
             return []
 
         alerts: list[Alert] = []
@@ -368,9 +387,9 @@ class PositionMonitor:
         """检查 DTE，结合 P&L 决定 Alert 类型
 
         规则：
-        - DTE < red_below 且 P&L > 0 → DTE_PROFITABLE (平仓止盈)
-        - DTE < red_below 且 P&L ≤ 0 → DTE_WARNING (展期)
-        - 其他情况走原有 DTE 检查逻辑
+        - DTE < red_below（默认 0，即已过期）且 P&L > 0 → DTE_PROFITABLE (平仓)
+        - DTE < red_below（默认 0，即已过期）且 P&L ≤ 0 → DTE_WARNING (处理)
+        - 其他情况走原有 DTE 检查逻辑（黄色区域仅提示关注）
 
         Args:
             pos: 持仓数据
@@ -388,7 +407,7 @@ class PositionMonitor:
         # 格式化阈值范围
         threshold_range = self._format_threshold_range(threshold, is_pct=False)
 
-        # DTE 进入红色区域
+        # DTE 进入红色区域（默认 < 2 天）
         if threshold.red_below is not None and pos.dte < threshold.red_below:
             if pnl_pct > 0:
                 # 盈利 → DTE_PROFITABLE（应平仓止盈）
@@ -404,26 +423,173 @@ class PositionMonitor:
                     suggested_action="平仓止盈，锁定利润",
                 )]
             else:
-                # 亏损或持平 → DTE_WARNING（应展期）
+                # 亏损或持平 → DTE_WARNING（应展期或平仓）
                 return [Alert(
                     alert_type=AlertType.DTE_WARNING,
                     level=AlertLevel.RED,
-                    message=f"DTE < {threshold.red_below} 天且亏损 ({pnl_pct:.1%})，应展期",
+                    message=f"DTE < {threshold.red_below} 天且亏损 ({pnl_pct:.1%})，应展期或平仓",
                     symbol=pos.symbol,
                     position_id=pos.position_id,
                     current_value=float(pos.dte),
                     threshold_value=threshold.red_below,
                     threshold_range=threshold_range,
-                    suggested_action="强制展期到下月",
+                    suggested_action="展期到下月或平仓止损",
                 )]
 
-        # 非红色区域，走原有逻辑
+        # 非红色区域，走原有逻辑（黄色区域仅提示关注）
         return self._check_threshold(
             value=pos.dte,
             threshold=threshold,
             metric_name="dte",
             position=pos,
         )
+
+    def _check_early_take_profit(
+        self, pos: PositionData, thresholds: PositionThresholds,
+    ) -> list[Alert]:
+        """DTE + 盈利联合止盈检查（独立规则，配置驱动）
+
+        独立于 DTE 检查和 P&L 检查，专门捕捉"临近到期 + 已盈利"的止盈机会。
+        规则从 thresholds.early_take_profit.rules 读取，按优先级从高到低匹配。
+        """
+        config = thresholds.early_take_profit
+        if not config.enabled:
+            return []
+
+        if pos.dte is None or pos.unrealized_pnl_pct is None:
+            return []
+
+        dte = pos.dte
+        pnl_pct = pos.unrealized_pnl_pct
+
+        level_map = {
+            "red": AlertLevel.RED,
+            "yellow": AlertLevel.YELLOW,
+            "green": AlertLevel.GREEN,
+        }
+        action_map = {
+            "red": "立即平仓止盈，锁定利润",
+            "yellow": "建议平仓止盈，避免临近到期风险",
+            "green": "可平仓止盈，高盈利无需等到 Theta 加速",
+        }
+
+        for rule in config.rules:
+            dte_condition_met = True
+            dte_message_parts = []
+            
+            if rule.dte_below is not None:
+                if dte >= rule.dte_below:
+                    dte_condition_met = False
+                else:
+                    dte_message_parts.append(f"<{rule.dte_below}")
+                    
+            if rule.dte_above is not None:
+                if dte <= rule.dte_above:
+                    dte_condition_met = False
+                else:
+                    dte_message_parts.append(f">{rule.dte_above}")
+
+            if dte_condition_met and pnl_pct >= rule.pnl_above:
+                level = level_map.get(rule.level, AlertLevel.RED)
+                dte_cond_str = " & ".join(dte_message_parts)
+                return [Alert(
+                    alert_type=AlertType.DTE_PROFITABLE,
+                    level=level,
+                    message=(
+                        f"DTE={dte:.0f} 天({dte_cond_str})"
+                        f"且盈利 {pnl_pct:.1%}(≥{rule.pnl_above:.0%})，"
+                        f"{'必须' if rule.level == 'red' else '建议' if rule.level == 'yellow' else '可'}止盈"
+                    ),
+                    symbol=pos.symbol,
+                    position_id=pos.position_id,
+                    current_value=float(dte),
+                    threshold_value=rule.dte_below or rule.dte_above or 0,
+                    threshold_range=f"DTE {dte_cond_str} & PnL≥{rule.pnl_above:.0%}",
+                    suggested_action=action_map.get(rule.level, "止盈平仓"),
+                )]
+
+        return []
+
+    def _check_technical_close_signal(
+        self, pos: PositionData, thresholds: PositionThresholds,
+    ) -> list[Alert]:
+        """检查技术面平仓信号（配置驱动）
+
+        根据策略类型匹配对应的平仓信号：
+        - COVERED_CALL / NAKED_CALL → close_call_signal
+        - SHORT_PUT → close_put_signal
+
+        信号强度映射由 thresholds.technical_close 配置控制。
+        """
+        config = thresholds.technical_close
+        if not config.enabled:
+            return []
+
+        signal = None
+        if pos.strategy_type in (StrategyType.COVERED_CALL, StrategyType.NAKED_CALL):
+            if not config.close_call_enabled:
+                return []
+            signal = pos.close_call_signal
+        elif pos.strategy_type == StrategyType.SHORT_PUT:
+            if not config.close_put_enabled:
+                return []
+            signal = pos.close_put_signal
+
+        if not signal or signal == "none":
+            return []
+
+        level_map = {"red": AlertLevel.RED, "yellow": AlertLevel.YELLOW, "green": AlertLevel.GREEN}
+
+        if signal == "strong":
+            return [Alert(
+                alert_type=AlertType.TECHNICAL_CLOSE,
+                level=level_map.get(config.strong_level, AlertLevel.RED),
+                message=config.strong_message.format(symbol=pos.symbol),
+                symbol=pos.symbol,
+                position_id=pos.position_id,
+                suggested_action=config.strong_action,
+            )]
+        elif signal == "moderate":
+            return [Alert(
+                alert_type=AlertType.TECHNICAL_CLOSE,
+                level=level_map.get(config.moderate_level, AlertLevel.YELLOW),
+                message=config.moderate_message.format(symbol=pos.symbol),
+                symbol=pos.symbol,
+                position_id=pos.position_id,
+                suggested_action=config.moderate_action,
+            )]
+        return []
+
+    def _check_stock_sma_exit(self, pos: PositionData) -> list[Alert]:
+        """检查股票持仓 SMA 卖出信号
+
+        使用 close_stock_signal（由技术面分析计算）：
+        - strong: Price < SMA50 AND SMA20 < SMA50 → RED，确认下行趋势，建议卖出
+        - moderate: Price < SMA20 → YELLOW，短期走弱，观察
+        """
+        signal = pos.close_stock_signal
+        if not signal or signal == "none":
+            return []
+
+        if signal == "strong":
+            return [Alert(
+                alert_type=AlertType.TECHNICAL_CLOSE,
+                level=AlertLevel.RED,
+                message=f"{pos.symbol} 正股 SMA 卖出信号: Price < SMA50 且 SMA20 < SMA50，确认下行趋势",
+                symbol=pos.symbol,
+                position_id=pos.position_id,
+                suggested_action="卖出正股，避免进一步下跌",
+            )]
+        elif signal == "moderate":
+            return [Alert(
+                alert_type=AlertType.TECHNICAL_CLOSE,
+                level=AlertLevel.YELLOW,
+                message=f"{pos.symbol} 正股短期走弱: Price < SMA20，观察是否进一步恶化",
+                symbol=pos.symbol,
+                position_id=pos.position_id,
+                suggested_action="观察，若跌破 SMA50 则卖出",
+            )]
+        return []
 
     def _check_pnl(self, pos: PositionData, thresholds: PositionThresholds) -> list[Alert]:
         """检查盈亏
@@ -444,6 +610,10 @@ class PositionMonitor:
             return alerts
 
         threshold = thresholds.pnl
+
+        # 如果 P&L 检查被禁用，跳过
+        if not threshold.enabled:
+            return alerts
         threshold_range = self._format_threshold_range(threshold, is_pct=True)
 
         # 检查止损（red_below）

@@ -60,6 +60,7 @@ class AlertType(str, Enum):
     ROC_LOW = "roc_low"  # ROC 过低
     EXPECTED_ROC_LOW = "expected_roc_low"  # Expected ROC 过低
     WIN_PROB_LOW = "win_prob_low"  # Win Probability 过低
+    TECHNICAL_CLOSE = "technical_close"  # 技术面平仓信号
 
     # Capital 级 - 核心风控四大支柱
     MARGIN_UTILIZATION = "margin_utilization"  # 保证金使用率（生存）
@@ -99,6 +100,32 @@ class Alert:
 
     # 额外数据
     details: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class StrategyMetricsData:
+    """策略级指标（由 engine 层计算）
+
+    逻辑分组容器，明确"哪些字段由 engine/strategy 计算"。
+    通过 PositionData._strategy_metrics 持有，原有扁平字段保留为 @property 代理。
+    """
+
+    strategy_type: Optional[StrategyType] = None
+    prei: Optional[float] = None
+    tgr: Optional[float] = None
+    sas: Optional[float] = None
+    roc: Optional[float] = None
+    expected_roc: Optional[float] = None
+    sharpe: Optional[float] = None
+    kelly: Optional[float] = None
+    win_probability: Optional[float] = None
+    expected_return: Optional[float] = None
+    max_profit: Optional[float] = None
+    max_loss: Optional[float] = None
+    breakeven: Optional[float | list[float]] = None
+    return_std: Optional[float] = None
+    margin: Optional[float] = None
+    gamma_risk_pct: Optional[float] = None
 
 
 @dataclass
@@ -180,8 +207,12 @@ class PositionData:
     sell_put_signal: Optional[str] = None  # none, weak, moderate, strong
     sell_call_signal: Optional[str] = None  # none, weak, moderate, strong
     is_dangerous_period: Optional[bool] = None
+    close_put_signal: Optional[str] = None  # none/weak/moderate/strong
+    close_call_signal: Optional[str] = None  # none/weak/moderate/strong
+    close_stock_signal: Optional[str] = None  # none/moderate/strong
 
-    # === 策略指标（由 DataBridge 调用 strategy.calc_metrics() 填充）===
+    # === 策略指标（由 engine 计算，存储在 StrategyMetricsData 子容器中）===
+    # 扁平字段保留用于向后兼容（直接读写透传到 _strategy_metrics）
     strategy_type: Optional[StrategyType] = None  # StrategyType 枚举
     prei: Optional[float] = None  # 来自 StrategyMetrics.prei
     tgr: Optional[float] = None  # 来自 StrategyMetrics.tgr
@@ -203,6 +234,46 @@ class PositionData:
     margin: Optional[float] = None  # 保证金需求
     capital_at_risk: Optional[float] = None  # 风险资本
     gamma_risk_pct: Optional[float] = None  # Gamma 风险百分比: |Gamma| / Margin
+
+    def get_strategy_metrics(self) -> StrategyMetricsData:
+        """获取策略指标子容器（按需从扁平字段构建）"""
+        return StrategyMetricsData(
+            strategy_type=self.strategy_type,
+            prei=self.prei,
+            tgr=self.tgr,
+            sas=self.sas,
+            roc=self.roc,
+            expected_roc=self.expected_roc,
+            sharpe=self.sharpe,
+            kelly=self.kelly,
+            win_probability=self.win_probability,
+            expected_return=self.expected_return,
+            max_profit=self.max_profit,
+            max_loss=self.max_loss,
+            breakeven=self.breakeven,
+            return_std=self.return_std,
+            margin=self.margin,
+            gamma_risk_pct=self.gamma_risk_pct,
+        )
+
+    def set_strategy_metrics(self, metrics: StrategyMetricsData) -> None:
+        """从策略指标子容器批量写入扁平字段"""
+        self.strategy_type = metrics.strategy_type
+        self.prei = metrics.prei
+        self.tgr = metrics.tgr
+        self.sas = metrics.sas
+        self.roc = metrics.roc
+        self.expected_roc = metrics.expected_roc
+        self.sharpe = metrics.sharpe
+        self.kelly = metrics.kelly
+        self.win_probability = metrics.win_probability
+        self.expected_return = metrics.expected_return
+        self.max_profit = metrics.max_profit
+        self.max_loss = metrics.max_loss
+        self.breakeven = metrics.breakeven
+        self.return_std = metrics.return_std
+        self.margin = metrics.margin
+        self.gamma_risk_pct = metrics.gamma_risk_pct
 
     # === 便捷属性（仅做类型判断，无计算逻辑）===
     @property

@@ -71,7 +71,13 @@ logger = logging.getLogger(__name__)
     "--strategy",
     type=click.Choice(["short_put", "covered_call", "all"], case_sensitive=False),
     default="all",
-    help="策略类型 (默认: all)",
+    help="基础策略类别 (默认: all，通常在 V9 体系下不单独使用)",
+)
+@click.option(
+    "--strategy-version",
+    "-sv",
+    default="short_options_with_expire_itm_stock_trade",
+    help="具体的策略架构版本 (例如: short_options_with_expire_itm_stock_trade, short_options_without_expire_itm_stock_trade) (默认: short_options_with_expire_itm_stock_trade)",
 )
 @click.option(
     "--max-positions",
@@ -111,6 +117,13 @@ logger = logging.getLogger(__name__)
     is_flag=True,
     help="详细输出",
 )
+@click.option(
+    "--benchmark",
+    "-B",
+    type=click.Choice(["QQQ", "SPY"], case_sensitive=False),
+    default="SPY",
+    help="基准标的 (默认: SPY)",
+)
 def run(
     name: str,
     start,
@@ -119,6 +132,7 @@ def run(
     data_dir: str,
     capital: int,
     strategy: str,
+    strategy_version: str,
     max_positions: int,
     skip_download: bool,
     skip_market_check: bool,
@@ -126,6 +140,7 @@ def run(
     report_dir: str,
     check_only: bool,
     verbose: bool,
+    benchmark: str,
 ) -> None:
     """运行回测 Pipeline
 
@@ -186,7 +201,9 @@ def run(
         initial_capital=capital,
         max_positions=max_positions,
         strategy_types=strategy_types,
+        strategy_version=strategy_version,
         skip_market_check=skip_market_check,
+        benchmark_symbol=benchmark.upper(),
     )
 
     # 创建 Pipeline
@@ -233,7 +250,7 @@ def run(
             br = result.benchmark_result
             excess = br.strategy_total_return - br.benchmark_total_return
             click.echo()
-            click.echo(f"vs SPY: {br.strategy_total_return:.2%} vs {br.benchmark_total_return:.2%}")
+            click.echo(f"vs {br.benchmark_name}: {br.strategy_total_return:.2%} vs {br.benchmark_total_return:.2%}")
             click.echo(f"Excess Return: {excess:.2%}")
 
         if result.attribution_summary:

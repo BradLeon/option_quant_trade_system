@@ -18,6 +18,7 @@ Contract Filter - 合约过滤器
 
 import logging
 from datetime import date
+from typing import TYPE_CHECKING
 
 from src.business.config.screening_config import (
     ContractFilterConfig,
@@ -25,6 +26,9 @@ from src.business.config.screening_config import (
     MetricsConfig,
     ScreeningConfig,
 )
+
+if TYPE_CHECKING:
+    pass
 from src.business.screening.models import (
     ContractOpportunity,
     UnderlyingScore,
@@ -73,15 +77,18 @@ class ContractFilter:
         self,
         config: ScreeningConfig,
         provider: DataProvider | None = None,
+        kelly_fraction: float = 0.25,
     ) -> None:
         """初始化合约过滤器
 
         Args:
             config: 筛选配置
             provider: 数据提供者 (DataProvider 或其子类)，默认创建 UnifiedDataProvider
+            kelly_fraction: Kelly 仓位系数 (默认 0.25 = 1/4 Kelly)
         """
         self.config = config
         self.provider: DataProvider = provider or UnifiedDataProvider()
+        self.kelly_fraction = kelly_fraction
 
     def _get_reference_date(self) -> date:
         """获取参考日期（回测兼容）
@@ -175,6 +182,7 @@ class ContractFilter:
         underlying_scores: list[UnderlyingScore],
         option_types: list[str] | None = None,
         return_rejected: bool = False,
+        filter_config: ContractFilterConfig | None = None,
     ) -> list[ContractOpportunity]:
         """评估合约机会
 
@@ -187,12 +195,13 @@ class ContractFilter:
             return_rejected: 是否返回被拒绝的合约（默认 False，只返回通过的）
                 - False: 只返回 passed=True 的合约（兼容现有代码）
                 - True: 返回所有评估过的合约，便于调试和分析
+            filter_config: 可选的合约过滤配置（覆盖默认配置）
 
         Returns:
             ContractOpportunity 列表
         """
         all_opportunities: list[ContractOpportunity] = []
-        filter_config = self.config.contract_filter
+        effective_config = filter_config or self.config.contract_filter
 
         for score in underlying_scores:
             if not score.passed:
@@ -201,7 +210,7 @@ class ContractFilter:
             try:
                 opportunities = self._evaluate_underlying(
                     score,
-                    filter_config,
+                    effective_config,
                     option_types=option_types,
                 )
                 all_opportunities.extend(opportunities)
@@ -647,10 +656,10 @@ class ContractFilter:
             if open_interest is not None:
                 pass_reasons.append(f"OI={open_interest}")
 
-            # 推荐仓位: 1/4 Kelly（保守策略）
+            # 推荐仓位: kelly_fraction * Kelly
             kelly = metrics.get("kelly_fraction")
             if kelly is not None and kelly > 0:
-                recommended_position = kelly / 4
+                recommended_position = kelly * self.kelly_fraction
             else:
                 recommended_position = 0.0
 
@@ -908,59 +917,67 @@ class ContractFilter:
         issues: list[str] = []
 
         # === P0: Expected ROC 检查 ===
-        if expected_roc is not None and expected_roc <= config.min_expected_roc:
-            issues.append(
-                f"[P0] Expected ROC={expected_roc:.2%} 不足（需>{config.min_expected_roc:.0%}）"
-            )
+        if config.expected_roc_enabled:
+            if expected_roc is not None and expected_roc <= config.min_expected_roc:
+                issues.append(
+                    f"[P0] Expected ROC={expected_roc:.2%} 不足（需>{config.min_expected_roc:.0%}）"
+                )
 
         # === P1: TGR 检查 ===
-        tgr = metrics.get("tgr")
-        if tgr is not None and tgr < config.min_tgr:
-            issues.append(
-                f"[P1] TGR={tgr:.3f} 不足（<{config.min_tgr}）"
-            )
+        if config.tgr_enabled:
+            tgr = metrics.get("tgr")
+            if tgr is not None and tgr < config.min_tgr:
+                issues.append(
+                    f"[P1] TGR={tgr:.3f} 不足（<{config.min_tgr}）"
+                )
 
         # SAS/PREI 检查已移除 - 这些指标在筛选中意义不大，保留计算用于分析
 
         # === P2: Annual ROC 检查 ===
-        if annual_roc is not None and annual_roc < config.min_annual_roc:
-            issues.append(
-                f"[P2] Annual ROC={annual_roc:.1%} 不足（<{config.min_annual_roc:.0%}）"
-            )
+        if config.annual_roc_enabled:
+            if annual_roc is not None and annual_roc < config.min_annual_roc:
+                issues.append(
+                    f"[P2] Annual ROC={annual_roc:.1%} 不足（<{config.min_annual_roc:.0%}）"
+                )
 
         # === P3: Sharpe Ratio (年化) 检查（参考条件，卖方收益非正态分布）===
-        sharpe_annual = metrics.get("sharpe_ratio_annual")
-        if sharpe_annual is not None and sharpe_annual < config.min_sharpe_ratio:
-            issues.append(
-                f"[P3] Sharpe(年化)={sharpe_annual:.2f} 偏低（<{config.min_sharpe_ratio}）"
-            )
+        if config.sharpe_enabled:
+            sharpe_annual = metrics.get("sharpe_ratio_annual")
+            if sharpe_annual is not None and sharpe_annual < config.min_sharpe_ratio:
+                issues.append(
+                    f"[P3] Sharpe(年化)={sharpe_annual:.2f} 偏低（<{config.min_sharpe_ratio}）"
+                )
 
         # === P3: 费率检查（参考条件，已被 Annual ROC 包含）===
-        premium_rate = metrics.get("premium_rate")
-        if premium_rate is not None and premium_rate < config.min_premium_rate:
-            issues.append(
-                f"[P3] 费率={premium_rate:.2%} 偏低（<{config.min_premium_rate:.0%}）"
-            )
+        if config.premium_rate_enabled:
+            premium_rate = metrics.get("premium_rate")
+            if premium_rate is not None and premium_rate < config.min_premium_rate:
+                issues.append(
+                    f"[P3] 费率={premium_rate:.2%} 偏低（<{config.min_premium_rate:.0%}）"
+                )
 
         # === P3: Win Probability 检查 ===
-        win_prob = metrics.get("win_probability")
-        if win_prob is not None and win_prob < config.min_win_probability:
-            issues.append(
-                f"[P3] Win Probability={win_prob:.1%} 偏低（<{config.min_win_probability:.0%}）"
-            )
+        if config.win_probability_enabled:
+            win_prob = metrics.get("win_probability")
+            if win_prob is not None and win_prob < config.min_win_probability:
+                issues.append(
+                    f"[P3] Win Probability={win_prob:.1%} 偏低（<{config.min_win_probability:.0%}）"
+                )
 
         # === P3: Theta/Premium 检查 ===
-        if theta_prem_ratio is not None and theta_prem_ratio < config.min_theta_premium_ratio:
-            issues.append(
-                f"[P3] Theta/Premium={theta_prem_ratio:.2%}/天 偏低（<{config.min_theta_premium_ratio:.0%}）"
-            )
+        if config.theta_premium_enabled:
+            if theta_prem_ratio is not None and theta_prem_ratio < config.min_theta_premium_ratio:
+                issues.append(
+                    f"[P3] Theta/Premium={theta_prem_ratio:.2%}/天 偏低（<{config.min_theta_premium_ratio:.0%}）"
+                )
 
         # === P3: Kelly 检查 ===
-        kelly = metrics.get("kelly_fraction")
-        if kelly is not None and kelly > config.max_kelly_fraction:
-            issues.append(
-                f"[P3] Kelly={kelly:.1%} 过高（>{config.max_kelly_fraction:.0%}）"
-            )
+        if config.kelly_enabled:
+            kelly = metrics.get("kelly_fraction")
+            if kelly is not None and kelly > config.max_kelly_fraction:
+                issues.append(
+                    f"[P3] Kelly={kelly:.1%} 过高（>{config.max_kelly_fraction:.0%}）"
+                )
 
         return issues
 
@@ -1041,23 +1058,24 @@ class ContractFilter:
         )
 
         # 输出日志
-        logger.info(f"[{status}] {contract_id}")
-        logger.info(f"       {delta_str} | {iv_str} | {oi_str} | {vol_str}")
-        logger.info(f"       {tgr_str} | {sharpe_str} | {roc_str} | {rate_str}")
+        logger.debug(f"[{status}] {contract_id}")
+        logger.debug(f"       {delta_str} | {iv_str} | {oi_str} | {vol_str}")
+        logger.debug(f"       {tgr_str} | {sharpe_str} | {roc_str} | {rate_str}")
 
         if not opp.passed and opp.disqualify_reasons:
-            logger.info(f"       Rejected: {'; '.join(opp.disqualify_reasons)}")
+            logger.debug(f"       Rejected: {'; '.join(opp.disqualify_reasons)}")
         elif opp.passed:
             if opp.pass_reasons:
-                logger.info(f"       Pass: {', '.join(opp.pass_reasons)}")
+                logger.debug(f"       Pass: {', '.join(opp.pass_reasons)}")
             if opp.recommended_position is not None:
-                logger.info(f"       推荐仓位: {opp.recommended_position:.1%} (1/4 Kelly)")
+                kelly_label = f"{self.kelly_fraction:.0%}" if self.kelly_fraction in (0.25, 0.5, 0.75, 1.0) else f"{self.kelly_fraction:.2f}"
+                logger.debug(f"       推荐仓位: {opp.recommended_position:.1%} ({kelly_label} Kelly)")
             if opp.warnings:
                 # 只显示前2个警告
                 warnings_str = "; ".join(opp.warnings[:2])
                 if len(opp.warnings) > 2:
                     warnings_str += f"... (+{len(opp.warnings) - 2} more)"
-                logger.info(f"       Warnings: {warnings_str}")
+                logger.debug(f"       Warnings: {warnings_str}")
 
     def _sort_opportunities(
         self,

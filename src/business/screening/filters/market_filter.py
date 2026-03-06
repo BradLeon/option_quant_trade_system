@@ -21,6 +21,7 @@ from datetime import date, timedelta
 from src.business.config.screening_config import (
     HKMarketConfig,
     MacroEventConfig,
+    MarketFilterConfig,
     ScreeningConfig,
     USMarketConfig,
 )
@@ -95,24 +96,26 @@ class MarketFilter:
             return self.provider.as_of_date
         return date.today()
 
-    def evaluate(self, market_type: MarketType) -> MarketStatus:
+    def evaluate(self, market_type: MarketType, filter_config: "MarketFilterConfig | None" = None) -> MarketStatus:
         """评估市场环境
 
         Args:
             market_type: 市场类型 (US/HK)
+            filter_config: 可选的市场过滤配置（覆盖默认配置）
 
         Returns:
             MarketStatus: 市场状态评估结果
         """
         if market_type == MarketType.US:
-            return self._evaluate_us_market()
+            return self._evaluate_us_market(filter_config)
         else:
-            return self._evaluate_hk_market()
+            return self._evaluate_hk_market(filter_config)
 
-    def _evaluate_us_market(self) -> MarketStatus:
+    def _evaluate_us_market(self, filter_config: "MarketFilterConfig | None" = None) -> MarketStatus:
         """评估美股市场环境"""
-        us_config = self.config.market_filter.us_market
-        macro_config = self.config.market_filter.macro_events
+        effective_config = filter_config or self.config.market_filter
+        us_config = effective_config.us_market
+        macro_config = effective_config.macro_events
         unfavorable_reasons: list[str] = []
 
         # 1. 检查 VIX
@@ -175,6 +178,13 @@ class MarketFilter:
                 is_favorable = False
                 unfavorable_reasons.append("大盘趋势非多头")
 
+        # 检查多头趋势对 neutral_or_bearish 策略的限制
+        if overall_trend in [TrendStatus.STRONG_BULLISH, TrendStatus.BULLISH]:
+            trend_required = us_config.trend_required
+            if trend_required == "neutral_or_bearish":
+                is_favorable = False
+                unfavorable_reasons.append(f"大盘趋势为多头 ({overall_trend.value})，不适合 Covered Call")
+
         # 期限结构检查
         if term_structure and term_structure.filter_status == FilterStatus.UNFAVORABLE:
             is_favorable = False
@@ -197,10 +207,11 @@ class MarketFilter:
             unfavorable_reasons=unfavorable_reasons,
         )
 
-    def _evaluate_hk_market(self) -> MarketStatus:
+    def _evaluate_hk_market(self, filter_config: "MarketFilterConfig | None" = None) -> MarketStatus:
         """评估港股市场环境"""
-        hk_config = self.config.market_filter.hk_market
-        macro_config = self.config.market_filter.macro_events
+        effective_config = filter_config or self.config.market_filter
+        hk_config = effective_config.hk_market
+        macro_config = effective_config.macro_events
         unfavorable_reasons: list[str] = []
 
         # 1. 检查波动率（使用 VHSI - 恒生波动率指数）
@@ -491,9 +502,15 @@ class MarketFilter:
                     else:
                         trend = TrendStatus.BEARISH
                         score = -1.0
-                else:
+                else:  # NEUTRAL
                     trend = TrendStatus.NEUTRAL
-                    score = 0.0
+                    # 用 SMA200 位置区分方向倾向
+                    if sma200 and current_price > sma200:
+                        score = 0.3  # 偏多
+                    elif sma200 and current_price < sma200:
+                        score = -0.3  # 偏空
+                    else:
+                        score = 0.0
 
                 index_statuses.append(
                     IndexStatus(

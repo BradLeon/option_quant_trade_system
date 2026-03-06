@@ -43,6 +43,9 @@ def calc_annualized_return(
     if n_periods == 0:
         return None
 
+    if cumulative <= 0.0:
+        return -1.0
+
     # Geometric mean annualized return
     annualized = cumulative ** (periods_per_year / n_periods) - 1
 

@@ -23,13 +23,16 @@ from src.business.config.screening_config import (
     FundamentalConfig,
     ScreeningConfig,
     TechnicalConfig,
+    UnderlyingFilterConfig,
 )
 from src.business.screening.models import (
     FundamentalScore,
     MarketType,
     TechnicalScore,
+    TrendStatus,
     UnderlyingScore,
 )
+from src.engine.models.enums import StrategyType
 from src.data.models.stock import KlineType
 from src.data.models.technical import TechnicalData
 from src.data.providers.base import DataProvider
@@ -96,12 +99,18 @@ class UnderlyingFilter:
         self,
         symbols: list[str],
         market_type: MarketType,
+        trend_status: TrendStatus | None = None,
+        strategy_type: StrategyType | None = None,
+        filter_config: "UnderlyingFilterConfig | None" = None,
     ) -> list[UnderlyingScore]:
         """批量评估标的
 
         Args:
             symbols: 标的列表
             market_type: 市场类型
+            trend_status: 市场趋势状态（用于 IV Rank 趋势修正）
+            strategy_type: 策略类型（用于 IV Rank 趋势修正）
+            filter_config: 可选的标的过滤配置（覆盖默认配置）
 
         Returns:
             UnderlyingScore 列表
@@ -111,7 +120,7 @@ class UnderlyingFilter:
         for idx, symbol in enumerate(symbols, 1):
             try:
                 logger.info(f"正在评估标的 {idx}/{len(symbols)}: {symbol}")
-                score = self._evaluate_single(symbol, market_type)
+                score = self._evaluate_single(symbol, market_type, trend_status, strategy_type, filter_config)
                 results.append(score)
 
                 # 输出详细评估结果
@@ -190,22 +199,31 @@ class UnderlyingFilter:
         self,
         symbol: str,
         market_type: MarketType,
+        trend_status: TrendStatus | None = None,
+        strategy_type: StrategyType | None = None,
+        filter_config: "UnderlyingFilterConfig | None" = None,
     ) -> UnderlyingScore:
         """评估单个标的
 
         Args:
             symbol: 标的代码
             market_type: 市场类型
+            trend_status: 市场趋势状态（用于 IV Rank 趋势修正）
+            strategy_type: 策略类型（用于 IV Rank 趋势修正）
+            filter_config: 可选的标的过滤配置（覆盖默认配置）
 
         Returns:
             UnderlyingScore: 评估结果
         """
-        return self._evaluate_single(symbol, market_type)
+        return self._evaluate_single(symbol, market_type, trend_status, strategy_type, filter_config)
 
     def _evaluate_single(
         self,
         symbol: str,
         market_type: MarketType,
+        trend_status: TrendStatus | None = None,
+        strategy_type: StrategyType | None = None,
+        filter_config: "UnderlyingFilterConfig | None" = None,
     ) -> UnderlyingScore:
         """评估单个标的（内部实现）
 
@@ -227,7 +245,8 @@ class UnderlyingFilter:
         - 分析师评级偏低
         - 除息日临近
         """
-        filter_config = self.config.underlying_filter
+        # 使用传入的配置或默认配置
+        effective_config = filter_config or self.config.underlying_filter
         disqualify_reasons: list[str] = []  # P0/P1 阻塞条件
         warnings: list[str] = []  # P2/P3 警告条件
 
@@ -251,24 +270,27 @@ class UnderlyingFilter:
             current_iv = vol_data.iv
 
             # P1: IV Rank 检查（阻塞，卖方策略必须卖"贵"的东西）
-            # 使用动态阈值（与 VIX 挂钩）
-            iv_rank_threshold = self._get_dynamic_iv_rank_threshold(market_type)
-            if iv_rank is not None and iv_rank < iv_rank_threshold:
-                disqualify_reasons.append(
-                    f"[P1] IV Rank={iv_rank:.1f}% 不足（<{iv_rank_threshold:.0f}%），"
-                    f"期权不够'贵'"
+            if effective_config.iv_rank_enabled:
+                # 使用动态阈值（与 VIX 挂钩）
+                iv_rank_threshold = self._get_dynamic_iv_rank_threshold(
+                    market_type, trend_status, strategy_type
                 )
+                if iv_rank is not None and iv_rank < iv_rank_threshold:
+                    disqualify_reasons.append(
+                        f"[P1] IV Rank={iv_rank:.1f}% 不足（<{iv_rank_threshold:.0f}%），"
+                        f"期权不够'贵'"
+                    )
 
             # P1: IV/HV 比率检查（阻塞）
-            if iv_hv_ratio is not None:
-                if iv_hv_ratio < filter_config.min_iv_hv_ratio:
+            if effective_config.iv_hv_enabled and iv_hv_ratio is not None:
+                if iv_hv_ratio < effective_config.min_iv_hv_ratio:
                     disqualify_reasons.append(
-                        f"[P1] IV/HV={iv_hv_ratio:.2f} 偏低（<{filter_config.min_iv_hv_ratio}），"
+                        f"[P1] IV/HV={iv_hv_ratio:.2f} 偏低（<{effective_config.min_iv_hv_ratio}），"
                         f"期权相对便宜"
                     )
-                elif iv_hv_ratio > filter_config.max_iv_hv_ratio:
+                elif iv_hv_ratio > effective_config.max_iv_hv_ratio:
                     disqualify_reasons.append(
-                        f"[P1] IV/HV={iv_hv_ratio:.2f} 过高（>{filter_config.max_iv_hv_ratio}），"
+                        f"[P1] IV/HV={iv_hv_ratio:.2f} 过高（>{effective_config.max_iv_hv_ratio}），"
                         f"可能有特殊事件"
                     )
         else:
@@ -276,25 +298,30 @@ class UnderlyingFilter:
             disqualify_reasons.append("[P1] 无法获取波动率数据")
 
         # 2. 获取技术面评分（P2/P3 只警告）
-        logger.debug(f"评估 {symbol} 技术面...")
-        technical = self._evaluate_technical(symbol, filter_config.technical)
-        tech_warnings = self._check_technical(technical, filter_config.technical)
-        warnings.extend(tech_warnings)
+        technical = None
+        if effective_config.technical.enabled:
+            logger.debug(f"评估 {symbol} 技术面...")
+            technical = self._evaluate_technical(symbol, effective_config.technical)
+            tech_warnings, tech_blocks = self._check_technical(
+                technical, effective_config.technical, strategy_type
+            )
+            warnings.extend(tech_warnings)
+            disqualify_reasons.extend(tech_blocks)
 
         # 3. 获取基本面数据（只获取一次）
         fundamental_data = None
-        if filter_config.fundamental.enabled or filter_config.event_calendar.enabled:
+        if effective_config.fundamental.enabled or effective_config.event_calendar.enabled:
             logger.debug(f"获取 {symbol} 基本面数据...")
             fundamental_data = self.provider.get_fundamental(symbol)
 
         # 4. 评估基本面（P3 只警告）
         fundamental = None
-        if filter_config.fundamental.enabled:
+        if effective_config.fundamental.enabled:
             logger.debug(f"评估 {symbol} 基本面...")
             fundamental = self._evaluate_fundamental_with_data(
-                symbol, filter_config.fundamental, fundamental_data
+                symbol, effective_config.fundamental, fundamental_data
             )
-            fund_warnings = self._check_fundamental(fundamental, filter_config.fundamental)
+            fund_warnings = self._check_fundamental(fundamental, effective_config.fundamental)
             warnings.extend(fund_warnings)
 
         # 5. 检查事件日历（财报日、除息日）
@@ -303,10 +330,10 @@ class UnderlyingFilter:
         days_to_earnings = None
         days_to_ex_dividend = None
 
-        if filter_config.event_calendar.enabled:
+        if effective_config.event_calendar.enabled:
             logger.debug(f"检查 {symbol} 事件日历...")
             event_result = self._check_event_calendar_with_data(
-                symbol, filter_config.event_calendar, fundamental_data
+                symbol, effective_config.event_calendar, fundamental_data
             )
             if event_result:
                 earnings_date = event_result.get("earnings_date")
@@ -378,44 +405,16 @@ class UnderlyingFilter:
             logger.warning(f"获取 {symbol} VIX 失败: {e}")
             return None
 
-    def _get_dynamic_iv_rank_threshold(self, market_type: MarketType) -> float:
-        """计算动态 IV Rank 阈值（与波动率指数挂钩）
-
-        规则：
-        - VIX < 15: 返回 20%（低波环境，降低门槛以捕捉机会）
-        - VIX 15-20: 返回 25%
-        - VIX 20-25: 返回 30%（默认）
-        - VIX > 25: 返回 35%（高波环境，提高门槛以保证质量）
-
-        Args:
-            market_type: 市场类型
-
-        Returns:
-            动态 IV Rank 阈值（0-100 scale）
-        """
-        # 获取当前波动率指数
-        if market_type == MarketType.US:
-            vix = self._get_current_vix("^VIX")
-        else:
-            vix = self._get_current_vix("^HSIL")  # 恒生波幅指数
-
-        if vix is None:
-            # 无法获取 VIX，使用配置的默认值
-            default_threshold = self.config.underlying_filter.min_iv_rank
-            logger.debug(f"无法获取 VIX，使用默认阈值 {default_threshold}%")
-            return default_threshold
-
-        # 动态阈值计算
-        if vix < 15:
-            threshold = 20.0
-        elif vix < 20:
-            threshold = 25.0
-        elif vix < 25:
-            threshold = 30.0
-        else:
-            threshold = 35.0
-
-        logger.debug(f"VIX={vix:.1f} → 动态 IV Rank 阈值={threshold}%")
+    def _get_dynamic_iv_rank_threshold(
+        self,
+        market_type: MarketType,  # noqa: ARG002
+        trend_status: TrendStatus | None = None,
+        strategy_type: StrategyType | None = None,  # noqa: ARG002
+    ) -> float:
+        """返回当前趋势下的 IV Rank 阈值，委托给 config 的 override 优先级逻辑。"""
+        trend_key = trend_status.value if trend_status else None
+        threshold = self.config.underlying_filter.get_min_iv_rank(trend_key)
+        logger.debug(f"trend={trend_key} → IV Rank 阈值={threshold}%")
         return threshold
 
     def _get_volatility_data(self, symbol: str) -> object | None:
@@ -486,10 +485,14 @@ class UnderlyingFilter:
                 rsi_zone=rsi_zone,
                 bb_percent_b=score.bb_percent_b,
                 adx=score.adx,
-                plus_di=score.plus_di,  # 新增: +DI 方向指数
-                minus_di=score.minus_di,  # 新增: -DI 方向指数
+                plus_di=score.plus_di,
+                minus_di=score.minus_di,
                 sma_alignment=score.ma_alignment,
                 support_distance=support_distance,
+                sma20_value=score.sma20,
+                sma50_value=score.sma50,
+                sma200_value=score.sma200,
+                current_price_value=score.current_price,
             )
 
         except Exception as e:
@@ -500,15 +503,19 @@ class UnderlyingFilter:
         self,
         technical: TechnicalScore | None,
         config: TechnicalConfig,
-    ) -> list[str]:
+        strategy_type: StrategyType | None = None,
+    ) -> tuple[list[str], list[str]]:
         """检查技术面是否符合条件（业务层判断）
 
-        注意：技术面检查都是 P2/P3 级别，只返回警告不阻塞。
+        返回 (warnings, blocks):
+        - warnings: P2/P3 级别，只警告不阻塞
+        - blocks: P1 级别，阻塞入场（强方向趋势对特定策略）
         """
         warnings: list[str] = []
+        blocks: list[str] = []
 
         if technical is None:
-            return warnings  # 技术面数据缺失不作为警告条件
+            return warnings, blocks  # 技术面数据缺失不作为警告条件
 
         # P2: RSI 检查（策略区分）
         # Short Put: RSI 25-70, Covered Call: RSI 30-85
@@ -536,27 +543,39 @@ class UnderlyingFilter:
                     f"[P2] RSI={rsi:.1f} 超买区，Short Put 需谨慎"
                 )
 
-        # P2: ADX 检查（趋势过强不利于期权卖方）
-        if technical.adx is not None:
-            if technical.adx > config.max_adx:
-                warnings.append(f"[P2] ADX={technical.adx:.1f} 过高（>{config.max_adx}），趋势过强")
-            elif technical.adx >= 25:
-                # ADX >= 25 表示趋势市，添加方向信息
-                plus_di = technical.plus_di
-                minus_di = technical.minus_di
-                if plus_di is not None and minus_di is not None:
-                    if minus_di > plus_di:
-                        # 强下跌趋势: 禁止卖 Put，但允许卖 Call
-                        warnings.append(
-                            f"[P2] 强下跌趋势 ADX={technical.adx:.1f} "
-                            f"(+DI={plus_di:.1f} < -DI={minus_di:.1f})，卖 Put 风险高"
-                        )
-                    elif plus_di > minus_di:
-                        # 强上涨趋势: 禁止卖 Call，但允许卖 Put
-                        warnings.append(
-                            f"[P2] 强上涨趋势 ADX={technical.adx:.1f} "
-                            f"(+DI={plus_di:.1f} > -DI={minus_di:.1f})，卖 Call 风险高"
-                        )
+        # P2: ADX 过高警告（保留）
+        if technical.adx is not None and technical.adx > config.max_adx:
+            warnings.append(f"[P2] ADX={technical.adx:.1f} 过高（>{config.max_adx}），趋势过强")
+
+        # P1: SMA 均线趋势阻塞（替换原 ADX 方向阻塞）
+        price = technical.current_price_value
+        sma20 = technical.sma20_value
+        sma50 = technical.sma50_value
+
+        if price is not None and sma20 is not None and sma50 is not None:
+            # 下跌趋势: Price < SMA50 AND SMA20 < SMA50 → 阻塞 Short Put
+            if price < sma50 and sma20 < sma50:
+                if strategy_type == StrategyType.SHORT_PUT:
+                    blocks.append(
+                        f"[P1] 下跌趋势: Price={price:.1f} < SMA50={sma50:.1f}, "
+                        f"SMA20={sma20:.1f} < SMA50，禁止卖 Put"
+                    )
+                else:
+                    warnings.append(
+                        f"[P2] 下跌趋势: Price < SMA50, SMA20 < SMA50，卖 Put 风险高"
+                    )
+
+            # 上涨趋势: Price > SMA50 AND SMA20 > SMA50 → 阻塞 Covered Call
+            if price > sma50 and sma20 > sma50:
+                if strategy_type == StrategyType.COVERED_CALL:
+                    blocks.append(
+                        f"[P1] 上涨趋势: Price={price:.1f} > SMA50={sma50:.1f}, "
+                        f"SMA20={sma20:.1f} > SMA50，禁止卖 Call"
+                    )
+                else:
+                    warnings.append(
+                        f"[P2] 上涨趋势: Price > SMA50, SMA20 > SMA50，卖 Call 风险高"
+                    )
 
         # P3: 均线排列检查
         alignment_order = [
@@ -579,7 +598,7 @@ class UnderlyingFilter:
                         f"需至少 {min_alignment}"
                     )
 
-        return warnings
+        return warnings, blocks
 
     def _evaluate_fundamental_with_data(
         self,

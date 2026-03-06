@@ -24,6 +24,7 @@ Usage:
     print(f"报告: {result.report_path}")
 """
 
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -111,6 +112,7 @@ class PipelineResult:
     metrics: "BacktestMetrics"
     benchmark_result: "BenchmarkResult | None" = None
     report_path: Path | None = None
+    json_report_path: Path | None = None
     data_status: DataStatus = field(default_factory=DataStatus)
     attribution_summary: dict | None = None
 
@@ -131,7 +133,7 @@ class BacktestPipeline:
     BETA_LOOKBACK_DAYS = 280
 
     # 默认宏观指标
-    DEFAULT_MACRO_INDICATORS = ["^VIX", "^TNX"]
+    DEFAULT_MACRO_INDICATORS = ["^VIX", "^VIX3M", "^TNX"]
 
     def __init__(
         self,
@@ -220,7 +222,7 @@ class BacktestPipeline:
         benchmark_result = self._run_benchmark(backtest_result)
         if benchmark_result:
             logger.info(
-                f"vs SPY: {benchmark_result.strategy_total_return:.2%} vs "
+                f"vs {self.config.benchmark_symbol}: {benchmark_result.strategy_total_return:.2%} vs "
                 f"{benchmark_result.benchmark_total_return:.2%}"
             )
 
@@ -280,21 +282,21 @@ class BacktestPipeline:
 
         # Step 4: 生成报告
         report_path = None
+        json_report_path = None
         if generate_report:
-            logger.info("\n[Step 4/4] Generating report...")
-            market_context = self._fetch_market_context(backtest_result)
-            report_path = self._generate_report(
+            report_path, json_report_path = self._generate_report(
                 backtest_result,
                 metrics,
                 benchmark_result,
                 report_dir,
                 attribution_charts=attribution_charts_obj,
                 slice_engine=slice_engine,
-                market_context=market_context,
+                skip_data_check=skip_data_check,
                 entry_report=entry_report,
                 exit_report=exit_report,
             )
-            logger.info(f"Report: {report_path}")
+            logger.info(f"HTML Report: {report_path}")
+            logger.info(f"JSON Report: {json_report_path}")
         else:
             logger.info("\n[Step 4/4] Skipping report generation (--no-report)")
 
@@ -307,6 +309,7 @@ class BacktestPipeline:
             metrics=metrics,
             benchmark_result=benchmark_result,
             report_path=report_path,
+            json_report_path=json_report_path,
             data_status=data_status,
             attribution_summary=(
                 attr_engine.attribution_summary() if attr_engine else None
@@ -325,8 +328,8 @@ class BacktestPipeline:
         stock_start = self.config.start_date - timedelta(days=self.BETA_LOOKBACK_DAYS)
         stock_end = self.config.end_date
 
-        # 回测标的 + SPY (用于 Benchmark 和 Beta)
-        all_symbols = list(set(self.config.symbols + ["SPY"]))
+        # 回测标的 + 基准标的 (用于 Benchmark 和 Beta)
+        all_symbols = list(set(self.config.symbols + ["SPY", self.config.benchmark_symbol]))
 
         # 1. 检查股票数据缺口
         status.stock_gaps = self._data_checker.check_stock_gaps(
@@ -468,13 +471,13 @@ class BacktestPipeline:
 
             provider = DuckDBProvider(str(self._data_dir))
             benchmark = BenchmarkComparison(result)
-            return benchmark.compare_with_spy(provider)
+            return benchmark.compare_with_spy(provider, spy_symbol=self.config.benchmark_symbol)
 
         except Exception as e:
             logger.warning(f"Failed to run benchmark comparison: {e}")
             return None
 
-    def _fetch_market_context(self, backtest_result) -> MarketContext:
+    def _fetch_market_context(self, backtest_result, skip_data_check: bool = False) -> MarketContext:
         """获取市场上下文数据 (K 线、VIX、事件日历)"""
         ctx = MarketContext(trade_records=list(backtest_result.trade_records))
 
@@ -518,7 +521,7 @@ class BacktestPipeline:
         try:
             from src.data.providers.economic_calendar_provider import EconomicCalendarProvider
 
-            cal_provider = EconomicCalendarProvider()
+            cal_provider = EconomicCalendarProvider(offline=skip_data_check)
             if cal_provider.is_available:
                 calendar = cal_provider.get_economic_calendar(start, end)
                 ctx.economic_events = calendar.events
@@ -535,15 +538,30 @@ class BacktestPipeline:
         report_dir: Path | str,
         attribution_charts=None,
         slice_engine=None,
-        market_context: MarketContext | None = None,
+        skip_data_check: bool = False,
         entry_report=None,
         exit_report=None,
-    ) -> Path:
-        """生成 HTML 报告"""
+    ) -> tuple[Path, Path]:
+        """生成基于 HTML 的包含所有图表的交易报告和 JSON 报告
+        
+        Args:
+            result: 回测结果
+            metrics: 绩效指标
+            benchmark_result: 基准比较结果
+            report_dir: 报告输出目录
+            attribution_charts: 归因图表数据
+            slice_engine: 细分分析引擎
+            skip_data_check: 是否跳过数据下载（用于跳过 FRED API 等网络请求）
+        """
+        logger.info("\n[Step 4/4] Generating report...")
+
         from src.backtest.visualization.dashboard import BacktestDashboard
 
         report_dir = Path(report_dir)
         report_dir.mkdir(parents=True, exist_ok=True)
+
+        # 获取用于展示的市场上下文
+        market_context = self._fetch_market_context(result, skip_data_check=skip_data_check)
 
         dashboard = BacktestDashboard(
             result=result,
@@ -555,11 +573,66 @@ class BacktestPipeline:
             exit_report=exit_report,
         )
 
-        # 使用回测名称作为文件名
-        report_name = f"{self.config.name.lower().replace(' ', '_')}_report.html"
-        report_path = report_dir / report_name
+        # 生成 HTML 报告
+        html_report_name = f"{self.config.name.lower().replace(' ', '_')}_report.html"
+        html_report_path = report_dir / html_report_name
+        dashboard.generate_report(html_report_path, slice_engine=slice_engine)
 
-        return dashboard.generate_report(report_path, slice_engine=slice_engine)
+        # 生成 JSON 报告
+        json_report_name = f"{self.config.name.lower().replace(' ', '_')}_report.json"
+        json_report_path = report_dir / json_report_name
+
+        report_data = {
+            "summary": result.to_dict(include_details=False),
+            "metrics": metrics.to_dict(),
+            "benchmark": (
+                benchmark_result.to_dict() if benchmark_result else None
+            ),
+            "trade_records": [t.to_dict() for t in result.trade_records],
+            "daily_snapshots": [s.to_dict() for s in result.daily_snapshots],
+        }
+
+        with open(json_report_path, "w", encoding="utf-8") as f:
+            json.dump(report_data, f, ensure_ascii=False, indent=2)
+
+        return html_report_path, json_report_path
+
+    def _generate_json_report(
+        self,
+        result,
+        metrics,
+        benchmark_result,
+        report_dir: Path | str,
+    ) -> Path:
+        """生成 JSON 格式报告（方便程序化分析）
+
+        JSON 包含完整的结构化数据:
+        - summary: 回测概览
+        - metrics: 详细绩效指标
+        - benchmark: 基准比较
+        - trade_records: 所有交易记录
+        - daily_snapshots: 每日快照
+        """
+        report_dir = Path(report_dir)
+        report_dir.mkdir(parents=True, exist_ok=True)
+
+        report_name = f"{self.config.name.lower().replace(' ', '_')}_report.json"
+        json_path = report_dir / report_name
+
+        report_data = {
+            "summary": result.to_dict(include_details=False),
+            "metrics": metrics.to_dict(),
+            "benchmark": (
+                benchmark_result.to_dict() if benchmark_result else None
+            ),
+            "trade_records": [t.to_dict() for t in result.trade_records],
+            "daily_snapshots": [s.to_dict() for s in result.daily_snapshots],
+        }
+
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(report_data, f, ensure_ascii=False, indent=2)
+
+        return json_path
 
     def check_data(self) -> DataStatus:
         """仅检查数据缺口（不下载）

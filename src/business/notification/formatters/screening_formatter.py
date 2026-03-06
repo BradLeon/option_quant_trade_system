@@ -190,10 +190,10 @@ class ScreeningFormatter:
             title=title,
             level="grey",
             message=message,
-            details={
-                "扫描标的": str(result.scanned_underlyings),
-                "通过标的": str(result.passed_underlyings),
-                "策略类型": result.strategy_type.value,
+            metrics = {
+                "筛选标的": f"{result.scanned_underlyings} 只",
+                "符合环境": "是" if result.market_status.is_favorable else "否",
+                "策略类型": getattr(result.strategy_type, 'value', str(result.strategy_type)) if result.strategy_type else "未知",
             },
         )
 

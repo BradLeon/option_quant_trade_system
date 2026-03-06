@@ -34,6 +34,7 @@ from src.backtest.attribution.models import (
     TradeAttribution,
 )
 from src.backtest.data.greeks_calculator import GreeksCalculator
+from src.backtest.engine.trade_simulator import TradeAction
 
 if TYPE_CHECKING:
     from src.backtest.attribution.models import PortfolioSnapshot
@@ -73,15 +74,17 @@ class PnLAttributionEngine:
         self._dates: list[date] = []
 
         # 平仓/到期记录索引 (position_id → TradeRecord)
+        # 包含所有平仓类型: CLOSE, EXPIRE, ASSIGN_PUT, ASSIGN_CALL
+        CLOSE_ACTIONS = (TradeAction.CLOSE, TradeAction.EXPIRE, TradeAction.ASSIGN_PUT, TradeAction.ASSIGN_CALL)
         self._close_records: dict[str, TradeRecord] = {}
         for rec in self._trade_records:
-            if rec.action in ("close", "expire") and rec.position_id:
+            if rec.action in CLOSE_ACTIONS and rec.position_id:
                 self._close_records[rec.position_id] = rec
 
         # 开仓记录索引 (position_id → TradeRecord)
         self._open_records: dict[str, TradeRecord] = {}
         for rec in self._trade_records:
-            if rec.action == "open" and rec.position_id:
+            if rec.action == TradeAction.OPEN and rec.position_id:
                 self._open_records[rec.position_id] = rec
 
         self._greeks_calc = GreeksCalculator()
@@ -193,6 +196,10 @@ class PnLAttributionEngine:
         Returns:
             按日期排序的 DailyAttribution 列表
         """
+        # 性能优化：缓存归因计算结果，避免重复进行繁重的期权定价公式（Greeks）计算
+        if hasattr(self, "_cached_daily_results") and self._cached_daily_results is not None:
+            return self._cached_daily_results
+
         daily_results: list[DailyAttribution] = []
 
         # 构建前一日快照索引: date -> {position_id -> PositionSnapshot}
@@ -254,6 +261,7 @@ class PnLAttributionEngine:
             # 更新前一日快照索引
             prev_date_snaps = {s.position_id: s for s in current_snaps}
 
+        self._cached_daily_results = daily_results
         return daily_results
 
     def _attribute_position_daily(
@@ -486,6 +494,8 @@ class PnLAttributionEngine:
                 ),
                 entry_iv_rank=entry_snap.iv_rank if entry_snap else None,
                 quantity=entry_snap.quantity if entry_snap else 0,
+                entry_price=entry_snap.entry_price if entry_snap else 0.0,
+                lot_size=entry_snap.lot_size if entry_snap else 100,
             )
             results.append(ta)
 
@@ -503,13 +513,13 @@ class PnLAttributionEngine:
             if pid not in info:
                 info[pid] = {}
 
-            if record.action == "open":
+            if record.action == TradeAction.OPEN:
                 info[pid]["symbol"] = record.symbol
                 info[pid]["underlying"] = record.underlying
                 info[pid]["option_type"] = record.option_type.value if hasattr(record.option_type, "value") else str(record.option_type)
                 info[pid]["strike"] = record.strike
                 info[pid]["entry_date"] = record.trade_date
-            elif record.action in ("close", "expire"):
+            elif record.action in (TradeAction.CLOSE, TradeAction.EXPIRE, TradeAction.ASSIGN_PUT, TradeAction.ASSIGN_CALL):
                 info[pid]["exit_date"] = record.trade_date
                 info[pid]["exit_reason"] = record.reason
                 if hasattr(record, "close_reason_type") and record.close_reason_type is not None:

@@ -169,6 +169,33 @@ uv run backtest run -n "SP_ONLY" -s 2025-12-01 -e 2026-02-01 \
 | 交易 | 胜率、盈亏比、利润因子、期望值 |
 | 基准 | Alpha、Beta、信息比率、相关性 |
 
+### 多策略版本对比
+
+回测系统支持多策略版本共存，便于进行 A/B 测试：
+
+```bash
+# 策略版本 1: ITM 行权接股票 (默认)
+uv run backtest run -n "V9_WITH_STOCK" -s 2025-12-01 -e 2026-02-01 \
+  -S GOOG --skip-download \
+  --strategy-version short_options_with_expire_itm_stock_trade
+
+# 策略版本 2: ITM 到期前平仓
+uv run backtest run -n "V9_WITHOUT_STOCK" -s 2025-12-01 -e 2026-02-01 \
+  -S GOOG --skip-download \
+  --strategy-version short_options_without_expire_itm_stock_trade
+
+# 对比报告
+open reports/V9_WITH_STOCK_*.html
+open reports/V9_WITHOUT_STOCK_*.html
+```
+
+**可用策略版本**：
+
+| 策略版本 | CLI 参数 | 说明 |
+|----------|----------|------|
+| ITM 接股票 | `short_options_with_expire_itm_stock_trade` | 到期 ITM 时行权接股票 |
+| ITM 平仓 | `short_options_without_expire_itm_stock_trade` | 到期 ITM 前市价平仓 |
+
 ### PnL 归因分析
 
 回测自动运行 Greeks 归因分解，将 PnL 分解为各风险因子贡献：
@@ -347,6 +374,13 @@ option_quant_trade_system/
 │   │   └── pipeline.py             # 回测 Pipeline (完整流程编排)
 │   ├── business/                   # 业务层 (实盘交易)
 │   │   ├── cli/                    # CLI 入口 (optrade 命令)
+│   │   ├── strategy/               # 策略抽象层 (多版本共存)
+│   │   │   ├── base.py             # BaseOptionStrategy 抽象基类
+│   │   │   ├── factory.py          # 策略工厂
+│   │   │   ├── models.py           # TradeSignal, MarketContext
+│   │   │   └── versions/           # 具体策略实现
+│   │   │       ├── short_options_with_expire_itm_stock_trade.py
+│   │   │       └── short_options_without_expire_itm_stock_trade.py
 │   │   ├── screening/              # 开仓筛选 Pipeline
 │   │   ├── monitoring/             # 持仓监控 Pipeline
 │   │   ├── dashboard/              # 实时仪表盘
@@ -368,6 +402,41 @@ option_quant_trade_system/
 ├── reports/                        # 回测报告输出
 └── openspec/                       # 规格文档
 ```
+
+### 策略抽象层
+
+`src/business/strategy/` 是新增的策略抽象层，借鉴 Qlib 的 `BaseStrategy` 设计：
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    BaseOptionStrategy (抽象基类)                      │
+├─────────────────────────────────────────────────────────────────────┤
+│  evaluate_positions()  →  持仓监控，生成平仓/展期信号                   │
+│  find_opportunities()  →  市场筛选，寻找开仓机会                        │
+│  generate_entry_signals() → 仓位计算，生成开仓信号                      │
+└─────────────────────────────────────────────────────────────────────┘
+
+
+#### 核心设计点：
+1. **信号动作映射 (Action Translation)**：
+   监控管道 (`MonitoringPipeline`) 生成的带有明确交易意图的建议（如 `take_profit` 止盈、`reduce` 减仓、`hedge` 对冲），会在 `evaluate_positions()` 阶段无缝翻译为底层的标准交易动作（`TradeAction.CLOSE` 或 `ROLL`）。该过程完全兼容曾经存在的全局决策引擎 (`DecisionEngine`)。
+2. **跨环境匹配机制 (Cross-Environment Matching)**：
+   考虑到实盘通道（如 IBKR `SPY 20230929 435.0P PUT 435 09/29`）与回测生成数据（如 `SPY_2023-09-22_432.0_put`）可能存在各种标的格式变体，信号动作在寻找目标持仓时，**一律以底层注入的全局唯一 `position_id` 为首选主键** 进行匹配，保障了从“生成报警”到“实施调仓”全程的高可用性。
+
+                                    ↑
+                    ┌───────────────┴───────────────┐
+                    │                               │
+┌───────────────────┴─────────────┐ ┌───────────────┴─────────────┐
+│ WithExpireItmStockTrade (V9)    │ │ WithoutExpireItmStockTrade   │
+│ - ITM 期权行权接股票              │ │ - ITM 期权到期前平仓          │
+│ - 完整的止盈止损规则              │ │ - 避免股票交割                │
+└─────────────────────────────────┘ └─────────────────────────────┘
+```
+
+**核心优势**：
+- **多版本共存**: 不同策略版本可独立运行，支持 A/B 对比测试
+- **配置分离**: 每个策略有独立的 YAML 配置 (screening/monitoring/risk)
+- **信号关联**: `TradeSignal.position_id` 精确匹配持仓，避免误操作
 
 ### 核心设计
 
@@ -503,3 +572,16 @@ uv run pytest tests/engine/test_strategy.py -v
 ## License
 
 MIT
+## 更新：监控风控与策略执行一致性修复
+
+在新的模块化策略架构（V9/V10）下，**持仓监控器(PositionMonitor)** 被高度依赖来主动生成退场信号：
+- 尤其对于 `short_options_without_expire_itm_stock_trade` 策略，**P&L 与 OTM 止损被显式禁用**，取而代之的是依赖 **TGR 过低 (`< 0.5`)** 或者 **Delta 暴露 (`> 0.65`)** 进行主动防守。
+
+### 修复问题
+1. **指标计算缺失：** 由于回测引擎的 `PositionManager` 不经过实盘抓取的 `DataBridge`，部分风控指标（如 `TGR`, `Gamma Risk %` 等）在生成监控数据包 (`PositionData`) 时被遗漏，导致 TGR 监控规则永远无法被触发。
+2. **Delta 偏差评估：** 旧版监控器对持仓 Delta 进行了错误的缩放处理 `abs(pos.delta / qty)`，由于系统内的 Delta 已经是 per-share 数据，除以数量反而使评估值缩小了数十倍，完全丧失了风控效力。
+
+### 实现效果
+修复计算错误后：
+1. **亏损止损即时响应：** 策略的 `TGR` 监控现在能够在盈亏（PNL）发生超预期恶化之前提前发现时间衰减失效与 Gamma 风险的不对称，成功拦截由于过期价内 (ITM) 造成的严重回撤（例如防止单手亏损超过 `-3000`）。
+2. **提前止盈联动：** 在符合 DTE 及高比例利润的条件时，由于所有风控链路已被打通，现在能够准确抛出触发退出的交易信号。

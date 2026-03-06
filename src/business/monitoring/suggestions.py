@@ -98,7 +98,7 @@ ALERT_ACTION_MAP: dict[tuple[AlertType, AlertLevel], tuple[ActionType, UrgencyLe
     (AlertType.MONEYNESS, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
     (AlertType.DELTA_CHANGE, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
     (AlertType.GAMMA_EXPOSURE, AlertLevel.RED): (ActionType.REDUCE, UrgencyLevel.IMMEDIATE),
-    (AlertType.TGR_LOW, AlertLevel.RED): (ActionType.ADJUST, UrgencyLevel.IMMEDIATE),
+    (AlertType.TGR_LOW, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.SOON),
     # Capital 级 - 核心风控四大支柱
     (AlertType.MARGIN_UTILIZATION, AlertLevel.RED): (ActionType.REDUCE, UrgencyLevel.IMMEDIATE),
     (AlertType.CASH_RATIO, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
@@ -108,7 +108,10 @@ ALERT_ACTION_MAP: dict[tuple[AlertType, AlertLevel], tuple[ActionType, UrgencyLe
     (AlertType.DELTA_EXPOSURE, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
     (AlertType.VEGA_EXPOSURE, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
     (AlertType.THETA_EXPOSURE, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
+    # Technical close signals
+    (AlertType.TECHNICAL_CLOSE, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
     # === YELLOW Alerts → 仅警告，不执行交易 ===
+    (AlertType.DTE_PROFITABLE, AlertLevel.YELLOW): (ActionType.TAKE_PROFIT, UrgencyLevel.SOON),
     (AlertType.DTE_WARNING, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
     (AlertType.MONEYNESS, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
     (AlertType.DELTA_CHANGE, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
@@ -124,8 +127,25 @@ ALERT_ACTION_MAP: dict[tuple[AlertType, AlertLevel], tuple[ActionType, UrgencyLe
     (AlertType.STRESS_TEST_LOSS, AlertLevel.YELLOW): (ActionType.REVIEW, UrgencyLevel.SOON),
     (AlertType.CONCENTRATION, AlertLevel.YELLOW): (ActionType.DIVERSIFY, UrgencyLevel.SOON),
     (AlertType.DELTA_EXPOSURE, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
+    (AlertType.TECHNICAL_CLOSE, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
+    # === Position-level YELLOW/RED Alerts ===
+    (AlertType.WIN_PROB_LOW, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.SOON),
+    (AlertType.WIN_PROB_LOW, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
+    (AlertType.EXPECTED_ROC_LOW, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
+    (AlertType.POSITION_IV_HV, AlertLevel.RED): (ActionType.TAKE_PROFIT, UrgencyLevel.SOON),
+    (AlertType.POSITION_IV_HV, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
+    (AlertType.POSITION_TGR, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.SOON),
+    (AlertType.POSITION_TGR, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
+    (AlertType.GAMMA_RISK_PCT, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
+    (AlertType.GAMMA_RISK_PCT, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
+    (AlertType.OTM_PCT, AlertLevel.RED): (ActionType.CLOSE, UrgencyLevel.IMMEDIATE),
+    (AlertType.OTM_PCT, AlertLevel.YELLOW): (ActionType.MONITOR, UrgencyLevel.MONITOR),
     # === GREEN Alerts → Opportunities ===
     (AlertType.PROFIT_TARGET, AlertLevel.GREEN): (
+        ActionType.TAKE_PROFIT,
+        UrgencyLevel.SOON,
+    ),
+    (AlertType.DTE_PROFITABLE, AlertLevel.GREEN): (
         ActionType.TAKE_PROFIT,
         UrgencyLevel.SOON,
     ),
@@ -216,18 +236,18 @@ STRATEGY_SPECIFIC_SUGGESTIONS: dict[
         "平仓亏损腿或整体止损"
     ),
 
-    # === TGR < 1.0 (RED) - 按策略区分 ===
+    # === TGR < 0.5 (RED) - Gamma 策略：TGR 作为主动退出触发器 ===
     (AlertType.POSITION_TGR, AlertLevel.RED, StrategyType.SHORT_PUT): (
-        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
-        "平仓换到更高效的合约"
+        ActionType.CLOSE, UrgencyLevel.SOON,
+        "TGR 过低，Gamma 风险超过 Theta 收益，主动退出"
     ),
     (AlertType.POSITION_TGR, AlertLevel.RED, StrategyType.COVERED_CALL): (
         ActionType.CLOSE, UrgencyLevel.SOON,
-        "平仓换到更高效的合约"
+        "TGR 过低，Gamma 风险超过 Theta 收益，主动退出"
     ),
     (AlertType.POSITION_TGR, AlertLevel.RED, StrategyType.SHORT_STRANGLE): (
-        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
-        "平仓换到更高效的合约"
+        ActionType.CLOSE, UrgencyLevel.SOON,
+        "TGR 过低，Gamma 风险超过 Theta 收益，主动退出"
     ),
 
     # === Gamma Risk > 1% (RED) - 统一平仓 ===
@@ -236,8 +256,8 @@ STRATEGY_SPECIFIC_SUGGESTIONS: dict[
         "Gamma 风险过高，平仓"
     ),
     (AlertType.GAMMA_RISK_PCT, AlertLevel.RED, StrategyType.COVERED_CALL): (
-        ActionType.HOLD, UrgencyLevel.MONITOR,
-        "一般不触发（正股覆盖）"
+        ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
+        "Gamma 风险过高，平仓"
     ),
     (AlertType.GAMMA_RISK_PCT, AlertLevel.RED, StrategyType.SHORT_STRANGLE): (
         ActionType.CLOSE, UrgencyLevel.IMMEDIATE,
@@ -289,9 +309,15 @@ ALERT_PRIORITY = {
     AlertType.GAMMA_EXPOSURE: 60,
     AlertType.DELTA_EXPOSURE: 50,
     AlertType.TGR_LOW: 45,
+    AlertType.WIN_PROB_LOW: 42,
     AlertType.CONCENTRATION: 40,
+    AlertType.POSITION_TGR: 38,
+    AlertType.GAMMA_RISK_PCT: 37,
+    AlertType.EXPECTED_ROC_LOW: 36,
     # YELLOW alerts
     AlertType.GAMMA_NEAR_EXPIRY: 35,
+    AlertType.POSITION_IV_HV: 32,
+    AlertType.OTM_PCT: 31,
     AlertType.VEGA_EXPOSURE: 30,
     AlertType.IV_HV_CHANGE: 25,
     # GREEN alerts

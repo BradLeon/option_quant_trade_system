@@ -59,6 +59,7 @@ class EconomicCalendarProvider:
         self,
         fred_api_key: str | None = None,
         fomc_calendar_path: str | Path | None = None,
+        offline: bool = False,
     ) -> None:
         """Initialize the provider.
 
@@ -67,8 +68,11 @@ class EconomicCalendarProvider:
                 FRED_API_KEY environment variable.
             fomc_calendar_path: Path to FOMC calendar YAML file.
                 If not provided, uses default config path.
+            offline: If True, disables FRED API queries.
         """
         self._fred = FredCalendarProvider(api_key=fred_api_key)
+        if offline:
+            self._fred._api_key = None
         self._fomc_calendar_path = Path(fomc_calendar_path or DEFAULT_FOMC_CALENDAR_PATH)
         self._fomc_dates: dict[int, list[date]] = {}
         self._load_fomc_calendar()

@@ -237,6 +237,7 @@ class DecisionEngine:
             priority=priority,
             symbol=suggestion.symbol,
             underlying=underlying,
+            position_id=suggestion.position_id,  # 传递持仓 ID 用于精确匹配
             option_type=metadata.get("option_type"),
             strike=metadata.get("strike"),
             expiry=metadata.get("expiry"),
