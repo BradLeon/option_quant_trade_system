@@ -26,8 +26,6 @@ from src.engine.models.bs_params import BSParams
 
 logger = logging.getLogger(__name__)
 
-# Default strike grid: percentage of spot price
-DEFAULT_STRIKE_PCTS = [0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15]
 
 
 class SyntheticLeapsProvider:
@@ -46,18 +44,15 @@ class SyntheticLeapsProvider:
     Args:
         base_provider: DuckDBProvider instance for stock/macro data
         dividend_yield: Annual dividend yield for spot adjustment (default 1.3% for SPY)
-        strike_pcts: Strike grid as fractions of spot price
     """
 
     def __init__(
         self,
         base_provider,
         dividend_yield: float = 0.013,
-        strike_pcts: list[float] | None = None,
     ):
         self._base = base_provider
         self._dividend_yield = dividend_yield
-        self._strike_pcts = strike_pcts or DEFAULT_STRIKE_PCTS
 
         # Per-day cache: (symbol, as_of_date) → full OptionChain (all expiries)
         # Cleared when as_of_date changes via set_as_of_date()
@@ -393,12 +388,15 @@ class SyntheticLeapsProvider:
         return first_friday + timedelta(days=14)
 
     def _generate_strike_grid(self, spot: float) -> list[float]:
-        """Generate strike prices based on spot price.
+        """Generate strike prices as a dense, evenly-spaced grid around spot.
 
-        Strikes are rounded to nearest standard increment:
-        - spot < 50: round to $1
-        - 50 <= spot < 200: round to $2.5
-        - spot >= 200: round to $5
+        The grid covers [spot*0.70, spot*1.15] at standard increments:
+        - spot < 50: $1
+        - 50 <= spot < 200: $2.5
+        - spot >= 200: $5
+
+        This ensures that any standard strike opened on a previous day
+        will still appear in today's grid despite small spot movements.
         """
         if spot < 50:
             increment = 1.0
@@ -407,14 +405,17 @@ class SyntheticLeapsProvider:
         else:
             increment = 5.0
 
-        strikes = []
-        for pct in self._strike_pcts:
-            raw_strike = spot * pct
-            rounded = round(raw_strike / increment) * increment
-            if rounded > 0 and rounded not in strikes:
-                strikes.append(rounded)
+        lo = math.floor(spot * 0.70 / increment) * increment
+        hi = math.ceil(spot * 1.15 / increment) * increment
 
-        return sorted(strikes)
+        strikes = []
+        s = lo
+        while s <= hi:
+            if s > 0:
+                strikes.append(s)
+            s = round(s + increment, 2)
+
+        return strikes
 
     def _estimate_spread(self, price: float, moneyness: float, dte: int) -> float:
         """Estimate bid-ask spread for synthetic quote.

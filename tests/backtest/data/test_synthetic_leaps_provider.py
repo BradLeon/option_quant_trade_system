@@ -160,11 +160,12 @@ class TestStrikeGrid:
     """Test strike price grid generation."""
 
     def test_strike_grid_500(self, provider):
-        """spot=500 → strikes from ~350 to ~575 with $5 increments."""
+        """spot=500 → dense grid from 350 to 575 with $5 increments."""
         strikes = provider._generate_strike_grid(500.0)
-        assert len(strikes) >= 8
-        assert min(strikes) >= 300
-        assert max(strikes) <= 600
+        # Dense grid: floor(500*0.70/5)*5=350 to ceil(500*1.15/5)*5=575 → 46 strikes
+        assert len(strikes) >= 40
+        assert min(strikes) == 350.0
+        assert max(strikes) == 575.0
         # All should be multiples of $5 (spot >= 200)
         for s in strikes:
             assert s % 5 == 0, f"Strike {s} not a multiple of $5"
@@ -174,12 +175,14 @@ class TestStrikeGrid:
         strikes = provider._generate_strike_grid(30.0)
         for s in strikes:
             assert s % 1 == 0, f"Strike {s} not a multiple of $1"
+        assert len(strikes) >= 13  # 21 to 35 at $1 increments
 
     def test_strike_grid_100(self, provider):
         """spot=100 → strikes with $2.5 increments."""
         strikes = provider._generate_strike_grid(100.0)
         for s in strikes:
             assert s % 2.5 == 0, f"Strike {s} not a multiple of $2.5"
+        assert len(strikes) >= 15  # 70 to 115 at $2.5 increments
 
     def test_strikes_are_sorted(self, provider):
         """Strikes should be sorted ascending."""
@@ -190,6 +193,27 @@ class TestStrikeGrid:
         """No duplicate strikes after rounding."""
         strikes = provider._generate_strike_grid(500.0)
         assert len(strikes) == len(set(strikes))
+
+    def test_strike_grid_stability_across_spot_movement(self, provider):
+        """Strike opened at spot=548 must exist in grid when spot=551.
+
+        This is the core fix: previously the grid drifted with spot,
+        causing position pricing to fall back to intrinsic value.
+        """
+        # Day 1: open position at strike $545 when SPY=$548
+        strikes_day1 = provider._generate_strike_grid(548.0)
+        assert 545.0 in strikes_day1
+
+        # Day 2: SPY moves to $551 — $545 must still be in grid
+        strikes_day2 = provider._generate_strike_grid(551.0)
+        assert 545.0 in strikes_day2
+
+        # Near-the-money strikes (0.80-1.10 of spot) must be stable across
+        # small spot moves. Extreme boundary strikes may shift.
+        near_money_day1 = [s for s in strikes_day1 if 548 * 0.80 <= s <= 548 * 1.10]
+        set_day2 = set(strikes_day2)
+        for s in near_money_day1:
+            assert s in set_day2, f"Near-money strike {s} from day1 missing in day2 grid"
 
 
 # --- Synthetic Chain Generation Tests ---

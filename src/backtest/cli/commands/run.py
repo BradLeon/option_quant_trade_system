@@ -69,9 +69,9 @@ logger = logging.getLogger(__name__)
 )
 @click.option(
     "--strategy",
-    type=click.Choice(["short_put", "covered_call", "all"], case_sensitive=False),
+    type=click.Choice(["short_put", "covered_call", "long_call", "all"], case_sensitive=False),
     default="all",
-    help="基础策略类别 (默认: all，通常在 V9 体系下不单独使用)",
+    help="基础策略类别 (默认: all)",
 )
 @click.option(
     "--strategy-version",
@@ -185,6 +185,8 @@ def run(
         strategy_types = [StrategyType.SHORT_PUT]
     elif strategy == "covered_call":
         strategy_types = [StrategyType.COVERED_CALL]
+    elif strategy == "long_call":
+        strategy_types = [StrategyType.LONG_CALL]
     else:  # all
         strategy_types = [StrategyType.SHORT_PUT, StrategyType.COVERED_CALL]
 
