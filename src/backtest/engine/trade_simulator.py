@@ -434,6 +434,10 @@ ALERT_TO_CLOSE_REASON: dict[str, CloseReasonType] = {
     "cash_ratio": CloseReasonType.STOP_LOSS,
     "gross_leverage": CloseReasonType.STOP_LOSS,
     "stress_test_loss": CloseReasonType.STOP_LOSS,
+    # LEAPS 策略专用
+    "roll_dte": CloseReasonType.ROLL,
+    "sma_exit": CloseReasonType.MANUAL_CLOSE,
+    "leverage_rebalance": CloseReasonType.MANUAL_CLOSE,
 }
 
 
@@ -603,7 +607,7 @@ class TradeSimulator:
         self._trade_counter += 1
         # 根据 action 参数确定 TradeAction 类型
         # action 参数可能是 "open" 或 "close"，需要转换为对应的 TradeAction
-        trade_action = TradeAction(action) if action in ("open", "close") else TradeAction.OPEN
+        trade_action = TradeAction(action) if action in ("open", "close", "roll") else TradeAction.OPEN
         trade_record = TradeRecord(
             trade_id=f"T{self._trade_counter:06d}",
             execution_id=execution.execution_id,
@@ -646,6 +650,7 @@ class TradeSimulator:
         reason: str = "take_profit",
         lot_size: int | None = None,
         alert_type: str | None = None,
+        action: str = "close",  # "close" 或 "roll"，影响 TradeRecord.action
     ) -> TradeExecution:
         """执行平仓
 
@@ -661,11 +666,11 @@ class TradeSimulator:
             reason: 平仓原因
             lot_size: 每张合约对应股数 (可选，默认使用模拟器配置)
             alert_type: 结构化平仓原因（来自 AlertType）
+            action: 交易动作类型，"close" 普通平仓，"roll" 滚仓平仓
 
         Returns:
             TradeExecution
         """
-        # 平仓与开仓使用相同逻辑，但 action 为 "close"
         return self.execute_open(
             symbol=symbol,
             underlying=underlying,
@@ -676,7 +681,7 @@ class TradeSimulator:
             mid_price=mid_price,
             trade_date=trade_date,
             reason=reason,
-            action="close",
+            action=action,
             lot_size=lot_size,
             alert_type=alert_type,
         )

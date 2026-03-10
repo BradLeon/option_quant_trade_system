@@ -100,8 +100,11 @@ class DailySnapshot:
     trades_expired: int = 0
     daily_pnl: float = 0.0
 
+    # 策略特定指标 (可选，供可视化使用)
+    strategy_metrics: dict = field(default_factory=dict)
+
     def to_dict(self) -> dict:
-        return {
+        d = {
             "date": self.date.isoformat(),
             "nlv": self.nlv,
             "cash": self.cash,
@@ -115,6 +118,9 @@ class DailySnapshot:
             "trades_expired": self.trades_expired,
             "daily_pnl": self.daily_pnl,
         }
+        if self.strategy_metrics:
+            d["strategy_metrics"] = self.strategy_metrics
+        return d
 
 
 @dataclass
@@ -500,6 +506,11 @@ class BacktestExecutor:
         snapshot = self._take_daily_snapshot(current_date, prev_nlv)
         snapshot.trades_opened = trades_opened
         snapshot.trades_closed = trades_closed
+
+        # 捕获策略信号元数据 (供可视化使用)
+        if hasattr(self._strategy, '_last_signal_detail') and self._strategy._last_signal_detail:
+            snapshot.strategy_metrics = dict(self._strategy._last_signal_detail)
+
         self._daily_snapshots.append(snapshot)
 
         logger.debug(
@@ -937,22 +948,38 @@ class BacktestExecutor:
 
             # 1. Trade 层：执行交易，得到 TradeExecution
             mid_price = quote.mid_price or 0.0
-            
-            # 由于传入的 underlying 是诸如 "SPY" 的名字，构建完整的期权合约名称给 symbol
-            contract_symbol = f"{underlying}_{expiry}_{strike}_{option_type_str}"
-            
-            execution = self._trade_simulator.execute_open(
-                symbol=contract_symbol,
-                underlying=underlying,
-                option_type=option_type,
-                strike=strike,
-                expiration=expiry,
-                quantity=signal.quantity,
-                mid_price=mid_price,
-                trade_date=trade_date,
-                reason=signal.reason or "strategy_open",
-                lot_size=100,  # 默认期权乘数 100
-            )
+
+            # 检测 stock proxy: strike < 1.0 且 lot_size == 1
+            effective_lot_size = quote.contract.lot_size or 100
+            is_stock_proxy = (strike < 1.0 and effective_lot_size == 1)
+
+            if is_stock_proxy:
+                # Stock proxy → 股票交易路径（正确的手续费 + 无滑点）
+                from src.backtest.engine.trade_simulator import OrderSide
+                execution = self._trade_simulator.execute_stock_trade(
+                    symbol=underlying,  # "SPY"（不是 "SPY_440303_C_0"）
+                    side=OrderSide.BUY if signal.quantity > 0 else OrderSide.SELL,
+                    quantity=abs(signal.quantity),
+                    price=mid_price,
+                    trade_date=trade_date,
+                    reason=signal.reason or "stock_proxy_open",
+                )
+            else:
+                # 由于传入的 underlying 是诸如 "SPY" 的名字，构建完整的期权合约名称给 symbol
+                contract_symbol = f"{underlying}_{expiry}_{strike}_{option_type_str}"
+
+                execution = self._trade_simulator.execute_open(
+                    symbol=contract_symbol,
+                    underlying=underlying,
+                    option_type=option_type,
+                    strike=strike,
+                    expiration=expiry,
+                    quantity=signal.quantity,
+                    mid_price=mid_price,
+                    trade_date=trade_date,
+                    reason=signal.reason or "strategy_open",
+                    lot_size=effective_lot_size,
+                )
 
             # 1.5. Trade 层：回填 underlying_price 到交易记录
             try:
@@ -973,6 +1000,10 @@ class BacktestExecutor:
                 position=position,
                 cash_change=execution.net_amount,
             )
+
+            # 4. 合并同标的股票仓位（stock proxy 增量加仓 → 合并为单一仓位）
+            if is_stock_proxy and success:
+                self._account_simulator.merge_stock_positions(underlying)
 
             return success
 
@@ -1100,6 +1131,8 @@ class BacktestExecutor:
                     reason=signal.reason or "strategy_close",
                 )
             else:
+                # alert_type 为 roll_dte 时，TradeRecord.action 标记为 ROLL 以区分普通平仓
+                close_action = "roll" if signal.alert_type == "roll_dte" else "close"
                 execution = self._trade_simulator.execute_close(
                     symbol=position.symbol,
                     underlying=position.underlying,  # type: ignore[arg-type]
@@ -1110,7 +1143,9 @@ class BacktestExecutor:
                     mid_price=option_price,
                     trade_date=trade_date,
                     reason=signal.reason or "strategy_close",
+                    lot_size=position.lot_size,
                     alert_type=signal.alert_type,
+                    action=close_action,
                 )
 
             # 1.5. Trade 层：回填 underlying_price 到交易记录
@@ -1121,29 +1156,53 @@ class BacktestExecutor:
             except Exception:
                 pass
 
-            # 2. Position 层：计算已实现盈亏
-            pnl = self._position_manager.calculate_realized_pnl(
-                position=position,
-                execution=execution,
-                close_reason=signal.reason or "strategy_close",
-            )
+            # 2. 判断是否部分平仓（股票和期权均支持部分平仓）
+            close_qty = abs(signal.quantity)
+            is_partial_close = close_qty < abs(position.quantity)
 
-            # 2.5. Trade 层：回填 PnL 和 position_id 到交易记录
-            self._trade_simulator.update_last_trade_pnl(pnl)
-            self._trade_simulator.update_last_trade_position_id(position.position_id)
+            if is_partial_close:
+                # 部分平仓：计算减仓部分的已实现盈亏（乘以 lot_size）
+                pnl = close_qty * (position.current_price - position.entry_price) * position.lot_size
 
-            # 3. Account 层：移除持仓，更新现金
-            success = self._account_simulator.remove_position(
-                position_id=position.position_id,
-                cash_change=execution.net_amount,
-                realized_pnl=pnl,
-            )
+                # 2.5. Trade 层：回填
+                self._trade_simulator.update_last_trade_pnl(pnl)
+                self._trade_simulator.update_last_trade_position_id(position.position_id)
 
-            if success:
-                # 完成持仓关闭 (更新持仓字段)
+                # 3. Account 层：部分减仓，更新现金
+                position.quantity -= close_qty
+                position.market_value = position.quantity * position.current_price * position.lot_size
+                position.unrealized_pnl = position.market_value - (position.quantity * position.entry_price * position.lot_size)
+                self._account_simulator._cash += execution.net_amount
+                self._account_simulator._realized_pnl_cumulative += pnl
+                success = True
+            else:
+                # 全平仓
+                # 2. Position 层：计算已实现盈亏
+                pnl = self._position_manager.calculate_realized_pnl(
+                    position=position,
+                    execution=execution,
+                    close_reason=signal.reason or "strategy_close",
+                )
+
+                # 2.5. Trade 层：回填 PnL 和 position_id 到交易记录
+                self._trade_simulator.update_last_trade_pnl(pnl)
+                self._trade_simulator.update_last_trade_position_id(position.position_id)
+
+                # 3. Account 层：移除持仓，更新现金
+                success = self._account_simulator.remove_position(
+                    position_id=position.position_id,
+                    cash_change=execution.net_amount,
+                    realized_pnl=pnl,
+                )
+
+            if success and not is_partial_close:
+                # 完成持仓关闭 (更新持仓字段) — 部分平仓不走此路径
                 self._position_manager.finalize_close(
                     position, execution, pnl, signal.reason or "strategy_close"
                 )
+            elif success and is_partial_close:
+                # 部分平仓: 仅累加佣金，不关闭持仓
+                position.commission_paid += execution.commission
 
             return success
 

@@ -91,6 +91,9 @@ class LongLeapsCallSmaTiming(BaseTradeStrategy):
         # 交易日计数器
         self._trading_day_count: int = 0
 
+        # 跟踪 evaluate_positions 是否在当天被调用
+        self._last_eval_date: Optional[date] = None
+
         # NLV 缓存
         self._last_nlv: float = 0.0
 
@@ -286,6 +289,7 @@ class LongLeapsCallSmaTiming(BaseTradeStrategy):
 
         self._last_positions = list(positions)
         self._trading_day_count += 1
+        self._last_eval_date = context.current_date
 
         # 重置跨方法协调标志
         self._pending_roll = False
@@ -303,6 +307,7 @@ class LongLeapsCallSmaTiming(BaseTradeStrategy):
 
         # 1. 计算 SMA 信号
         invested = self._compute_sma_signal(context, data_provider)
+
 
         # 2. SMA 翻空 → 清仓所有 LEAPS
         if not invested:
@@ -323,6 +328,7 @@ class LongLeapsCallSmaTiming(BaseTradeStrategy):
             return signals
 
         # 3. DTE ≤ roll_dte → 滚仓
+        # TODO，滚仓怎么没有OPEN只有CLOSE？ 而且滚仓有专门的TradeAction.ROLL.
         for pos in leaps_positions:
             if pos.dte is not None and pos.dte <= cfg.roll_dte_threshold:
                 self._pending_roll = True
@@ -357,26 +363,27 @@ class LongLeapsCallSmaTiming(BaseTradeStrategy):
                         )
                     )
 
-        # 5. 杠杆漂移检查 (仅在 decision day + 没有 roll 信号时)
-        if not self._pending_roll and self._is_decision_day():
-            actual_lev = self._compute_actual_leverage(leaps_positions, context)
-            if abs(actual_lev - cfg.target_leverage) > cfg.leverage_drift_threshold:
-                self._pending_rebalance = True
-                for pos in leaps_positions:
-                    signals.append(
-                        TradeSignal(
-                            action=TradeAction.CLOSE,
-                            symbol=pos.symbol,
-                            quantity=-(pos.quantity or 0),
-                            reason=f"Rebalance: leverage={actual_lev:.2f} vs target={cfg.target_leverage:.1f}",
-                            alert_type="leverage_rebalance",
-                            position_id=pos.position_id,
-                            priority="normal",
-                        )
-                    )
-                logger.info(
-                    f"REBALANCE: actual leverage {actual_lev:.2f} drifted from target {cfg.target_leverage:.1f}"
-                )
+        # 5. 杠杆漂移检查 — 暂时关闭
+        # 频繁 rebalance 交易成本高，且 LEAPS 深度 ITM delta 变化小，暂不启用
+        # if not self._pending_roll and self._is_decision_day():
+        #     actual_lev = self._compute_actual_leverage(leaps_positions, context)
+        #     if abs(actual_lev - cfg.target_leverage) > cfg.leverage_drift_threshold:
+        #         self._pending_rebalance = True
+        #         for pos in leaps_positions:
+        #             signals.append(
+        #                 TradeSignal(
+        #                     action=TradeAction.CLOSE,
+        #                     symbol=pos.symbol,
+        #                     quantity=-(pos.quantity or 0),
+        #                     reason=f"Rebalance: leverage={actual_lev:.2f} vs target={cfg.target_leverage:.1f}",
+        #                     alert_type="leverage_rebalance",
+        #                     position_id=pos.position_id,
+        #                     priority="normal",
+        #                 )
+        #             )
+        #         logger.info(
+        #             f"REBALANCE: actual leverage {actual_lev:.2f} drifted from target {cfg.target_leverage:.1f}"
+        #         )
 
         return signals
 
@@ -388,6 +395,16 @@ class LongLeapsCallSmaTiming(BaseTradeStrategy):
     ) -> List[ContractOpportunity]:
         """寻找 LEAPS Call 开仓机会"""
         cfg = self._ensure_config_loaded()
+
+        # 当无持仓时，executor 跳过 evaluate_positions 调用，
+        # 导致 _trading_day_count 不递增、_last_positions 残留旧数据。
+        # 在此补偿：如果今天 evaluate_positions 没有被调用，手动推进状态。
+        if self._last_eval_date != context.current_date:
+            self._trading_day_count += 1
+            self._last_positions = []
+            self._pending_roll = False
+            self._pending_rebalance = False
+            self._pending_exit_to_cash = False
 
         # 1. 计算 SMA 信号 (可能已缓存)
         invested = self._compute_sma_signal(context, data_provider)
@@ -508,9 +525,15 @@ class LongLeapsCallSmaTiming(BaseTradeStrategy):
                 cfg.target_leverage * nlv / (delta * lot_size * spot)
             )
 
-            # 资金约束: premium * contracts * lot_size <= max_capital_pct * cash
+            # 资金约束: premium * contracts * lot_size <= available_capital
+            # Roll/Rebalance 场景: 旧仓位尚未平仓，cash 偏低，用 NLV 作为可用资金
+            # 普通开仓场景: 用 cash 作为可用资金
+            if self._pending_roll or self._pending_rebalance:
+                available_capital = cfg.max_capital_pct * nlv
+            else:
+                available_capital = cfg.max_capital_pct * cash
             if mid * lot_size > 0:
-                max_contracts = math.floor(cfg.max_capital_pct * cash / (mid * lot_size))
+                max_contracts = math.floor(available_capital / (mid * lot_size))
                 contracts = min(contracts, max_contracts)
 
             if contracts <= 0:

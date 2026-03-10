@@ -346,7 +346,7 @@ class SyntheticLeapsProvider:
             return self._tnx_cache[as_of_date]
         tnx_data = self._base.get_macro_data("^TNX", as_of_date - timedelta(days=7), as_of_date)
         if tnx_data:
-            val = tnx_data[-1].value / 100.0
+            val = tnx_data[-1].value / 1000.0
             self._tnx_cache[as_of_date] = val
             return val
         logger.warning(f"No TNX data for {as_of_date}, using default 0.04")

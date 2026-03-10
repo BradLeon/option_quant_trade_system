@@ -1,0 +1,40 @@
+# SPY Buy & Hold + SMA200 Timing Benchmark
+# 用于给 LEAPS 策略做纯股票（无杠杆）的对比基准测试
+# 通过合成的 Delta=1 期权代理实现直接按市价买入股票的效果
+
+name: SPY_SMA200_Benchmark
+description: |
+  SPY纯多头 SMA200 均线择时基准测试。
+  排查震荡市下系统性下挫原因。
+
+# 时间范围 (与 LEAPS 对齐)
+start_date: "2016-09-01"
+end_date: "2026-03-01"
+
+# 标的池
+symbols:
+  - SPY
+
+market: US
+
+# 指定策略版本
+strategy_version: "spy_buy_and_hold_sma_timing"
+
+# 必须指定一个以通过验证，内部使用了该类型代理
+strategy_types:
+  - "long_call"   
+
+# 资金配置
+initial_capital: 100000.0
+max_margin_utilization: 0.95 
+
+# 每次生成决策条数 (SPY全满仓)
+max_new_positions_per_day: 1
+
+# 执行配置
+slippage_pct: 0.001
+
+# 数据配置
+data_dir: data/duckdb  
+
+verbose: true

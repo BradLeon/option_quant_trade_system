@@ -337,8 +337,8 @@ class TestEvaluatePositions:
         signals = strategy.evaluate_positions([], context, provider)
         assert len(signals) == 0
 
-    def test_leverage_rebalance(self):
-        """Leverage drift on decision day → rebalance"""
+    def test_leverage_rebalance_disabled(self):
+        """Leverage drift rebalance is currently disabled — no signals emitted"""
         strategy = LongLeapsCallSmaTiming()
         strategy._last_nlv = 100_000
         strategy._trading_day_count = 4  # Next call will be day 5 → decision day (5%5==0)
@@ -350,9 +350,8 @@ class TestEvaluatePositions:
         positions = [_make_position(delta=8.5)]
         signals = strategy.evaluate_positions(positions, context, provider)
 
-        assert len(signals) == 1
-        assert "Rebalance" in signals[0].reason
-        assert strategy._pending_rebalance is True
+        assert len(signals) == 0
+        assert strategy._pending_rebalance is False
 
 
 # ==========================================
@@ -363,10 +362,9 @@ class TestFindOpportunities:
     def test_entry_on_bullish_no_positions(self):
         """SMA bullish + no positions + decision day → entry opportunity"""
         strategy = LongLeapsCallSmaTiming()
-        strategy._trading_day_count = 4  # Next evaluate_positions will set to 5
-        # Simulate: called after evaluate_positions which increments counter
         strategy._trading_day_count = 5  # decision day (5%5==0)
         strategy._last_positions = []  # no positions
+        strategy._last_eval_date = date(2025, 9, 10)  # matches context.current_date
 
         klines = _make_klines_bullish(n_days=250)
         calls = [_make_option_quote(strike=425.0, expiry=date(2026, 9, 1), delta=0.85, mid=80.0)]
@@ -384,6 +382,7 @@ class TestFindOpportunities:
         strategy = LongLeapsCallSmaTiming()
         strategy._last_positions = []
         strategy._trading_day_count = 5
+        strategy._last_eval_date = date(2025, 9, 10)
 
         klines = _make_klines_bearish(n_days=250)
         provider = _make_data_provider(klines=klines)
@@ -397,6 +396,7 @@ class TestFindOpportunities:
         strategy = LongLeapsCallSmaTiming()
         strategy._pending_roll = True
         strategy._last_positions = []
+        strategy._last_eval_date = date(2025, 9, 10)  # evaluate_positions was called (set pending_roll)
 
         klines = _make_klines_bullish(n_days=250)
         calls = [_make_option_quote(strike=425.0, expiry=date(2026, 9, 1), delta=0.85, mid=80.0)]
@@ -412,6 +412,7 @@ class TestFindOpportunities:
         strategy = LongLeapsCallSmaTiming()
         strategy._pending_roll = True
         strategy._last_positions = []
+        strategy._last_eval_date = date(2025, 9, 10)
 
         klines = _make_klines_bullish(n_days=250)
         provider = _make_data_provider(klines=klines, chain=None)
