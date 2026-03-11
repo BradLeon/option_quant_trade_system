@@ -5,6 +5,7 @@ from src.business.strategy.versions.long_leaps_call_sma_timing import LongLeapsC
 from src.business.strategy.versions.spy_buy_and_hold_sma_timing import SpyBuyAndHoldSmaTiming
 from src.business.strategy.versions.spy_sma200_freq5_timing import SpySma200Freq5Timing
 from src.business.strategy.versions.spy_momentum_lev_vol_target import SpyMomentumLevVolTarget
+from src.business.strategy.versions.spy_leaps_only_vol_target import SpyLeapsOnlyVolTarget
 
 class StrategyFactory:
     """策略工厂
@@ -19,6 +20,7 @@ class StrategyFactory:
         "spy_buy_and_hold_sma_timing": SpyBuyAndHoldSmaTiming,
         "spy_sma200_freq5_timing": SpySma200Freq5Timing,
         "spy_momentum_lev_vol_target": SpyMomentumLevVolTarget,
+        "spy_leaps_only_vol_target": SpyLeapsOnlyVolTarget,
     }
     
     @classmethod
