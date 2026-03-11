@@ -110,6 +110,16 @@ class BacktestStrategy:
         """
         return dict(self._last_signal_detail)
 
+    @property
+    def requires_synthetic_data(self) -> bool:
+        """Whether this strategy needs SyntheticLeapsProvider for historical LEAPS data.
+
+        Override to return True in strategies that use get_option_chain()
+        for LEAPS options (DTE > 180 days). Without synthetic data,
+        backtests before ThetaData coverage (2023-06) will have no option data.
+        """
+        return False
+
     # -- Utilities for subclasses ----------------------------------------------
 
     def _is_decision_day(self, frequency: int) -> bool:

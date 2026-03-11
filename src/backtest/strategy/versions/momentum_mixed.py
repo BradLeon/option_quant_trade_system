@@ -98,6 +98,10 @@ class MomentumMixedStrategy(BacktestStrategy):
     def name(self) -> str:
         return self._config.name
 
+    @property
+    def requires_synthetic_data(self) -> bool:
+        return True
+
     def on_day_start(self, market: MarketSnapshot, portfolio: PortfolioState) -> None:
         self._last_nlv = portfolio.nlv
         self._pending_rebalance = False

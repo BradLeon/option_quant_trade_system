@@ -81,6 +81,13 @@ class ShortOptionsStrategy(BacktestStrategy):
         return []
 
     @property
+    def legacy_strategy_name(self) -> str:
+        """Canonical legacy strategy name for YAML config loading."""
+        if self._allow_assignment:
+            return "short_options_with_expire_itm_stock_trade"
+        return "short_options_without_expire_itm_stock_trade"
+
+    @property
     def uses_legacy_executor(self) -> bool:
         """Flag indicating this strategy needs the legacy executor path."""
         return True

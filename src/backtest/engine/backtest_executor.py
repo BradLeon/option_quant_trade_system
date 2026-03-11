@@ -294,6 +294,8 @@ class BacktestExecutor:
             else:
                 # V2 注册表中的 Legacy 桥接策略 — 走旧路径
                 self._strategy = v2_strategy.get_legacy_strategy()
+                # 用 canonical 名加载 YAML，而非 CLI 别名
+                strategy_name = getattr(v2_strategy, "legacy_strategy_name", strategy_name)
                 logger.info(f"Using V2-bridged legacy strategy: {strategy_name}")
         except ValueError:
             pass
