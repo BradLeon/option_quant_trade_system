@@ -618,7 +618,9 @@ print(BacktestStrategyRegistry.get_available_strategies())
 
 ---
 
-## 8. 多腿期权组合 (Phase 4, 未来扩展)
+## 8. 多腿期权组合 (Phase 4)
+
+### 8.1 ComboInstrument 表示
 
 ```python
 # Bull Put Spread: 卖高 Put + 买低 Put
@@ -632,6 +634,24 @@ bull_put = ComboInstrument(
 )
 ```
 
+### 8.2 组合保证金
+
+`calc_spread_margin()` 在 `src/data/models/margin.py` 中实现：
+- **垂直价差 (Bull Put / Bear Call)**: margin = max_loss = |strike_diff| × lot_size × qty - net_premium
+- **AccountSimulator.add_combo_position()**: 自动识别价差类型，计算组合保证金而非单腿累加
+
+### 8.3 多腿执行
+
+`TradeSimulator.execute_combo()` 接受 legs 列表，逐腿计算滑点/手续费，返回多条 TradeExecution。
+
+### 8.4 示例策略: BullPutSpreadStrategy
+
+`src/backtest/strategy/versions/spread.py` — SMA 趋势过滤 + Bull Put 信用价差：
+- 注册名: `bull_put_spread`
+- 入场: SMA200 看涨时卖出 OTM Bull Put Spread
+- 出场: 到达 50% 利润目标或 DTE < 10 天
+- 信号中携带 `metadata.combo` 信息供执行器使用
+
 ---
 
 ## 9. 实施进度
@@ -641,15 +661,16 @@ bull_put = ComboInstrument(
 | Phase 0 | ✅ 完成 | 文档 (本文档 + README 更新) |
 | Phase 1 | ✅ 完成 | 基础设施 (models, protocol, signals, risk, converter) |
 | Phase 2 | ✅ 完成 | 策略迁移 (4 个新策略 + registry) |
-| Phase 3 | 🔲 待做 | 引擎重构 (executor 集成新策略入口) |
-| Phase 4 | 🔲 待做 | 多腿扩展 (ComboInstrument + 组合保证金) |
+| Phase 3 | ✅ 完成 | 引擎重构 (executor 双路径集成 + RiskGuard 链 + SnapshotBuilder) |
+| Phase 4 | ✅ 完成 | 多腿扩展 (ComboInstrument + 组合保证金 + execute_combo + BullPutSpread) |
 
 ### 代码量对比
 
 | 维度 | 旧代码 | 新代码 | 变化 |
 |------|--------|--------|------|
-| 策略代码 | 2749 行 (7 个类) | 1246 行 (4 个类) | -55% |
-| 基础设施 | 0 行 | 962 行 (models/protocol/signals/risk/converter) | 新增可复用组件 |
+| 策略代码 | 2749 行 (7 个类) | ~1500 行 (5 个类) | -45% |
+| 基础设施 | 0 行 | ~1000 行 (models/protocol/signals/risk/converter) | 新增可复用组件 |
+| 引擎扩展 | 0 行 | ~150 行 (combo margin + execute_combo + combo positions) | Phase 4 新增 |
 | 测试 | 0 行 | 28 个测试用例 | 新增 |
 
 ---
@@ -658,7 +679,7 @@ bull_put = ComboInstrument(
 
 | 文件 | 用途 |
 |------|------|
-| `src/backtest/strategy/models.py` | Instrument, Signal, MarketSnapshot, PortfolioState |
+| `src/backtest/strategy/models.py` | Instrument, Signal, MarketSnapshot, PortfolioState, ComboInstrument |
 | `src/backtest/strategy/protocol.py` | StrategyProtocol + BacktestStrategy 基类 |
 | `src/backtest/strategy/signals/sma.py` | SmaComputer (SMA 择时信号) |
 | `src/backtest/strategy/signals/momentum.py` | MomentumVolTargetComputer (动量 + vol target) |
@@ -669,5 +690,9 @@ bull_put = ComboInstrument(
 | `src/backtest/strategy/versions/sma_leaps.py` | SMA + LEAPS Call 策略 |
 | `src/backtest/strategy/versions/momentum_mixed.py` | 动量混合策略 (stock+LEAPS / pure LEAPS) |
 | `src/backtest/strategy/versions/short_options.py` | Short Options 桥接策略 |
+| `src/backtest/strategy/versions/spread.py` | Bull Put Spread 多腿策略 (Phase 4 示例) |
 | `src/backtest/strategy/registry.py` | 策略注册表 |
+| `src/data/models/margin.py` | calc_spread_margin() 组合保证金计算 |
+| `src/backtest/engine/trade_simulator.py` | execute_combo() 多腿执行 |
+| `src/backtest/engine/account_simulator.py` | add_combo_position() 组合持仓 + 保证金 |
 | `tests/backtest/test_strategy_v2.py` | V2 策略单元测试 (28 用例) |

@@ -69,6 +69,12 @@ def _create_leaps_only(**kwargs) -> StrategyProtocol:
     return MomentumMixedStrategy(config)
 
 
+def _create_bull_put_spread(**kwargs) -> StrategyProtocol:
+    from src.backtest.strategy.versions.spread import BullPutSpreadStrategy, BullPutSpreadConfig
+    config = BullPutSpreadConfig(**kwargs)
+    return BullPutSpreadStrategy(config)
+
+
 def _create_short_options_with(**kwargs) -> StrategyProtocol:
     from src.backtest.strategy.versions.short_options import ShortOptionsStrategy
     return ShortOptionsStrategy(allow_assignment=True)
@@ -93,6 +99,9 @@ _REGISTRY: dict[str, Any] = {
     "long_leaps_call_sma_timing": _create_sma_leaps,
     "spy_momentum_lev_vol_target": _create_momentum_lev,
     "spy_leaps_only_vol_target": _create_leaps_only,
+
+    # Multi-leg combo strategies
+    "bull_put_spread": _create_bull_put_spread,
 
     # Short options (bridge to legacy pipelines)
     "short_options_with_expire_itm_stock_trade": _create_short_options_with,

@@ -77,8 +77,6 @@ from src.backtest.strategy.registry import BacktestStrategyRegistry
 from src.backtest.strategy.signal_converter import SignalConverter
 from src.data.models.option import OptionType
 from src.engine.models.enums import StrategyType
-from src.data.models.option import OptionType
-from src.engine.models.enums import StrategyType
 
 logger = logging.getLogger(__name__)
 
@@ -275,6 +273,7 @@ class BacktestExecutor:
         self._is_v2_strategy = False
         self._v2_strategy = None
         self._signal_converter = None
+        self._risk_guards: list = []
 
         try:
             v2_strategy = BacktestStrategyRegistry.create(strategy_name)
@@ -283,6 +282,14 @@ class BacktestExecutor:
                 self._v2_strategy = v2_strategy
                 self._is_v2_strategy = True
                 self._signal_converter = SignalConverter()
+                # Initialize RiskGuard chain for V2 strategies
+                from src.backtest.strategy.risk.account_risk import AccountRiskGuard, AccountRiskConfig
+                self._risk_guards = [
+                    AccountRiskGuard(AccountRiskConfig(
+                        max_positions=config.max_positions,
+                        max_margin_utilization=config.max_margin_utilization,
+                    )),
+                ]
                 logger.info(f"Using V2 strategy: {v2_strategy.name}")
             else:
                 # V2 注册表中的 Legacy 桥接策略 — 走旧路径
@@ -697,7 +704,16 @@ class BacktestExecutor:
         v2_signals = self._v2_strategy.generate_signals(market, portfolio, self._data_provider)
         logger.info(f"  V2 strategy generated {len(v2_signals)} signals")
 
-        # 4. Convert V2 Signal → legacy TradeSignal
+        # 4. RiskGuard chain filtering
+        if v2_signals and self._risk_guards:
+            for guard in self._risk_guards:
+                before = len(v2_signals)
+                v2_signals = guard.check(v2_signals, portfolio, market)
+                filtered = before - len(v2_signals)
+                if filtered > 0:
+                    logger.info(f"  RiskGuard {guard.__class__.__name__} filtered {filtered} signals")
+
+        # 5. Convert V2 Signal → legacy TradeSignal
         trade_signals: list[TradeSignal] = []
         if v2_signals and self._signal_converter:
             trade_signals = self._signal_converter.convert_to_trade_signals(

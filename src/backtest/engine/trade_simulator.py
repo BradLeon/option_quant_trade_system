@@ -926,6 +926,59 @@ class TradeSimulator:
 
         return execution
 
+    def execute_combo(
+        self,
+        legs: list[dict],
+        trade_date: date,
+        reason: str = "combo_open",
+        action: str = "open",
+    ) -> list[TradeExecution]:
+        """Execute a multi-leg combo order (e.g., vertical spread).
+
+        Each leg is executed individually with its own slippage/commission,
+        but all legs share the same combo reason for tracking.
+
+        Args:
+            legs: List of leg specs, each a dict with keys:
+                - symbol: str
+                - underlying: str
+                - option_type: OptionType
+                - strike: float
+                - expiration: date
+                - quantity: int (signed: negative=sell, positive=buy)
+                - mid_price: float
+                - lot_size: int (optional, defaults to 100)
+            trade_date: Trade date for all legs.
+            reason: Trade reason.
+            action: "open" or "close".
+
+        Returns:
+            List of TradeExecution objects, one per leg.
+        """
+        executions = []
+        for leg in legs:
+            lot_size = leg.get("lot_size", self._lot_size)
+            execution = self.execute_open(
+                symbol=leg["symbol"],
+                underlying=leg["underlying"],
+                option_type=leg["option_type"],
+                strike=leg["strike"],
+                expiration=leg["expiration"],
+                quantity=leg["quantity"],
+                mid_price=leg["mid_price"],
+                trade_date=trade_date,
+                reason=reason,
+                action=action,
+                lot_size=lot_size,
+            )
+            executions.append(execution)
+
+        logger.debug(
+            f"Executed COMBO ({len(legs)} legs): "
+            f"net_amount={sum(e.net_amount for e in executions):.2f}"
+        )
+        return executions
+
     def get_total_slippage(self) -> float:
         """获取总滑点损失"""
         return sum(e.slippage * abs(e.quantity) * e.lot_size for e in self._executions)

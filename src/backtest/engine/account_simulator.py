@@ -35,7 +35,7 @@ from typing import Any
 
 from src.business.trading.models.decision import AccountState
 from src.data.models.account import AssetType
-from src.data.models.margin import calc_reg_t_margin_short_put, calc_reg_t_margin_short_call
+from src.data.models.margin import calc_reg_t_margin_short_put, calc_reg_t_margin_short_call, calc_spread_margin
 from src.data.models.option import OptionType
 
 logger = logging.getLogger(__name__)
@@ -743,6 +743,77 @@ class AccountSimulator:
             )
 
         return margin_per_share * abs(position.quantity) * position.lot_size
+
+    def add_combo_position(
+        self,
+        positions: list[SimulatedPosition],
+        cash_change: float,
+        combo_id: str | None = None,
+    ) -> bool:
+        """Add a combo (spread) position with combined margin calculation.
+
+        For defined-risk spreads (vertical spreads), margin = max_loss instead of
+        summing individual leg margins. This significantly reduces margin requirements.
+
+        Args:
+            positions: List of leg positions (e.g., short put + long put).
+            cash_change: Net cash change for the entire combo.
+            combo_id: Optional combo group ID. If None, legs are linked by position_id prefix.
+
+        Returns:
+            True if all legs were added successfully.
+        """
+        if not positions:
+            return False
+
+        # Identify spread type and calculate combined margin
+        short_legs = [p for p in positions if p.is_short and p.is_option]
+        long_legs = [p for p in positions if not p.is_short and p.is_option]
+
+        combo_margin = 0.0
+        if len(short_legs) == 1 and len(long_legs) == 1:
+            # Vertical spread: margin = |strike_diff| × lot_size × qty
+            short = short_legs[0]
+            long = long_legs[0]
+            if short.strike is not None and long.strike is not None:
+                net_premium = short.entry_price - long.entry_price  # credit if positive
+                combo_margin = calc_spread_margin(
+                    short_strike=short.strike,
+                    long_strike=long.strike,
+                    net_premium=net_premium,
+                    lot_size=short.lot_size,
+                    quantity=abs(short.quantity),
+                )
+        else:
+            # Unsupported combo type — fall back to sum of individual margins
+            combo_margin = sum(
+                self._estimate_margin(p) for p in positions
+            )
+
+        # Check margin availability
+        if combo_margin > self.available_margin:
+            logger.warning(
+                f"Insufficient margin for combo: "
+                f"required={combo_margin:.2f}, available={self.available_margin:.2f}"
+            )
+            return False
+
+        # Add all legs
+        self._cash += cash_change
+        for pos in positions:
+            # Override individual margin — spread margin is shared
+            pos.margin_required = 0.0
+            self._positions[pos.position_id] = pos
+
+        # Set combo margin on the short leg (the one that typically carries margin)
+        if short_legs:
+            short_legs[0].margin_required = combo_margin
+
+        logger.debug(
+            f"Added combo position ({len(positions)} legs): "
+            f"margin={combo_margin:.2f}, cash_change={cash_change:.2f}"
+        )
+        return True
 
     def accrue_interest(self, amount: float) -> None:
         """计提现金利息。不创建交易记录，不影响 realized_pnl。"""
