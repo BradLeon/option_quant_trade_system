@@ -651,6 +651,14 @@ class BacktestExecutor:
             if pos.expiration:
                 dte = (pos.expiration - current_date).days
 
+            # Fetch Greeks from PositionManager for option positions
+            delta, gamma, theta, vega, iv = None, None, None, None, None
+            if pos.asset_type == AssetType.OPTION and pos.expiration:
+                try:
+                    delta, gamma, theta, vega, iv = self._position_manager._get_greeks(pos)
+                except Exception:
+                    pass
+
             position_views.append(PositionView(
                 position_id=pos.position_id,
                 instrument=instrument,
@@ -662,6 +670,11 @@ class BacktestExecutor:
                 unrealized_pnl=pos.unrealized_pnl,
                 dte=dte,
                 lot_size=pos.lot_size,
+                delta=delta,
+                gamma=gamma,
+                theta=theta,
+                vega=vega,
+                iv=iv,
             ))
 
         return V2PortfolioState(

@@ -83,6 +83,7 @@ class MomentumMixedStrategy(BacktestStrategy):
         self._config = config or MomentumMixedConfig()
         self._momentum = MomentumVolTargetComputer(self._config.momentum)
         self._last_nlv: float = 0.0
+        self._last_cash: float = 0.0
         self._last_rebalance_day: int = -9999
 
         # Cross-method coordination
@@ -104,6 +105,7 @@ class MomentumMixedStrategy(BacktestStrategy):
 
     def on_day_start(self, market: MarketSnapshot, portfolio: PortfolioState) -> None:
         self._last_nlv = portfolio.nlv
+        self._last_cash = portfolio.cash
         self._pending_rebalance = False
         self._pending_leaps_topup = 0
         self._pending_stock_topup_pct = 0.0
@@ -471,8 +473,8 @@ class MomentumMixedStrategy(BacktestStrategy):
         if cfg.use_stock_component:
             budget = cfg.max_capital_pct * self._last_nlv
         else:
-            # LeapsOnly mode: constrain by actual cash
-            budget = cfg.max_capital_pct * self._last_nlv  # simplified; real cash tracked by executor
+            # LeapsOnly mode: constrain by actual cash (not NLV)
+            budget = cfg.max_capital_pct * self._last_cash
         if mid * lot_size > 0:
             max_contracts = math.floor(budget / (mid * lot_size))
             contracts = min(contracts, max_contracts)
