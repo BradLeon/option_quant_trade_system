@@ -744,6 +744,11 @@ class AccountSimulator:
 
         return margin_per_share * abs(position.quantity) * position.lot_size
 
+    def accrue_interest(self, amount: float) -> None:
+        """计提现金利息。不创建交易记录，不影响 realized_pnl。"""
+        if amount > 0:
+            self._cash += amount
+
     def reset(self) -> None:
         """重置账户状态"""
         self._cash = self._initial_capital

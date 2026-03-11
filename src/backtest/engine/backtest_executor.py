@@ -100,6 +100,9 @@ class DailySnapshot:
     trades_expired: int = 0
     daily_pnl: float = 0.0
 
+    # 现金利息
+    interest_accrued: float = 0.0
+
     # 策略特定指标 (可选，供可视化使用)
     strategy_metrics: dict = field(default_factory=dict)
 
@@ -118,6 +121,8 @@ class DailySnapshot:
             "trades_expired": self.trades_expired,
             "daily_pnl": self.daily_pnl,
         }
+        if self.interest_accrued:
+            d["interest_accrued"] = self.interest_accrued
         if self.strategy_metrics:
             d["strategy_metrics"] = self.strategy_metrics
         return d
@@ -502,14 +507,34 @@ class BacktestExecutor:
         # 6. 处理到期期权 (盘后交收计算)
         self._process_expirations(current_date)
 
+        # 6.5 计提现金利息 (如果策略支持)
+        daily_interest = 0.0
+        if hasattr(self._strategy, '_compute_daily_interest'):
+            daily_interest = self._strategy._compute_daily_interest(
+                cash=self._account_simulator.cash,
+                current_date=current_date,
+                data_provider=self._data_provider,
+            )
+            if daily_interest > 0:
+                self._account_simulator.accrue_interest(daily_interest)
+
         # 7. 记录每日快照
         snapshot = self._take_daily_snapshot(current_date, prev_nlv)
         snapshot.trades_opened = trades_opened
         snapshot.trades_closed = trades_closed
+        snapshot.interest_accrued = daily_interest
 
         # 捕获策略信号元数据 (供可视化使用)
         if hasattr(self._strategy, '_last_signal_detail') and self._strategy._last_signal_detail:
             snapshot.strategy_metrics = dict(self._strategy._last_signal_detail)
+
+        # 捕获现金利息元数据
+        if daily_interest > 0:
+            snapshot.strategy_metrics["daily_interest"] = daily_interest
+        if hasattr(self._strategy, '_cumulative_interest'):
+            snapshot.strategy_metrics["cumulative_interest"] = self._strategy._cumulative_interest
+        if hasattr(self._strategy, '_tnx_cache') and current_date in self._strategy._tnx_cache:
+            snapshot.strategy_metrics["risk_free_rate"] = self._strategy._tnx_cache[current_date]
 
         self._daily_snapshots.append(snapshot)
 

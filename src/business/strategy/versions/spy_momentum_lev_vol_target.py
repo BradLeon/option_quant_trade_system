@@ -25,24 +25,12 @@ from src.business.monitoring.models import PositionData
 from src.business.screening.models import ContractOpportunity
 from src.business.strategy.base import BaseTradeStrategy
 from src.business.strategy.models import MarketContext, TradeSignal
+from src.business.strategy.versions._momentum_vol_mixin import (
+    DEFAULT_POSITION_MAP,
+    MomentumVolTargetMixin,
+)
 
 logger = logging.getLogger(__name__)
-
-# 合约选择权重（复用 LEAPS 策略 pattern）
-_W_DTE = 1.0
-_W_STRIKE = 2.0
-
-# 默认仓位映射
-_DEFAULT_POSITION_MAP = {
-    0: 0.0,
-    1: 0.0,
-    2: 0.5,
-    3: 1.0,
-    4: 1.5,
-    5: 2.0,
-    6: 2.5,
-    7: 3.0,
-}
 
 
 @dataclass
@@ -53,7 +41,7 @@ class MomentumLevVolTargetConfig:
     sma_periods: tuple = (20, 50, 200)
     momentum_lookback_short: int = 20
     momentum_lookback_long: int = 60
-    position_map: dict = field(default_factory=lambda: dict(_DEFAULT_POSITION_MAP))
+    position_map: dict = field(default_factory=lambda: dict(DEFAULT_POSITION_MAP))
 
     # Volatility targeting (唯一风控层)
     vol_target: float = 15.0
@@ -90,7 +78,7 @@ class MomentumLevVolTargetConfig:
         return Path(__file__).resolve().parents[4] / "config" / "screening" / "spy_momentum_lev_vol_target.yaml"
 
 
-class SpyMomentumLevVolTarget(BaseTradeStrategy):
+class SpyMomentumLevVolTarget(BaseTradeStrategy, MomentumVolTargetMixin):
     """Momentum + Leverage + Vol Target 复合仓位策略
 
     7 分动量评分 + vol_scalar=min(2.0, 15/VIX) 波动率目标。
@@ -101,6 +89,8 @@ class SpyMomentumLevVolTarget(BaseTradeStrategy):
     - find_opportunities: 开仓/再平衡时选取 stock proxy 和 LEAPS Call
     - generate_entry_signals: 按目标百分比计算 stock shares 和 LEAPS 合约数量
     """
+
+    _signal_log_prefix = "VolTgt"
 
     def __init__(self):
         super().__init__()
@@ -144,136 +134,6 @@ class SpyMomentumLevVolTarget(BaseTradeStrategy):
         return self._config
 
     # ==========================================
-    # 信号计算
-    # ==========================================
-    def _compute_signal(self, context: MarketContext, data_provider: Any) -> float:
-        """计算风控后的目标仓位百分比，按日期缓存。
-
-        Returns:
-            target_pct: 风控后的目标暴露 (0.0 ~ 3.0)
-        """
-        if self._signal_computed_for_date == context.current_date:
-            return self._current_target_pct
-
-        cfg = self._ensure_config_loaded()
-
-        symbols = list(context.underlying_prices.keys())
-        if not symbols:
-            self._current_target_pct = 0.0
-            self._signal_computed_for_date = context.current_date
-            return 0.0
-
-        symbol = symbols[0]
-
-        from src.data.models.stock import KlineType
-        from src.engine.position.technical.moving_average import calc_sma_series
-
-        # 获取价格数据（需要足够长以覆盖 SMA200 + momentum 回溯）
-        max_sma = max(cfg.sma_periods)
-        lookback_days = max(max_sma, cfg.momentum_lookback_long) * 2 + 50
-        lookback_start = context.current_date - timedelta(days=lookback_days)
-        klines = data_provider.get_history_kline(
-            symbol=symbol,
-            ktype=KlineType.DAY,
-            start_date=lookback_start,
-            end_date=context.current_date,
-        )
-
-        if not klines or len(klines) < max_sma:
-            logger.info(f"MomentumLev: insufficient price data ({len(klines) if klines else 0} < {max_sma})")
-            self._current_target_pct = 0.0
-            self._signal_computed_for_date = context.current_date
-            return 0.0
-
-        prices = [k.close for k in klines]
-
-        # 计算 SMA 系列
-        sma_values = {}
-        for period in cfg.sma_periods:
-            series = calc_sma_series(prices, period)
-            sma_values[period] = series[-1] if series and series[-1] is not None else None
-
-        sma20 = sma_values.get(20)
-        sma50 = sma_values.get(50)
-        sma200 = sma_values.get(200)
-
-        if sma20 is None or sma50 is None or sma200 is None:
-            self._current_target_pct = 0.0
-            self._signal_computed_for_date = context.current_date
-            return 0.0
-
-        close = prices[-1]
-
-        # === 7 分动量评分 ===
-        score = 0
-        # 5 分 SMA 基础
-        if close > sma20:
-            score += 1
-        if close > sma50:
-            score += 1
-        if close > sma200:
-            score += 1
-        if sma20 > sma50:
-            score += 1
-        if sma50 > sma200:
-            score += 1
-        # 2 分动量
-        if len(prices) > cfg.momentum_lookback_short and close > prices[-1 - cfg.momentum_lookback_short]:
-            score += 1
-        if len(prices) > cfg.momentum_lookback_long and close > prices[-1 - cfg.momentum_lookback_long]:
-            score += 1
-
-        # 仓位映射
-        target_pct = cfg.position_map.get(score, 0.0)
-        if target_pct == 0.0:
-            self._last_signal_detail = {
-                "momentum_score": score, "sma20": sma20, "sma50": sma50,
-                "sma200": sma200, "close": close, "vix": 0.0,
-                "vol_scalar": 0.0, "raw_target": 0.0, "target_pct": 0.0,
-            }
-            self._current_target_pct = 0.0
-            self._signal_computed_for_date = context.current_date
-            return 0.0
-
-        # === Vol Target 风控 ===
-        vix = self._get_vix(context, data_provider)
-        vol_scalar = min(cfg.vol_scalar_max, cfg.vol_target / vix) if vix > 0 else 1.0
-        target_pct = target_pct * vol_scalar
-        target_pct = max(0.0, min(cfg.max_exposure, target_pct))
-
-        logger.debug(
-            f"VolTgt signal: {symbol} score={score} raw_map={cfg.position_map.get(score, 0)} "
-            f"vix={vix:.1f} vol_scalar={vol_scalar:.2f} → target_pct={target_pct:.2f}"
-        )
-
-        self._last_signal_detail = {
-            "momentum_score": score,
-            "sma20": sma20,
-            "sma50": sma50,
-            "sma200": sma200,
-            "close": close,
-            "vix": vix,
-            "vol_scalar": vol_scalar,
-            "raw_target": cfg.position_map.get(score, 0.0),
-            "target_pct": target_pct,
-        }
-
-        self._current_target_pct = target_pct
-        self._signal_computed_for_date = context.current_date
-        return target_pct
-
-    def _get_vix(self, context: MarketContext, data_provider: Any) -> float:
-        """获取当日 VIX 值，缺失时默认 20.0"""
-        try:
-            lookback = context.current_date - timedelta(days=10)
-            vix_data = data_provider.get_macro_data("^VIX", lookback, context.current_date)
-            if vix_data and len(vix_data) > 0:
-                return vix_data[-1].close
-        except Exception:
-            pass
-        return 20.0
-
-    # ==========================================
     # 仓位识别
     # ==========================================
     @staticmethod
@@ -285,16 +145,6 @@ class SpyMomentumLevVolTarget(BaseTradeStrategy):
         if pos.strike is not None and pos.strike < 1.0:
             return True
         return False
-
-    @staticmethod
-    def _is_leaps(pos: PositionData) -> bool:
-        return (
-            pos.option_type is not None
-            and pos.option_type.lower() == "call"
-            and pos.strike is not None
-            and pos.strike >= 1.0
-            and (pos.quantity or 0) > 0
-        )
 
     def _classify_positions(self, positions: List[PositionData]) -> tuple:
         """分类持仓为 stock_positions 和 leaps_positions"""
@@ -314,10 +164,7 @@ class SpyMomentumLevVolTarget(BaseTradeStrategy):
         # Stock proxy: delta=1, lot_size=1
         for pos in stock_positions:
             qty = pos.quantity or 0
-            spot = pos.underlying_price
-            if spot is None:
-                symbol = pos.symbol.split("_")[0] if "_" in pos.symbol else pos.symbol
-                spot = context.underlying_prices.get(symbol, 0)
+            spot = self._resolve_spot(pos, context)
             total_exposure += qty * spot
 
         # LEAPS: delta * qty * multiplier * spot
@@ -325,55 +172,10 @@ class SpyMomentumLevVolTarget(BaseTradeStrategy):
             delta = pos.delta or 0
             qty = pos.quantity or 0
             multiplier = pos.contract_multiplier or 100
-            spot = pos.underlying_price
-            if spot is None:
-                symbol = pos.symbol.split("_")[0] if "_" in pos.symbol else pos.symbol
-                spot = context.underlying_prices.get(symbol, 0)
+            spot = self._resolve_spot(pos, context)
             total_exposure += delta * qty * multiplier * spot
 
         return total_exposure / self._last_nlv
-
-    # ==========================================
-    # LEAPS 合约选择（复用 LongLeapsCallSmaTiming pattern）
-    # ==========================================
-    def _select_best_contract(
-        self,
-        calls: list,
-        target_strike: float,
-        target_dte: int,
-        current_date: date,
-    ) -> Optional[Any]:
-        """从 OptionChain.calls 中选取最匹配的 LEAPS Call 合约"""
-        cfg = self._ensure_config_loaded()
-        best_score = -float("inf")
-        best = None
-
-        for call in calls:
-            contract = call.contract
-            dte = (contract.expiry_date - current_date).days
-
-            if dte < cfg.min_dte or dte > cfg.max_dte:
-                continue
-
-            mid = call.last_price
-            if call.bid is not None and call.ask is not None and call.ask > 0:
-                mid = (call.bid + call.ask) / 2
-            if mid is None or mid <= 0:
-                continue
-
-            delta = call.greeks.delta if call.greeks else None
-            if delta is None or delta <= 0:
-                continue
-
-            dte_dev = abs(dte - target_dte) / target_dte if target_dte > 0 else 0
-            strike_dev = abs(contract.strike_price - target_strike) / target_strike if target_strike > 0 else 0
-            score = -_W_DTE * dte_dev - _W_STRIKE * strike_dev
-
-            if score > best_score:
-                best_score = score
-                best = call
-
-        return best
 
     # ==========================================
     # 阶段 1: evaluate_positions — 完全 override
@@ -489,23 +291,14 @@ class SpyMomentumLevVolTarget(BaseTradeStrategy):
 
             target_leaps_pct = max(0.0, target_pct - 1.0)
             if target_leaps_pct > 0 and self._last_nlv > 0 and leaps_positions:
-                rep = leaps_positions[0]
-                rep_delta = rep.delta or 0.8
-                rep_multiplier = rep.contract_multiplier or 100
-                rep_spot = rep.underlying_price
-                if rep_spot is None:
-                    sym = rep.symbol.split("_")[0] if "_" in rep.symbol else rep.symbol
-                    rep_spot = context.underlying_prices.get(sym, 0)
-
-                if rep_delta > 0 and rep_spot > 0:
-                    target_contracts = math.floor(
-                        target_leaps_pct * self._last_nlv / (rep_delta * rep_multiplier * rep_spot)
-                    )
-                    self._pending_leaps_topup_contracts = max(0, target_contracts - surviving_qty)
-                    logger.info(
-                        f"ROLL: target_contracts={target_contracts} surviving={surviving_qty} "
-                        f"topup={self._pending_leaps_topup_contracts}"
-                    )
+                target_contracts = self._compute_leaps_target_contracts(
+                    target_leaps_pct, leaps_positions[0], context, default_delta=0.8
+                )
+                self._pending_leaps_topup_contracts = max(0, target_contracts - surviving_qty)
+                logger.info(
+                    f"ROLL: target_contracts={target_contracts} surviving={surviving_qty} "
+                    f"topup={self._pending_leaps_topup_contracts}"
+                )
 
             return signals
 
@@ -520,10 +313,7 @@ class SpyMomentumLevVolTarget(BaseTradeStrategy):
             stock_exposure = 0.0
             for pos in stock_positions:
                 qty = pos.quantity or 0
-                spot = pos.underlying_price
-                if spot is None:
-                    symbol = pos.symbol.split("_")[0] if "_" in pos.symbol else pos.symbol
-                    spot = context.underlying_prices.get(symbol, 0)
+                spot = self._resolve_spot(pos, context)
                 stock_exposure += qty * spot
             current_stock_pct = stock_exposure / self._last_nlv if self._last_nlv > 0 else 0.0
 
@@ -536,10 +326,7 @@ class SpyMomentumLevVolTarget(BaseTradeStrategy):
                 rep = leaps_positions[0]
                 rep_delta = rep.delta or 0
                 rep_multiplier = rep.contract_multiplier or 100
-                rep_spot = rep.underlying_price
-                if rep_spot is None:
-                    sym = rep.symbol.split("_")[0] if "_" in rep.symbol else rep.symbol
-                    rep_spot = context.underlying_prices.get(sym, 0)
+                rep_spot = self._resolve_spot(rep, context)
 
                 total_current = sum(p.quantity or 0 for p in leaps_positions)
                 if rep_delta > 0 and rep_spot > 0 and self._last_nlv > 0:
@@ -583,10 +370,7 @@ class SpyMomentumLevVolTarget(BaseTradeStrategy):
                 if stock_delta_pct < 0 and stock_positions:
                     # 减仓: 只卖差额股数（部分平仓），不需要重开
                     pos = stock_positions[0]
-                    spot = pos.underlying_price
-                    if spot is None:
-                        symbol = pos.symbol.split("_")[0] if "_" in pos.symbol else pos.symbol
-                        spot = context.underlying_prices.get(symbol, 0)
+                    spot = self._resolve_spot(pos, context)
                     if self._last_nlv > 0 and spot > 0:
                         shares_to_sell = math.ceil(abs(stock_delta_pct) * self._last_nlv / spot)
                         shares_to_sell = min(shares_to_sell, abs(pos.quantity or 0))
@@ -945,14 +729,3 @@ class SpyMomentumLevVolTarget(BaseTradeStrategy):
 
         return signals
 
-    # ==========================================
-    # 辅助
-    # ==========================================
-    def _is_decision_day(self) -> bool:
-        cfg = self._ensure_config_loaded()
-        return self._trading_day_count % cfg.decision_frequency == 0
-
-    def _rebalance_cooldown_ok(self) -> bool:
-        """检查是否已过冷却期"""
-        cfg = self._ensure_config_loaded()
-        return (self._trading_day_count - self._last_rebalance_day) >= cfg.min_rebalance_interval
