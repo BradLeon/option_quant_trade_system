@@ -349,6 +349,14 @@ option_quant_trade_system/
 │   │   │   ├── duckdb_provider.py  # DuckDB 数据提供者 (Point-in-time 查询)
 │   │   │   ├── greeks_calculator.py# BS Greeks 批量计算
 │   │   │   └── schema.py           # Parquet/DuckDB 表结构
+│   │   ├── strategy/               # V2 回测策略抽象层
+│   │   │   ├── models.py           # Instrument, Signal, MarketSnapshot, PortfolioState
+│   │   │   ├── protocol.py         # StrategyProtocol + BacktestStrategy 基类
+│   │   │   ├── registry.py         # BacktestStrategyRegistry (策略注册表)
+│   │   │   ├── signal_converter.py # Signal → TradeSignal 桥接
+│   │   │   ├── signals/            # 可复用信号计算器 (SMA, Momentum)
+│   │   │   ├── risk/               # 可插拔风控 (Account, VolTarget)
+│   │   │   └── versions/           # 策略实现 (sma_stock, sma_leaps, momentum_mixed, short_options)
 │   │   ├── engine/                 # 回测引擎
 │   │   │   ├── backtest_executor.py# 回测执行器 (每日循环)
 │   │   │   ├── account_simulator.py# 账户模拟器 (资金/保证金)
@@ -405,38 +413,41 @@ option_quant_trade_system/
 
 ### 策略抽象层
 
-`src/business/strategy/` 是新增的策略抽象层，借鉴 Qlib 的 `BaseStrategy` 设计：
+系统有两套策略抽象，分别服务实盘和回测：
+
+#### 实盘策略 (`src/business/strategy/`)
+
+`BaseTradeStrategy` 三方法生命周期，驱动 Screening/Monitoring Pipeline：
+
+```
+evaluate_positions()  →  持仓监控，生成平仓/展期信号
+find_opportunities()  →  市场筛选，寻找开仓机会
+generate_entry_signals() → 仓位计算，生成开仓信号
+```
+
+#### 回测 V2 策略 (`src/backtest/strategy/`)
+
+专为回测设计，单入口 `generate_signals()`，原生多资产支持：
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                    BaseTradeStrategy (抽象基类)                      │
+│              StrategyProtocol (回测策略最小契约)                       │
 ├─────────────────────────────────────────────────────────────────────┤
-│  evaluate_positions()  →  持仓监控，生成平仓/展期信号                   │
-│  find_opportunities()  →  市场筛选，寻找开仓机会                        │
-│  generate_entry_signals() → 仓位计算，生成开仓信号                      │
+│  generate_signals(market, portfolio, data_provider) → list[Signal]  │
 └─────────────────────────────────────────────────────────────────────┘
-
-
-#### 核心设计点：
-1. **信号动作映射 (Action Translation)**：
-   监控管道 (`MonitoringPipeline`) 生成的带有明确交易意图的建议（如 `take_profit` 止盈、`reduce` 减仓、`hedge` 对冲），会在 `evaluate_positions()` 阶段无缝翻译为底层的标准交易动作（`TradeAction.CLOSE` 或 `ROLL`）。该过程完全兼容曾经存在的全局决策引擎 (`DecisionEngine`)。
-2. **跨环境匹配机制 (Cross-Environment Matching)**：
-   考虑到实盘通道（如 IBKR `SPY 20230929 435.0P PUT 435 09/29`）与回测生成数据（如 `SPY_2023-09-22_432.0_put`）可能存在各种标的格式变体，信号动作在寻找目标持仓时，**一律以底层注入的全局唯一 `position_id` 为首选主键** 进行匹配，保障了从“生成报警”到“实施调仓”全程的高可用性。
-
-                                    ↑
-                    ┌───────────────┴───────────────┐
-                    │                               │
-┌───────────────────┴─────────────┐ ┌───────────────┴─────────────┐
-│ WithExpireItmStockTrade (V9)    │ │ WithoutExpireItmStockTrade   │
-│ - ITM 期权行权接股票              │ │ - ITM 期权到期前平仓          │
-│ - 完整的止盈止损规则              │ │ - 避免股票交割                │
-└─────────────────────────────────┘ └─────────────────────────────┘
+         ↑                    ↑                    ↑
+    SmaStockStrategy   SmaLeapsStrategy   MomentumMixedStrategy
+    (SMA择时+股票)      (SMA择时+LEAPS)    (动量+Stock/LEAPS)
 ```
 
-**核心优势**：
-- **多版本共存**: 不同策略版本可独立运行，支持 A/B 对比测试
-- **配置分离**: 每个策略有独立的 YAML 配置 (screening/monitoring/risk)
-- **信号关联**: `TradeSignal.position_id` 精确匹配持仓，避免误操作
+**V2 核心改进**：
+- **单入口**: `generate_signals()` 替代 3 个生命周期方法
+- **原生多资产**: `Instrument` 模型消除 stock proxy hack
+- **可组合**: `SmaComputer` / `MomentumVolTargetComputer` 信号计算器复用
+- **可插拔风控**: `RiskGuard` 中间件链
+- **代码精简**: 7 个旧策略 → 4 个参数化新策略 (代码量 -55%)
+
+> 详细设计：`docs/development/backtest_v2_architecture.md`
 
 ### 核心设计
 

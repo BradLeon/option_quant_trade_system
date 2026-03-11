@@ -214,22 +214,42 @@ uv run backtest run ... --no-report
 
 回测系统支持多种策略版本，可通过 `--strategy-version` 参数选择：
 
+#### Short Options 策略 (Legacy Pipeline)
+
 | 策略版本 | 说明 | 适用场景 |
 |----------|------|----------|
 | `short_options_with_expire_itm_stock_trade` | ITM 期权行权接股票 | 长期持仓、愿意接股票的策略 |
 | `short_options_without_expire_itm_stock_trade` | ITM 期权到期前平仓 | 纯期权策略、避免股票交割 |
 
+#### V2 策略 (新架构)
+
+| 策略版本 | 说明 | 适用场景 |
+|----------|------|----------|
+| `sma_stock` | SMA200 择时买卖股票 (Buy & Hold) | 长线股票 + 技术面择时 |
+| `spy_sma200_freq5_timing` | SMA50/200 金叉死叉, 每 5 天决策 | 中频 SMA 交叉策略 |
+| `sma_leaps` | SMA200 择时 + LEAPS Call | 杠杆 + 技术面择时 |
+| `momentum_mixed` | 7 分动量 + Stock/LEAPS 混合 | 动量 + 波动率目标 + 杠杆 |
+| `momentum_leaps_only` | 纯 LEAPS + 现金利息计提 | 纯杠杆动量策略 |
+
 **示例**：
 
 ```bash
-# 使用 ITM 行权接股票策略 (默认)
+# Short Options (默认)
 uv run backtest run -n "WITH_STOCK" -s 2025-12-01 -e 2026-02-01 -S GOOG --skip-download
 
-# 使用 ITM 到期前平仓策略
-uv run backtest run -n "WITHOUT_STOCK" -s 2025-12-01 -e 2026-02-01 -S GOOG --skip-download \
-  --strategy-version short_options_without_expire_itm_stock_trade
+# V2: SMA 择时股票
+uv run backtest run -n "SMA_STOCK" -s 2025-12-01 -e 2026-02-01 -S SPY --skip-download \
+  --strategy-version sma_stock
 
-# 对比两种策略
+# V2: 动量 + 混合杠杆
+uv run backtest run -n "MOMENTUM" -s 2025-12-01 -e 2026-02-01 -S SPY --skip-download \
+  --strategy-version momentum_mixed
+
+# V2: 纯 LEAPS 动量
+uv run backtest run -n "LEAPS_ONLY" -s 2025-12-01 -e 2026-02-01 -S SPY --skip-download \
+  --strategy-version momentum_leaps_only
+
+# 对比 Short Options 两种版本
 uv run backtest run -n "COMPARE_V1" -s 2025-12-01 -e 2026-02-01 -S GOOG --skip-download \
   --strategy-version short_options_with_expire_itm_stock_trade
 
@@ -618,6 +638,23 @@ option_quant_trade_system/
 │   │   ├── dashboard.py             # 可视化仪表盘 (含 K 线/VIX/事件日历图表)
 │   │   └── attribution_charts.py    # 归因可视化 (瀑布图、累计面积图、Greeks 子图)
 │   │
+│   ├── strategy/                      # V2 回测策略抽象层
+│   │   ├── models.py                  # Instrument, Signal, MarketSnapshot, PortfolioState
+│   │   ├── protocol.py                # StrategyProtocol + BacktestStrategy 基类
+│   │   ├── registry.py                # 策略注册表 (BacktestStrategyRegistry)
+│   │   ├── signal_converter.py        # Signal → TradeSignal 桥接
+│   │   ├── signals/                   # 可复用信号计算器
+│   │   │   ├── sma.py                 # SMA 择时 (SmaComputer)
+│   │   │   └── momentum.py            # 动量 + VolTarget (MomentumVolTargetComputer)
+│   │   ├── risk/                      # 可插拔风控守卫
+│   │   │   ├── account_risk.py        # 账户级风控 (AccountRiskGuard)
+│   │   │   └── vol_target_risk.py     # 波动率目标 (VolTargetRiskGuard)
+│   │   └── versions/                  # 具体策略实现
+│   │       ├── sma_stock.py           # SMA + 股票 (合并 SpyBuyAndHold + SpySma200Freq5)
+│   │       ├── sma_leaps.py           # SMA + LEAPS Call
+│   │       ├── momentum_mixed.py      # 动量混合 (合并 SpyMomentumLev + SpyLeapsOnly)
+│   │       └── short_options.py       # Short Options (桥接旧 pipeline)
+│   │
 │   ├── pipeline.py                  # Pipeline 协调器 (含 MarketContext 数据管道)
 │   └── README.md                    # 本文档
 │
@@ -628,6 +665,59 @@ option_quant_trade_system/
         ├── test_attribution.py      # 归因模块端到端验证
         └── test_analysis_visualization.py  # 可视化测试
 ```
+
+---
+
+## V2 策略系统
+
+V2 策略系统 (`src/backtest/strategy/`) 是为回测设计的专用策略抽象层，解决旧策略层的 3 个核心问题：股票 Proxy Hack、伪继承、代码重复。
+
+> 详细设计文档：`docs/development/backtest_v2_architecture.md`
+
+### 核心概念
+
+| 概念 | 说明 |
+|------|------|
+| `Instrument` | 金融工具统一标识 (股票/期权/组合)，消除 stock proxy hack |
+| `Signal` | 策略唯一输出 (ENTRY/EXIT/REBALANCE/ROLL)，纯语义不含执行细节 |
+| `StrategyProtocol` | 策略最小契约：`generate_signals(market, portfolio, dp) → list[Signal]` |
+| `SignalComputer` | 可组合信号计算器 (SmaComputer, MomentumVolTargetComputer) |
+| `RiskGuard` | 可插拔风控中间件 (AccountRiskGuard, VolTargetRiskGuard) |
+| `SignalConverter` | Signal → 旧 TradeSignal 桥接，兼容现有执行引擎 |
+
+### Python API
+
+```python
+from src.backtest.strategy import BacktestStrategyRegistry
+
+# 创建策略
+strategy = BacktestStrategyRegistry.create("sma_stock")
+strategy = BacktestStrategyRegistry.create("momentum_mixed")
+
+# 旧名称兼容
+strategy = BacktestStrategyRegistry.create("spy_buy_and_hold_sma_timing")
+
+# 查看可用策略
+print(BacktestStrategyRegistry.get_available_strategies())
+
+# 使用策略
+from src.backtest.strategy import MarketSnapshot, PortfolioState
+market = MarketSnapshot(date=today, prices={"SPY": 450.0}, vix=18.5)
+portfolio = PortfolioState(date=today, nlv=1_000_000, cash=1_000_000, margin_used=0, positions=[])
+signals = strategy.generate_signals(market, portfolio, data_provider)
+```
+
+### 策略列表
+
+| 策略名 | 类 | 配置 | 旧策略 |
+|--------|---|------|--------|
+| `sma_stock` | `SmaStockStrategy` | SMA200, freq=1 | SpyBuyAndHoldSmaTiming |
+| `spy_sma200_freq5_timing` | `SmaStockStrategy` | SMA50/200 cross, freq=5 | SpySma200Freq5Timing |
+| `sma_leaps` | `SmaLeapsStrategy` | SMA200 + LEAPS Call | LongLeapsCallSmaTiming |
+| `momentum_mixed` | `MomentumMixedStrategy` | stock + LEAPS | SpyMomentumLevVolTarget |
+| `momentum_leaps_only` | `MomentumMixedStrategy` | pure LEAPS + cash interest | SpyLeapsOnlyVolTarget |
+| `short_options_with_assignment` | `ShortOptionsStrategy` | 桥接旧 pipeline | ShortOptionsWithExpire |
+| `short_options_without_assignment` | `ShortOptionsStrategy` | 桥接旧 pipeline | ShortOptionsWithoutExpire |
 
 ---
 

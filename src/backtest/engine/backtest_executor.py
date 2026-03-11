@@ -73,6 +73,8 @@ from src.business.screening.models import ContractOpportunity, MarketType, Scree
 from src.business.screening.pipeline import ScreeningPipeline
 from src.business.strategy.factory import StrategyFactory
 from src.business.strategy.models import MarketContext, TradeSignal
+from src.backtest.strategy.registry import BacktestStrategyRegistry
+from src.backtest.strategy.signal_converter import SignalConverter
 from src.data.models.option import OptionType
 from src.engine.models.enums import StrategyType
 from src.data.models.option import OptionType
@@ -268,36 +270,60 @@ class BacktestExecutor:
             commission_model=commission_model,
         )
 
-        # 初始化 Strategy
+        # 初始化 Strategy — 优先尝试 V2 注册表，fallback 到旧工厂
         strategy_name = self._config.strategy_version
-        self._strategy = StrategyFactory.create(strategy_name)
+        self._is_v2_strategy = False
+        self._v2_strategy = None
+        self._signal_converter = None
 
-        # 全局加载配置（只加载一次）并注入到策略
-        from src.business.config.screening_config import ScreeningConfig
-        from src.business.config.monitoring_config import MonitoringConfig
+        try:
+            v2_strategy = BacktestStrategyRegistry.create(strategy_name)
+            if not getattr(v2_strategy, "uses_legacy_executor", False):
+                # V2 原生策略 — 使用 generate_signals() 单入口
+                self._v2_strategy = v2_strategy
+                self._is_v2_strategy = True
+                self._signal_converter = SignalConverter()
+                logger.info(f"Using V2 strategy: {v2_strategy.name}")
+            else:
+                # V2 注册表中的 Legacy 桥接策略 — 走旧路径
+                self._strategy = v2_strategy.get_legacy_strategy()
+                logger.info(f"Using V2-bridged legacy strategy: {strategy_name}")
+        except ValueError:
+            pass
 
-        self._screening_config = ScreeningConfig.load(strategy_name=strategy_name)
-        self._monitoring_config = MonitoringConfig.load(strategy_name=strategy_name)
-        
-        # 将 YAML 中定义的字符串格式 strategy_types 转换为引擎内部的 StrategyType Enum (如果没有定义，降级由于 CLI 传入的 self._config)
-        yaml_strategy_types_str = getattr(self._screening_config, "strategy_types", [])
-        if yaml_strategy_types_str:
-            yaml_strategy_types = []
-            for stype_str in yaml_strategy_types_str:
-                try:
-                    yaml_strategy_types.append(StrategyType(stype_str))
-                except ValueError:
-                    logger.warning(f"Unknown strategy type in YAML config: {stype_str}")
-            active_strategy_types = yaml_strategy_types if yaml_strategy_types else self._config.strategy_types
-        else:
-            active_strategy_types = self._config.strategy_types
+        if not self._is_v2_strategy and self._v2_strategy is None:
+            # 纯旧策略
+            if not hasattr(self, '_strategy'):
+                self._strategy = StrategyFactory.create(strategy_name)
+                logger.info(f"Using legacy strategy: {strategy_name}")
 
-        self._strategy.set_configs(
-            self._screening_config,
-            self._monitoring_config,
-            strategy_types=active_strategy_types,
-            max_new_positions_per_day=self._config.max_new_positions_per_day,
-        )
+        # 旧策略需要注入配置
+        if not self._is_v2_strategy:
+            from src.business.config.screening_config import ScreeningConfig
+            from src.business.config.monitoring_config import MonitoringConfig
+
+            self._screening_config = ScreeningConfig.load(strategy_name=strategy_name)
+            self._monitoring_config = MonitoringConfig.load(strategy_name=strategy_name)
+
+            # 将 YAML 中定义的字符串格式 strategy_types 转换为引擎内部的 StrategyType Enum (如果没有定义，降级由于 CLI 传入的 self._config)
+            yaml_strategy_types_str = getattr(self._screening_config, "strategy_types", [])
+            if yaml_strategy_types_str:
+                yaml_strategy_types = []
+                for stype_str in yaml_strategy_types_str:
+                    try:
+                        yaml_strategy_types.append(StrategyType(stype_str))
+                    except ValueError:
+                        logger.warning(f"Unknown strategy type in YAML config: {stype_str}")
+                active_strategy_types = yaml_strategy_types if yaml_strategy_types else self._config.strategy_types
+            else:
+                active_strategy_types = self._config.strategy_types
+
+            self._strategy.set_configs(
+                self._screening_config,
+                self._monitoring_config,
+                strategy_types=active_strategy_types,
+                max_new_positions_per_day=self._config.max_new_positions_per_day,
+            )
 
         # 现在的筛选逻辑完全由 Strategy 自主控制，Executor 不再维护 pipelines
 
@@ -438,79 +464,89 @@ class BacktestExecutor:
             self._account_simulator.positions
         )
 
-        # 2. 运行策略监控 (平仓风控)
-        close_signals: list[TradeSignal] = []
-        self._last_monitoring_position_data = []
-        if self._account_simulator.position_count > 0:
-            logger.info("── Strategy Monitoring ─────────────────────────────")
-            pos_data = self._position_manager.get_position_data_for_monitoring(
-                positions=self._account_simulator.positions,
-                as_of_date=current_date,
-            )
-            self._last_monitoring_position_data = pos_data
-            if pos_data:
-                close_signals = self._strategy.evaluate_positions(
-                    pos_data, market_context, data_provider=self._data_provider
-                )
-            if hasattr(self, "_attribution_collector") and self._attribution_collector:
-                self._attribution_collector.capture_daily(
-                    current_date=current_date,
-                    position_data_list=pos_data,
-                    nlv=self._account_simulator.nlv,
-                    cash=self._account_simulator.cash,
-                    margin_used=self._account_simulator.margin_used,
-                    data_provider=self._data_provider,
-                    as_of_date=current_date,
-                )
-
-        # 4. 运行筛选 (寻找新机会)
-        screen_result: ScreeningResult | None = None
-        if self._can_open_new_positions():
-            logger.info("── Screening ───────────────────────────────────────")
-            screen_result = self._run_screening(current_date, market_context)
-
-        # 5. 生成并执行策略决策
         trades_opened = 0
         trades_closed = 0
 
-        logger.info("── Strategy Trading ────────────────────────────────")
-        open_signals: list[TradeSignal] = []
-        if screen_result and screen_result.confirmed:
-            open_signals = self._strategy.generate_entry_signals(
-                candidates=screen_result.confirmed,
-                account=self._account_simulator,
-                context=market_context
-            )
+        if self._is_v2_strategy:
+            # ═══ V2 策略路径: generate_signals() 单入口 ═══
+            self._run_v2_strategy_day(current_date, market_context)
+            # trades count 从 snapshot 中获取不到，在 _run_v2_strategy_day 中设置
+            trades_opened = self._v2_trades_opened
+            trades_closed = self._v2_trades_closed
+        else:
+            # ═══ Legacy 策略路径: evaluate_positions + find_opportunities + generate_entry_signals ═══
 
-        # 合并所有信号并执行
-        all_signals = close_signals + open_signals
-        
-        trade_index = 0
-        for signal in all_signals:
-            if signal.action == TradeAction.OPEN:
-                if self._execute_open_signal(signal, current_date):
-                    trades_opened += 1
-                    trade_index += 1
-                    if isinstance(signal.quote, ContractOpportunity):
-                        self._log_trade_execution(signal, signal.quote, trade_index)
-            elif signal.action == TradeAction.CLOSE:
-                if self._execute_close_signal(signal, current_date):
-                    trades_closed += 1
-            elif signal.action == TradeAction.ROLL:
-                close_success, open_success = self._execute_roll_decision(signal, current_date)
-                if close_success:
-                    trades_closed += 1
-                if open_success:
-                    trades_opened += 1
-                    trade_index += 1
+            # 2. 运行策略监控 (平仓风控)
+            close_signals: list[TradeSignal] = []
+            self._last_monitoring_position_data = []
+            if self._account_simulator.position_count > 0:
+                logger.info("── Strategy Monitoring ─────────────────────────────")
+                pos_data = self._position_manager.get_position_data_for_monitoring(
+                    positions=self._account_simulator.positions,
+                    as_of_date=current_date,
+                )
+                self._last_monitoring_position_data = pos_data
+                if pos_data:
+                    close_signals = self._strategy.evaluate_positions(
+                        pos_data, market_context, data_provider=self._data_provider
+                    )
+                if hasattr(self, "_attribution_collector") and self._attribution_collector:
+                    self._attribution_collector.capture_daily(
+                        current_date=current_date,
+                        position_data_list=pos_data,
+                        nlv=self._account_simulator.nlv,
+                        cash=self._account_simulator.cash,
+                        margin_used=self._account_simulator.margin_used,
+                        data_provider=self._data_provider,
+                        as_of_date=current_date,
+                    )
+
+            # 4. 运行筛选 (寻找新机会)
+            screen_result: ScreeningResult | None = None
+            if self._can_open_new_positions():
+                logger.info("── Screening ───────────────────────────────────────")
+                screen_result = self._run_screening(current_date, market_context)
+
+            # 5. 生成并执行策略决策
+            logger.info("── Strategy Trading ────────────────────────────────")
+            open_signals: list[TradeSignal] = []
+            if screen_result and screen_result.confirmed:
+                open_signals = self._strategy.generate_entry_signals(
+                    candidates=screen_result.confirmed,
+                    account=self._account_simulator,
+                    context=market_context
+                )
+
+            # 合并所有信号并执行
+            all_signals = close_signals + open_signals
+
+            trade_index = 0
+            for signal in all_signals:
+                if signal.action == TradeAction.OPEN:
+                    if self._execute_open_signal(signal, current_date):
+                        trades_opened += 1
+                        trade_index += 1
+                        if isinstance(signal.quote, ContractOpportunity):
+                            self._log_trade_execution(signal, signal.quote, trade_index)
+                elif signal.action == TradeAction.CLOSE:
+                    if self._execute_close_signal(signal, current_date):
+                        trades_closed += 1
+                elif signal.action == TradeAction.ROLL:
+                    close_success, open_success = self._execute_roll_decision(signal, current_date)
+                    if close_success:
+                        trades_closed += 1
+                    if open_success:
+                        trades_opened += 1
+                        trade_index += 1
 
         # 6. 处理到期期权 (盘后交收计算)
         self._process_expirations(current_date)
 
         # 6.5 计提现金利息 (如果策略支持)
         daily_interest = 0.0
-        if hasattr(self._strategy, '_compute_daily_interest'):
-            daily_interest = self._strategy._compute_daily_interest(
+        active_strategy = self._v2_strategy if self._is_v2_strategy else self._strategy
+        if hasattr(active_strategy, '_compute_daily_interest'):
+            daily_interest = active_strategy._compute_daily_interest(
                 cash=self._account_simulator.cash,
                 current_date=current_date,
                 data_provider=self._data_provider,
@@ -525,16 +561,17 @@ class BacktestExecutor:
         snapshot.interest_accrued = daily_interest
 
         # 捕获策略信号元数据 (供可视化使用)
-        if hasattr(self._strategy, '_last_signal_detail') and self._strategy._last_signal_detail:
-            snapshot.strategy_metrics = dict(self._strategy._last_signal_detail)
+        active_strategy = self._v2_strategy if self._is_v2_strategy else self._strategy
+        if hasattr(active_strategy, '_last_signal_detail') and active_strategy._last_signal_detail:
+            snapshot.strategy_metrics = dict(active_strategy._last_signal_detail)
 
         # 捕获现金利息元数据
         if daily_interest > 0:
             snapshot.strategy_metrics["daily_interest"] = daily_interest
-        if hasattr(self._strategy, '_cumulative_interest'):
-            snapshot.strategy_metrics["cumulative_interest"] = self._strategy._cumulative_interest
-        if hasattr(self._strategy, '_tnx_cache') and current_date in self._strategy._tnx_cache:
-            snapshot.strategy_metrics["risk_free_rate"] = self._strategy._tnx_cache[current_date]
+        if hasattr(active_strategy, '_cumulative_interest'):
+            snapshot.strategy_metrics["cumulative_interest"] = active_strategy._cumulative_interest
+        if hasattr(active_strategy, '_tnx_cache') and current_date in active_strategy._tnx_cache:
+            snapshot.strategy_metrics["risk_free_rate"] = active_strategy._tnx_cache[current_date]
 
         self._daily_snapshots.append(snapshot)
 
@@ -543,6 +580,152 @@ class BacktestExecutor:
             f"positions={snapshot.position_count}, "
             f"opened={trades_opened}, closed={trades_closed}"
         )
+
+    def _build_market_snapshot(self, current_date: date, market_context: MarketContext) -> "V2MarketSnapshot":
+        """Build a V2 MarketSnapshot from the legacy MarketContext."""
+        from src.backtest.strategy.models import MarketSnapshot as V2MarketSnapshot
+
+        # TNX risk-free rate
+        risk_free_rate = None
+        try:
+            tnx_data = self._data_provider.get_macro_data("^TNX", current_date, current_date)
+            if tnx_data:
+                risk_free_rate = tnx_data[-1].close / 100.0  # TNX is in %, convert to decimal
+        except Exception:
+            pass
+
+        return V2MarketSnapshot(
+            date=current_date,
+            prices=dict(market_context.underlying_prices),
+            vix=market_context.vix_value,
+            risk_free_rate=risk_free_rate,
+        )
+
+    def _build_portfolio_state(self, current_date: date) -> "V2PortfolioState":
+        """Build a V2 PortfolioState from current account state."""
+        from src.backtest.strategy.models import (
+            PortfolioState as V2PortfolioState,
+            PositionView,
+            Instrument,
+            InstrumentType,
+            OptionRight,
+        )
+
+        position_views = []
+        for pos in self._account_simulator.positions.values():
+            if pos.is_closed:
+                continue
+
+            # Build Instrument from SimulatedPosition
+            if pos.asset_type == AssetType.STOCK or (pos.strike is not None and pos.strike < 1.0 and pos.lot_size == 1):
+                # Stock or stock proxy
+                instrument = Instrument(
+                    type=InstrumentType.STOCK,
+                    underlying=pos.underlying or pos.symbol,
+                )
+            else:
+                # Option
+                right = None
+                if pos.option_type is not None:
+                    right = OptionRight.CALL if pos.option_type == OptionType.CALL else OptionRight.PUT
+                instrument = Instrument(
+                    type=InstrumentType.OPTION,
+                    underlying=pos.underlying or pos.symbol,
+                    right=right,
+                    strike=pos.strike,
+                    expiry=pos.expiration,
+                    lot_size=pos.lot_size,
+                )
+
+            # Compute DTE
+            dte = None
+            if pos.expiration:
+                dte = (pos.expiration - current_date).days
+
+            position_views.append(PositionView(
+                position_id=pos.position_id,
+                instrument=instrument,
+                quantity=pos.quantity,
+                entry_price=pos.entry_price,
+                entry_date=pos.entry_date,
+                current_price=pos.current_price,
+                underlying_price=pos.underlying_price,
+                unrealized_pnl=pos.unrealized_pnl,
+                dte=dte,
+                lot_size=pos.lot_size,
+            ))
+
+        return V2PortfolioState(
+            date=current_date,
+            nlv=self._account_simulator.nlv,
+            cash=self._account_simulator.cash,
+            margin_used=self._account_simulator.margin_used,
+            positions=position_views,
+        )
+
+    def _run_v2_strategy_day(self, current_date: date, market_context: MarketContext) -> None:
+        """Execute a single day using V2 strategy (generate_signals single entry point).
+
+        This builds read-only snapshots, calls the strategy, converts signals,
+        and executes trades through the existing engine.
+        """
+        logger.info("── V2 Strategy ─────────────────────────────────────")
+
+        # 1. Build read-only snapshots
+        market = self._build_market_snapshot(current_date, market_context)
+        portfolio = self._build_portfolio_state(current_date)
+
+        # 2. Attribution capture (before strategy runs, same timing as legacy path)
+        if hasattr(self, "_attribution_collector") and self._attribution_collector:
+            pos_data = self._position_manager.get_position_data_for_monitoring(
+                positions=self._account_simulator.positions,
+                as_of_date=current_date,
+            )
+            self._last_monitoring_position_data = pos_data
+            if pos_data:
+                self._attribution_collector.capture_daily(
+                    current_date=current_date,
+                    position_data_list=pos_data,
+                    nlv=self._account_simulator.nlv,
+                    cash=self._account_simulator.cash,
+                    margin_used=self._account_simulator.margin_used,
+                    data_provider=self._data_provider,
+                    as_of_date=current_date,
+                )
+
+        # 3. Generate signals (single entry point)
+        v2_signals = self._v2_strategy.generate_signals(market, portfolio, self._data_provider)
+        logger.info(f"  V2 strategy generated {len(v2_signals)} signals")
+
+        # 4. Convert V2 Signal → legacy TradeSignal
+        trade_signals: list[TradeSignal] = []
+        if v2_signals and self._signal_converter:
+            trade_signals = self._signal_converter.convert_to_trade_signals(
+                v2_signals, market, self._data_provider
+            )
+
+        # 5. Execute through existing engine
+        self._v2_trades_opened = 0
+        self._v2_trades_closed = 0
+        trade_index = 0
+
+        for signal in trade_signals:
+            if signal.action == TradeAction.OPEN:
+                if self._execute_open_signal(signal, current_date):
+                    self._v2_trades_opened += 1
+                    trade_index += 1
+                    if isinstance(signal.quote, ContractOpportunity):
+                        self._log_trade_execution(signal, signal.quote, trade_index)
+            elif signal.action == TradeAction.CLOSE:
+                if self._execute_close_signal(signal, current_date):
+                    self._v2_trades_closed += 1
+            elif signal.action == TradeAction.ROLL:
+                close_success, open_success = self._execute_roll_decision(signal, current_date)
+                if close_success:
+                    self._v2_trades_closed += 1
+                if open_success:
+                    self._v2_trades_opened += 1
+                    trade_index += 1
 
     def _process_expirations(self, current_date: date) -> None:
         """处理到期期权
