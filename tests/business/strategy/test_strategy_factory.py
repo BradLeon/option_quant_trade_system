@@ -6,6 +6,7 @@ from src.business.strategy.versions.short_options_with_expire_itm_stock_trade im
 from src.business.strategy.versions.short_options_without_expire_itm_stock_trade import ShortOptionsWithoutExpireItmStockTrade
 from src.business.strategy.versions.long_leaps_call_sma_timing import LongLeapsCallSmaTiming
 from src.business.strategy.versions.spy_sma200_freq5_timing import SpySma200Freq5Timing
+from src.business.strategy.versions.spy_leaps_only_vol_target import SpyLeapsOnlyVolTarget
 
 def test_strategy_factory_registry():
     """Test that the strategy factory registers strategies correctly."""
@@ -45,6 +46,14 @@ def test_strategy_factory_create_sma_freq5():
     assert strategy.name == "spy_sma200_freq5_timing"
     assert strategy.position_side == "LONG"
     assert strategy.decision_frequency == 5
+
+def test_strategy_factory_create_leaps_only_vol_target():
+    """Test creating SpyLeapsOnlyVolTarget via factory."""
+    strategy = StrategyFactory.create("spy_leaps_only_vol_target")
+    assert isinstance(strategy, SpyLeapsOnlyVolTarget)
+    assert isinstance(strategy, BaseTradeStrategy)
+    assert strategy.name == "spy_leaps_only_vol_target"
+    assert strategy.position_side == "LONG"
 
 def test_strategy_factory_invalid():
     """Test that creating an unknown strategy raises ValueError."""
