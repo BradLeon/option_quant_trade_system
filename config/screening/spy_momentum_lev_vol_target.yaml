@@ -1,0 +1,47 @@
+# SPY Momentum + Leverage + Vol Target Strategy
+# 动量信号 + 杠杆倍数 + 波动率目标
+strategy_types:
+  - long_call
+
+leaps_config:
+  use_synthetic: true            # Use B-S synthetic option chain (no ThetaData needed)
+
+# 策略参数覆盖 — 对齐诊断脚本行为（低阈值 + 短冷却）
+momentum_lev_vol_target_config:
+  rebalance_threshold: 0.05       # 5% delta 即触发再平衡 (诊断脚本=0%)
+  min_rebalance_interval: 5       # 1 天冷却 (诊断脚本=0)
+  max_capital_pct: 1.0            # 100% 资金利用 (诊断脚本=100%)
+
+# 兼容 BacktestExecutor 的最小化筛选配置（直通）
+market_filter:
+  us_market:
+    vix_range: [0, 999]
+    term_structure_threshold: 999
+    trend_indices:
+    - symbol: SPY
+      weight: 1.0
+    trend_required: any
+  hk_market:
+    volatility_source: 2800.HK
+    iv_calculation: atm_weighted
+    iv_range: [0, 999]
+    trend_indices:
+    - symbol: 2800.HK
+      weight: 1.0
+    trend_required: any
+
+underlying_filter:
+  iv_rank_enabled: false
+  iv_hv_enabled: false
+  technical:
+    enabled: false
+  fundamental:
+    enabled: false
+
+contract_filter:
+  liquidity:
+    min_open_interest: 0
+    max_bid_ask_spread: 1.0
+  metrics:
+    expected_roc_enabled: false
+    tgr_enabled: false

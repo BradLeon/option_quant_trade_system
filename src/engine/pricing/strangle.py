@@ -1,4 +1,4 @@
-"""Short Strangle strategy implementation.
+"""Short Strangle pricer implementation.
 
 Sell both a put and a call with different strikes to collect premium.
 """
@@ -9,12 +9,12 @@ from src.data.models.option import Greeks, OptionType
 from src.engine.bs.core import calc_d1, calc_d2, calc_n
 from src.engine.models import BSParams
 from src.engine.models.enums import PositionSide
-from src.engine.models.strategy import OptionLeg, StrategyParams
-from src.engine.strategy.base import OptionStrategy
+from src.engine.models.pricing import OptionLeg, PricingParams
+from src.engine.pricing.base import OptionPricer
 
 
-class ShortStrangleStrategy(OptionStrategy):
-    """Short Strangle strategy.
+class ShortStranglePricer(OptionPricer):
+    """Short Strangle pricer.
 
     Short put (lower strike) + Short call (higher strike).
 
@@ -94,7 +94,7 @@ class ShortStrangleStrategy(OptionStrategy):
             volatility=call_volatility,
             greeks=Greeks(delta=call_delta, gamma=call_gamma, theta=call_theta, vega=call_vega),
         )
-        params = StrategyParams(
+        params = PricingParams(
             spot_price=spot_price,
             volatility=volatility,
             time_to_expiry=time_to_expiry,

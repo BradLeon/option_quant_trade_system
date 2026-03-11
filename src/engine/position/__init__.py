@@ -8,8 +8,8 @@ This module provides calculations at the single position level:
 - Single-trade risk/return metrics
 - Strategy Attractiveness Score (SAS)
 
-Note: For strategy metrics (expected return, Sharpe ratio, etc.),
-use Strategy classes directly from src.engine.strategy.
+Note: For pricing metrics (expected return, Sharpe ratio, etc.),
+use Pricer classes directly from src.engine.pricing.
 """
 
 from src.engine.position.greeks import (

@@ -84,6 +84,8 @@ class StrategyType(str, Enum):
     PARTIAL_COVERED_CALL = "partial_covered_call"
     NAKED_CALL = "naked_call"
     SHORT_STRANGLE = "short_strangle"
+    LONG_PUT = "long_put"        # 买入 Put（看跌/对冲）
+    LONG_CALL = "long_call"      # 买入 Call（看涨）
     UNKNOWN = "unknown"
     NOT_OPTION = "not_option"
 

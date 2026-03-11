@@ -375,7 +375,7 @@ option_quant_trade_system/
 │   ├── business/                   # 业务层 (实盘交易)
 │   │   ├── cli/                    # CLI 入口 (optrade 命令)
 │   │   ├── strategy/               # 策略抽象层 (多版本共存)
-│   │   │   ├── base.py             # BaseOptionStrategy 抽象基类
+│   │   │   ├── base.py             # BaseTradeStrategy 抽象基类
 │   │   │   ├── factory.py          # 策略工厂
 │   │   │   ├── models.py           # TradeSignal, MarketContext
 │   │   │   └── versions/           # 具体策略实现
@@ -409,7 +409,7 @@ option_quant_trade_system/
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                    BaseOptionStrategy (抽象基类)                      │
+│                    BaseTradeStrategy (抽象基类)                      │
 ├─────────────────────────────────────────────────────────────────────┤
 │  evaluate_positions()  →  持仓监控，生成平仓/展期信号                   │
 │  find_opportunities()  →  市场筛选，寻找开仓机会                        │

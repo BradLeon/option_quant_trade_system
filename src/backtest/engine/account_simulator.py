@@ -390,6 +390,51 @@ class AccountSimulator:
 
         return True
 
+    def merge_stock_positions(self, symbol: str) -> str | None:
+        """合并同标的的多个股票仓位为一个（加权平均成本法）
+
+        stock proxy 增量加仓会创建多个独立仓位，合并后保持每个标的最多 1 个股票仓位，
+        避免减仓时出现多次 SELL 交易。
+
+        Args:
+            symbol: 股票代码
+
+        Returns:
+            合并后的 position_id，或 None 如果无需合并
+        """
+        stock_pos = [
+            p for p in self._positions.values()
+            if p.is_stock and p.symbol == symbol
+        ]
+        if len(stock_pos) <= 1:
+            return stock_pos[0].position_id if stock_pos else None
+
+        # 计算合并数据
+        total_qty = sum(p.quantity for p in stock_pos)
+        total_cost = sum(p.quantity * p.entry_price for p in stock_pos)
+        avg_price = total_cost / total_qty if total_qty != 0 else 0.0
+        total_commission = sum(p.commission_paid for p in stock_pos)
+
+        # 保留最新的仓位作为主仓位，取最早的 entry_date
+        stock_pos.sort(key=lambda p: p.entry_date)
+        primary = stock_pos[-1]  # 最新的 position_id
+        primary.quantity = total_qty
+        primary.entry_price = avg_price
+        primary.entry_date = stock_pos[0].entry_date  # 最早入场时间
+        primary.market_value = total_qty * primary.current_price
+        primary.unrealized_pnl = primary.market_value - abs(total_cost)
+        primary.commission_paid = total_commission
+
+        # 删除被合并的旧仓位
+        for p in stock_pos[:-1]:
+            del self._positions[p.position_id]
+
+        logger.debug(
+            f"Merged {len(stock_pos)} stock positions for {symbol}: "
+            f"total_qty={total_qty}, avg_price={avg_price:.2f}"
+        )
+        return primary.position_id
+
     def add_stock_position(
         self,
         symbol: str,

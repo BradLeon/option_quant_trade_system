@@ -199,8 +199,15 @@ class BacktestPipeline:
         from src.backtest.attribution.collector import AttributionCollector
         from src.backtest.engine.backtest_executor import BacktestExecutor
 
+        # Check if strategy needs synthetic option chain
+        data_provider = self._create_data_provider()
+
         attribution_collector = AttributionCollector()
-        executor = BacktestExecutor(self.config, attribution_collector=attribution_collector)
+        executor = BacktestExecutor(
+            self.config,
+            data_provider=data_provider,
+            attribution_collector=attribution_collector,
+        )
         backtest_result = executor.run()
         logger.info(
             f"Backtest completed: {backtest_result.trading_days} days, "
@@ -316,6 +323,45 @@ class BacktestPipeline:
             ),
         )
 
+    def _create_data_provider(self):
+        """Create the appropriate data provider.
+
+        If the strategy config has `leaps_config.use_synthetic: true`,
+        wraps DuckDBProvider with SyntheticLeapsProvider to generate
+        B-S synthetic option chains instead of reading from parquet.
+        """
+        from src.backtest.data.duckdb_provider import DuckDBProvider
+
+        base_provider = DuckDBProvider(str(self._data_dir))
+
+        if self._is_synthetic_strategy():
+            from src.backtest.data.synthetic_leaps_provider import SyntheticLeapsProvider
+
+            logger.info("Using SyntheticLeapsProvider for LEAPS backtest")
+            return SyntheticLeapsProvider(base_provider)
+
+        return base_provider
+
+    def _is_synthetic_strategy(self) -> bool:
+        """Check if the strategy YAML config has use_synthetic: true."""
+        import yaml
+
+        strategy_version = getattr(self.config, "strategy_version", "")
+        if not strategy_version:
+            return False
+
+        try:
+            config_dir = Path(__file__).parent.parent.parent / "config" / "screening"
+            config_path = config_dir / f"{strategy_version}.yaml"
+            if config_path.exists():
+                with open(config_path) as f:
+                    raw = yaml.safe_load(f) or {}
+                return raw.get("leaps_config", {}).get("use_synthetic", False)
+        except Exception as e:
+            logger.debug(f"Failed to check synthetic strategy config: {e}")
+
+        return False
+
     def _ensure_all_data(self) -> DataStatus:
         """确保所有数据存在，返回状态报告"""
         status = DataStatus()
@@ -404,11 +450,44 @@ class BacktestPipeline:
         dte_range = contract_filter.get("dte_range", [7, 60])
         max_dte = dte_range[1] if len(dte_range) > 1 else 60
 
+        # LEAPS 策略需要更大的 DTE 范围，从策略版本配置中读取
+        max_dte = self._resolve_max_dte(max_dte)
+
         return self._data_downloader.download_options_incremental(
             gaps,
             max_dte=max_dte,
             strike_range=30,
         )
+
+    def _resolve_max_dte(self, default_max_dte: int) -> int:
+        """根据策略版本配置确定所需的最大 DTE
+
+        LEAPS 等买方策略需要远期合约 (DTE 180-400)，远超卖方策略默认的 60-90。
+        从策略版本的 YAML 配置中读取 leaps_config.max_dte，取两者最大值。
+        """
+        strategy_version = getattr(self.config, "strategy_version", "")
+        if not strategy_version:
+            return default_max_dte
+
+        try:
+            import yaml
+            config_dir = Path(__file__).parent.parent.parent / "config" / "screening"
+            config_path = config_dir / f"{strategy_version}.yaml"
+            if config_path.exists():
+                with open(config_path) as f:
+                    raw = yaml.safe_load(f) or {}
+                leaps_cfg = raw.get("leaps_config", {})
+                if leaps_cfg:
+                    strategy_max_dte = leaps_cfg.get("max_dte", 0)
+                    if strategy_max_dte > default_max_dte:
+                        logger.info(
+                            f"LEAPS strategy detected: expanding max_dte {default_max_dte} → {strategy_max_dte}"
+                        )
+                        return strategy_max_dte
+        except Exception as e:
+            logger.debug(f"Failed to read strategy version config for DTE: {e}")
+
+        return default_max_dte
 
     def _download_macro(self, gaps: list[DataGap]) -> int:
         """下载宏观数据"""

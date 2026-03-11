@@ -1,6 +1,6 @@
-"""Strategy factory for creating option strategies from positions.
+"""Pricer factory for creating option pricers from positions.
 
-This module provides a reusable factory pattern for creating strategy instances,
+This module provides a reusable factory pattern for creating pricer instances,
 including automatic handling of partial coverage scenarios.
 """
 
@@ -15,27 +15,27 @@ from src.data.models.stock import StockVolatility
 from src.data.providers.ibkr_provider import IBKRProvider
 from src.data.providers.futu_provider import FutuProvider
 from src.engine.models.enums import PositionSide, StrategyType
-from src.engine.models.strategy import OptionLeg, StrategyParams
-from src.engine.strategy.base import OptionStrategy
-from src.engine.strategy.covered_call import CoveredCallStrategy
-from src.engine.strategy.short_call import ShortCallStrategy
-from src.engine.strategy.short_put import ShortPutStrategy
-from src.engine.strategy.strangle import ShortStrangleStrategy
+from src.engine.models.pricing import OptionLeg, PricingParams
+from src.engine.pricing.base import OptionPricer
+from src.engine.pricing.covered_call import CoveredCallPricer
+from src.engine.pricing.short_call import ShortCallPricer
+from src.engine.pricing.short_put import ShortPutPricer
+from src.engine.pricing.strangle import ShortStranglePricer
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class StrategyInstance:
-    """Represents a strategy instance with its quantity ratio.
+class PricerInstance:
+    """Represents a pricer instance with its quantity ratio.
 
     Attributes:
-        strategy: The option strategy object
+        pricer: The option pricer object
         quantity_ratio: Portion of original position (0.0-1.0)
         description: Human-readable description (e.g., "covered (150/200)")
     """
 
-    strategy: OptionStrategy
+    pricer: OptionPricer
     quantity_ratio: float  # 0.0 - 1.0
     description: str
 
@@ -113,22 +113,22 @@ def build_option_leg(ap: AccountPosition) -> OptionLeg:
     )
 
 
-def build_strategy_params(
+def build_pricing_params(
     ap: AccountPosition, hv: float | None = None
-) -> StrategyParams:
-    """Build StrategyParams data model from AccountPosition.
+) -> PricingParams:
+    """Build PricingParams data model from AccountPosition.
 
     Args:
         ap: AccountPosition with option data.
         hv: Historical volatility (from StockVolatility), optional.
 
     Returns:
-        StrategyParams with spot_price, volatility, time_to_expiry, hv, dte.
+        PricingParams with spot_price, volatility, time_to_expiry, hv, dte.
     """
     dte_days = calc_dte_from_expiry(ap.expiry)
     time_to_expiry = dte_days / 365.0 if dte_days else 0.01  # Minimum 0.01 years
 
-    return StrategyParams(
+    return PricingParams(
         spot_price=ap.underlying_price,
         volatility=ap.iv,
         time_to_expiry=time_to_expiry,
@@ -187,6 +187,10 @@ def classify_option_strategy(
     if position.option_type == "put" and position.quantity < 0:
         return StrategyType.SHORT_PUT
 
+    # Long Put: PUT + quantity > 0 (bought)
+    if position.option_type == "put" and position.quantity > 0:
+        return StrategyType.LONG_PUT
+
     # Covered Call / Partial / Naked Call: CALL + quantity < 0 (sold)
     if position.option_type == "call" and position.quantity < 0:
         # Check if we have the underlying stock
@@ -219,6 +223,10 @@ def classify_option_strategy(
         else:
             return StrategyType.NAKED_CALL  # No stock position
 
+    # Long Call: CALL + quantity > 0 (bought, not part of covered strategy)
+    if position.option_type == "call" and position.quantity > 0:
+        return StrategyType.LONG_CALL
+
     # Short Strangle: Check if there's both PUT and CALL short positions
     # (This is simplified - real detection would check strikes/expiries)
     if position.option_type in ["put", "call"] and position.quantity < 0:
@@ -234,18 +242,18 @@ def classify_option_strategy(
 # ============================================================================
 
 
-def create_strategies_from_position(
+def create_pricers_from_position(
     position: AccountPosition,
     all_positions: list[AccountPosition],
     ibkr_provider: IBKRProvider | None = None,
     futu_provider: FutuProvider | None = None,
     risk_free_rate: float = 0.03,
-) -> list[StrategyInstance]:
-    """Create strategy instances from a position, handling partial coverage.
+) -> list[PricerInstance]:
+    """Create pricer instances from a position, handling partial coverage.
 
     This is the main factory function. It detects the strategy type and creates
-    appropriate strategy objects. For partial coverage scenarios, it automatically
-    splits into multiple strategies (covered + naked portions).
+    appropriate pricer objects. For partial coverage scenarios, it automatically
+    splits into multiple pricers (covered + naked portions).
 
     Args:
         position: The option position to analyze
@@ -255,18 +263,18 @@ def create_strategies_from_position(
         risk_free_rate: Risk-free rate for calculations (default: 0.03)
 
     Returns:
-        List of StrategyInstance objects. Most positions return 1 strategy,
+        List of PricerInstance objects. Most positions return 1 pricer,
         but partial coverage returns 2 (covered + naked portions).
 
     Example:
         >>> position = GOOG -2 CALL (200 shares)
         >>> stock = GOOG 150 shares
-        >>> strategies = create_strategies_from_position(position, [position, stock])
-        >>> len(strategies)
+        >>> pricers = create_pricers_from_position(position, [position, stock])
+        >>> len(pricers)
         2
-        >>> strategies[0].description
+        >>> pricers[0].description
         'covered_call (150/200 shares, 75%)'
-        >>> strategies[1].description
+        >>> pricers[1].description
         'naked_call (50/200 shares, 25%)'
     """
     # Step 1: Classify strategy type
@@ -287,20 +295,24 @@ def create_strategies_from_position(
     # Step 4: Build common components
     try:
         leg = build_option_leg(position)
-        params = build_strategy_params(position, hv=hv)
+        params = build_pricing_params(position, hv=hv)
     except Exception as e:
         logger.warning(f"{position.symbol}: Failed to build leg/params: {e}")
         return []
 
     # Step 5: Create strategy instance(s)
     if strategy_type in [StrategyType.COVERED_CALL, StrategyType.PARTIAL_COVERED_CALL]:
-        return _create_covered_call_strategies(
+        return _create_covered_call_pricers(
             position, all_positions, strategy_type, leg, params
         )
     elif strategy_type == StrategyType.NAKED_CALL:
-        return _create_naked_call_strategy(position, leg, params)
+        return _create_naked_call_pricer(position, leg, params)
     elif strategy_type == StrategyType.SHORT_PUT:
-        return _create_short_put_strategy(position, leg, params)
+        return _create_short_put_pricer(position, leg, params)
+    elif strategy_type == StrategyType.LONG_PUT:
+        return _create_long_put_pricer(position, leg, params)
+    elif strategy_type == StrategyType.LONG_CALL:
+        return _create_long_call_pricer(position, leg, params)
     else:
         logger.warning(f"{position.symbol}: Strategy type '{strategy_type}' not implemented")
         return []
@@ -431,14 +443,14 @@ def _fetch_volatility_data(
     return get_volatility_data(underlying_symbol, ibkr_provider)
 
 
-def _create_covered_call_strategies(
+def _create_covered_call_pricers(
     position: AccountPosition,
     all_positions: list[AccountPosition],
     strategy_type: StrategyType,
     leg: OptionLeg,
-    params: StrategyParams,
-) -> list[StrategyInstance]:
-    """Create covered call strategy instance(s), splitting if partial coverage."""
+    params: PricingParams,
+) -> list[PricerInstance]:
+    """Create covered call pricer instance(s), splitting if partial coverage."""
     # Find stock position
     underlying_symbol = normalize_symbol(position.underlying or position.symbol)
     stock_position = next(
@@ -464,9 +476,9 @@ def _create_covered_call_strategies(
 
     stock_cost_basis = stock_position.avg_cost
 
-    # If fully covered, return single strategy
+    # If fully covered, return single pricer
     if coverage_ratio >= 1.0:
-        strategy = CoveredCallStrategy(
+        pricer = CoveredCallPricer(
             spot_price=params.spot_price,
             strike_price=leg.strike,
             premium=leg.premium,
@@ -482,8 +494,8 @@ def _create_covered_call_strategies(
             vega=leg.vega,
         )
         return [
-            StrategyInstance(
-                strategy=strategy,
+            PricerInstance(
+                pricer=pricer,
                 quantity_ratio=1.0,
                 description=f"covered_call ({stock_shares:.0f}/{call_shares:.0f} shares, 100%)",
             )
@@ -497,7 +509,7 @@ def _create_covered_call_strategies(
     )
 
     # Create covered portion
-    covered_strategy = CoveredCallStrategy(
+    covered_pricer = CoveredCallPricer(
         spot_price=params.spot_price,
         strike_price=leg.strike,
         premium=leg.premium,
@@ -514,7 +526,7 @@ def _create_covered_call_strategies(
     )
 
     # Create naked portion
-    naked_strategy = ShortCallStrategy(
+    naked_pricer = ShortCallPricer(
         spot_price=params.spot_price,
         strike_price=leg.strike,
         premium=leg.premium,
@@ -530,24 +542,24 @@ def _create_covered_call_strategies(
     )
 
     return [
-        StrategyInstance(
-            strategy=covered_strategy,
+        PricerInstance(
+            pricer=covered_pricer,
             quantity_ratio=coverage_ratio,
             description=f"covered_call ({stock_shares:.0f}/{call_shares:.0f} shares, {coverage_ratio:.0%})",
         ),
-        StrategyInstance(
-            strategy=naked_strategy,
+        PricerInstance(
+            pricer=naked_pricer,
             quantity_ratio=1.0 - coverage_ratio,
             description=f"naked_call ({call_shares - stock_shares:.0f}/{call_shares:.0f} shares, {(1-coverage_ratio):.0%})",
         ),
     ]
 
 
-def _create_naked_call_strategy(
-    position: AccountPosition, leg: OptionLeg, params: StrategyParams
-) -> list[StrategyInstance]:
-    """Create naked call strategy instance."""
-    strategy = ShortCallStrategy(
+def _create_naked_call_pricer(
+    position: AccountPosition, leg: OptionLeg, params: PricingParams
+) -> list[PricerInstance]:
+    """Create naked call pricer instance."""
+    pricer = ShortCallPricer(
         spot_price=params.spot_price,
         strike_price=leg.strike,
         premium=leg.premium,
@@ -563,19 +575,19 @@ def _create_naked_call_strategy(
     )
 
     return [
-        StrategyInstance(
-            strategy=strategy,
+        PricerInstance(
+            pricer=pricer,
             quantity_ratio=1.0,
             description="naked_call (100%)",
         )
     ]
 
 
-def _create_short_put_strategy(
-    position: AccountPosition, leg: OptionLeg, params: StrategyParams
-) -> list[StrategyInstance]:
-    """Create short put strategy instance."""
-    strategy = ShortPutStrategy(
+def _create_short_put_pricer(
+    position: AccountPosition, leg: OptionLeg, params: PricingParams
+) -> list[PricerInstance]:
+    """Create short put pricer instance."""
+    pricer = ShortPutPricer(
         spot_price=params.spot_price,
         strike_price=leg.strike,
         premium=leg.premium,
@@ -591,9 +603,69 @@ def _create_short_put_strategy(
     )
 
     return [
-        StrategyInstance(
-            strategy=strategy,
+        PricerInstance(
+            pricer=pricer,
             quantity_ratio=1.0,
             description="short_put (100%)",
+        )
+    ]
+
+
+def _create_long_put_pricer(
+    position: AccountPosition, leg: OptionLeg, params: PricingParams
+) -> list[PricerInstance]:
+    """Create long put pricer instance."""
+    from src.engine.pricing.long_put import LongPutPricer
+
+    pricer = LongPutPricer(
+        spot_price=params.spot_price,
+        strike_price=leg.strike,
+        premium=leg.premium,
+        volatility=params.volatility,
+        time_to_expiry=params.time_to_expiry,
+        risk_free_rate=params.risk_free_rate,
+        hv=params.hv,
+        dte=params.dte,
+        delta=leg.delta,
+        gamma=leg.gamma,
+        theta=leg.theta,
+        vega=leg.vega,
+    )
+
+    return [
+        PricerInstance(
+            pricer=pricer,
+            quantity_ratio=1.0,
+            description="long_put (100%)",
+        )
+    ]
+
+
+def _create_long_call_pricer(
+    position: AccountPosition, leg: OptionLeg, params: PricingParams
+) -> list[PricerInstance]:
+    """Create long call pricer instance."""
+    from src.engine.pricing.long_call import LongCallPricer
+
+    pricer = LongCallPricer(
+        spot_price=params.spot_price,
+        strike_price=leg.strike,
+        premium=leg.premium,
+        volatility=params.volatility,
+        time_to_expiry=params.time_to_expiry,
+        risk_free_rate=params.risk_free_rate,
+        hv=params.hv,
+        dte=params.dte,
+        delta=leg.delta,
+        gamma=leg.gamma,
+        theta=leg.theta,
+        vega=leg.vega,
+    )
+
+    return [
+        PricerInstance(
+            pricer=pricer,
+            quantity_ratio=1.0,
+            description="long_call (100%)",
         )
     ]

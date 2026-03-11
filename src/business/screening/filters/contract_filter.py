@@ -45,8 +45,8 @@ from src.engine.contract.metrics import (
 )
 from src.engine.bs.greeks import calc_bs_greeks
 from src.engine.models import BSParams
-from src.engine.strategy.short_call import ShortCallStrategy
-from src.engine.strategy.short_put import ShortPutStrategy
+from src.engine.pricing.short_call import ShortCallPricer
+from src.engine.pricing.short_put import ShortPutPricer
 
 logger = logging.getLogger(__name__)
 
@@ -791,8 +791,8 @@ class ContractFilter:
         """计算策略指标
 
         使用 engine_layer 的策略基类 calc_metrics() 统一计算所有指标：
-        - put: ShortPutStrategy
-        - call: ShortCallStrategy
+        - put: ShortPutPricer
+        - call: ShortCallPricer
 
         Args:
             option_type: 期权类型 ("put" 或 "call")
@@ -809,7 +809,7 @@ class ContractFilter:
         try:
             # 根据 option_type 选择策略类
             if option_type == "put":
-                strategy = ShortPutStrategy(
+                strategy = ShortPutPricer(
                     spot_price=spot_price,
                     strike_price=strike_price,
                     premium=premium,
@@ -824,7 +824,7 @@ class ContractFilter:
                     margin_per_share=margin_per_share,
                 )
             else:  # option_type == "call"
-                strategy = ShortCallStrategy(
+                strategy = ShortCallPricer(
                     spot_price=spot_price,
                     strike_price=strike_price,
                     premium=premium,

@@ -17,6 +17,7 @@ from src.business.screening.models import (
     ScreeningResult,
 )
 from src.business.screening.pipeline import ScreeningPipeline
+from src.business.screening.composable_pipeline import ComposableScreeningPipeline
 from src.business.screening.stock_pool import StockPoolManager, StockPoolError
 
 __all__ = [
@@ -25,6 +26,7 @@ __all__ = [
     "ContractOpportunity",
     "ScreeningResult",
     "ScreeningPipeline",
+    "ComposableScreeningPipeline",
     "StockPoolManager",
     "StockPoolError",
 ]

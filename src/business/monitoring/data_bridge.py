@@ -23,9 +23,9 @@ from src.engine.position.fundamental.metrics import evaluate_fundamentals
 from src.engine.position.technical.metrics import calc_technical_score, calc_technical_signal
 from src.engine.position.volatility.metrics import evaluate_volatility
 from src.engine.models.enums import StrategyType
-from src.engine.strategy.factory import (
+from src.engine.pricing.factory import (
     calc_dte_from_expiry,
-    create_strategies_from_position,
+    create_pricers_from_position,
 )
 
 logger = logging.getLogger(__name__)
@@ -233,7 +233,7 @@ class MonitoringDataBridge:
 
         # 创建策略实例（可能有多个，如 covered_call + naked_call）
         try:
-            strategies = create_strategies_from_position(
+            strategies = create_pricers_from_position(
                 position=pos,
                 all_positions=all_positions,
                 ibkr_provider=self._ibkr_provider,  # 传入 ibkr_provider 获取 HV 数据
@@ -256,7 +256,7 @@ class MonitoringDataBridge:
         # 为每个策略实例创建 PositionData
         result = []
         for strategy_instance in strategies:
-            strategy = strategy_instance.strategy
+            strategy = strategy_instance.pricer
             ratio = strategy_instance.quantity_ratio
             desc = strategy_instance.description
 

@@ -22,14 +22,14 @@
 | **底层账本** | 极简股票仓位，只有买/卖/持有 | 支持复杂的保证金、期权行权、内在价值现金交割（V9 Fix） | **无法迁移**。Qlib 账本算不清楚被 Assign 时的账户交割现金流。 |
 | **设计思想** | 数据 -> 因子模型 -> 资金分配 -> BaseStrategy | Pipeline -> {筛选 -> 监控 -> 交易} -> Account | **思想可借鉴**。我们只需提取其 BaseStrategy 模型，嫁接到我们的原生管线之上。 |
 
-**核心决策：学习 Qlib 的接口设计哲学，在原生高性能“期权账本”之上实现我们的 `BaseOptionStrategy` 引擎。**
+**核心决策：学习 Qlib 的接口设计哲学，在原生高性能“期权账本”之上实现我们的 `BaseTradeStrategy` 引擎。**
 
 ---
 
 ## 3. 架构重构设计方案
 
 ### 3.1 核心思想
-我们将所有涉及到主观判断的“策略规则（Rule-based Data）”从执行层抽离，收敛到一个统管全局的插槽对象——`BaseOptionStrategy` 中。
+我们将所有涉及到主观判断的“策略规则（Rule-based Data）”从执行层抽离，收敛到一个统管全局的插槽对象——`BaseTradeStrategy` 中。
 引擎（Pipeline）只负责“执行（Execute）”机制，不做任何“决策（Decide）”。所有的 Decide 均由注入的策略实例负责。
 
 ### 3.2 架构类图 (Architecture Diagram)
@@ -37,12 +37,12 @@
 ```mermaid
 classDiagram
     class BacktestPipeline {
-        -BaseOptionStrategy strategy
+        -BaseTradeStrategy strategy
         +run()
         +step_on_day(date)
     }
     
-    class BaseOptionStrategy {
+    class BaseTradeStrategy {
         <<abstract>>
         +str name
         +get_screening_filters() List~BaseFilter~
@@ -63,9 +63,9 @@ classDiagram
         +generate_close_signals()
     }
 
-    BacktestPipeline o-- BaseOptionStrategy : 组合 (Composition)
-    BaseOptionStrategy <|-- ShortPutV6 : 继承/实现
-    BaseOptionStrategy <|-- ShortPutV9 : 继承/实现
+    BacktestPipeline o-- BaseTradeStrategy : 组合 (Composition)
+    BaseTradeStrategy <|-- ShortPutV6 : 继承/实现
+    BaseTradeStrategy <|-- ShortPutV9 : 继承/实现
     
     note for BacktestPipeline "回测引擎: \n1. 更新账户状态\n2. 从策略获取指令\n3. 执行交易"
     note for ShortPutV9 "V9策略: \n- 提供 Delta=0.1~0.3 过滤\n- 提供行权接盘/浮亏止损风控"
@@ -119,7 +119,7 @@ src/
 └── business/
     └── strategy/
         ├── __init__.py
-        ├── base.py                   # 定义 BaseOptionStrategy 抽象类
+        ├── base.py                   # 定义 BaseTradeStrategy 抽象类
         ├── models.py                 # 定义 Signal, Filter 等策略内部通讯对象
         ├── factory.py                # 工厂模式：根据字符串名称分发实例化
         └── versions/                 # 各个并行存在的策略池
@@ -134,7 +134,7 @@ src/
 ```python
 from abc import ABC, abstractmethod
 
-class BaseOptionStrategy(ABC):
+class BaseTradeStrategy(ABC):
     
     @property
     @abstractmethod
@@ -182,7 +182,7 @@ class BaseOptionStrategy(ABC):
 我们建议按照以下 4 个阶段分步重构，确保每次提交都能安全跑通：
 
 **Phase 1: 骨架搭建 (Foundation)**
-* 在 `src/business/strategy/` 创建上述 `BaseOptionStrategy` 和目录结构。
+* 在 `src/business/strategy/` 创建上述 `BaseTradeStrategy` 和目录结构。
 * 将当前的 Screening Criteria、监控参数、交易逻辑参数化到基类所需的组件中。
 
 **Phase 2: 建立 V9 实现并移植代码 (V9 Porting)**

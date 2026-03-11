@@ -194,9 +194,9 @@ class BacktestDashboard:
                         f"Qty: {qty} @ ${price:.2f}"
                     )
                     open_data.append((record.trade_date, nlv_by_date[record.trade_date], hover))
-                elif record.action in (TradeAction.CLOSE, TradeAction.EXPIRE, TradeAction.ASSIGN_PUT, TradeAction.ASSIGN_CALL, TradeAction.STOCK_SELL):
+                elif record.action in (TradeAction.CLOSE, TradeAction.ROLL, TradeAction.EXPIRE, TradeAction.ASSIGN_PUT, TradeAction.ASSIGN_CALL, TradeAction.STOCK_SELL):
                     # 根据action类型显示不同标题
-                    action_label = "CLOSE" if record.action == TradeAction.CLOSE else "EXPIRE" if record.action == TradeAction.EXPIRE else "ASSIGN" if record.action in (TradeAction.ASSIGN_PUT, TradeAction.ASSIGN_CALL) else str(record.action.value).upper()
+                    action_label = "ROLL" if record.action == TradeAction.ROLL else "CLOSE" if record.action == TradeAction.CLOSE else "EXPIRE" if record.action == TradeAction.EXPIRE else "ASSIGN" if record.action in (TradeAction.ASSIGN_PUT, TradeAction.ASSIGN_CALL) else str(record.action.value).upper()
                     pnl_str = f"${pnl:,.2f}" if pnl else "-"
                     pnl_color = "green" if pnl and pnl > 0 else "red" if pnl and pnl < 0 else "gray"
                     hover = (
@@ -261,7 +261,7 @@ class BacktestDashboard:
         return fig
 
     def create_drawdown_chart(self) -> go.Figure:
-        """创建回撤图
+        """创建回撤图 (策略 + 基准)
 
         Returns:
             Plotly Figure
@@ -273,42 +273,81 @@ class BacktestDashboard:
         dates = [s.date for s in snapshots]
         nlv = [s.nlv for s in snapshots]
 
-        # 计算回撤序列
+        # 计算策略回撤序列
         peak = nlv[0]
         drawdowns = []
         for v in nlv:
             if v > peak:
                 peak = v
             dd = (peak - v) / peak if peak > 0 else 0
-            drawdowns.append(-dd)  # 负数表示回撤
+            drawdowns.append(-dd)
 
         fig = go.Figure()
 
-        # 回撤区域图
+        # 策略回撤区域图
+        strategy_name = "Strategy"
         fig.add_trace(go.Scatter(
             x=dates,
             y=drawdowns,
             fill="tozeroy",
             mode="lines",
-            name="Drawdown",
+            name=strategy_name,
             line=dict(color=self.COLORS["negative"], width=1),
-            fillcolor="rgba(231, 76, 60, 0.3)",
+            fillcolor="rgba(231, 76, 60, 0.2)",
             hovertemplate="Date: %{x}<br>Drawdown: %{y:.2%}<extra></extra>",
         ))
 
-        # 标记最大回撤
+        # 基准回撤
+        br = self._benchmark_result
+        if br is not None and br.benchmark_cumulative:
+            bm_peak = br.benchmark_cumulative[0]
+            bm_drawdowns = []
+            for v in br.benchmark_cumulative:
+                if v > bm_peak:
+                    bm_peak = v
+                dd = (bm_peak - v) / bm_peak if bm_peak > 0 else 0
+                bm_drawdowns.append(-dd)
+
+            fig.add_trace(go.Scatter(
+                x=br.dates,
+                y=bm_drawdowns,
+                mode="lines",
+                name=br.benchmark_name,
+                line=dict(color=self.COLORS["secondary"], width=1.5, dash="dash"),
+                hovertemplate="Date: %{x}<br>Drawdown: %{y:.2%}<extra></extra>",
+            ))
+
+            # 标记基准最大回撤
+            bm_min_idx = bm_drawdowns.index(min(bm_drawdowns))
+            fig.add_annotation(
+                x=br.dates[bm_min_idx],
+                y=bm_drawdowns[bm_min_idx],
+                text=f"{br.benchmark_name} Max DD: {-bm_drawdowns[bm_min_idx]:.2%}",
+                showarrow=True,
+                arrowhead=2,
+                arrowsize=1,
+                arrowwidth=2,
+                ax=-60,
+                ay=30,
+                font=dict(color=self.COLORS["secondary"], size=10),
+                arrowcolor=self.COLORS["secondary"],
+            )
+
+        # 标记策略最大回撤
         if self._metrics.max_drawdown:
             min_idx = drawdowns.index(min(drawdowns))
             fig.add_annotation(
                 x=dates[min_idx],
                 y=drawdowns[min_idx],
-                text=f"Max DD: {-drawdowns[min_idx]:.2%}",
+                text=f"Strategy Max DD: {-drawdowns[min_idx]:.2%}",
                 showarrow=True,
                 arrowhead=2,
                 arrowsize=1,
                 arrowwidth=2,
                 ax=50,
                 ay=-30,
+                font=dict(color=self.COLORS["negative"], size=10),
+                arrowcolor=self.COLORS["negative"],
             )
 
         fig.update_layout(
@@ -317,14 +356,42 @@ class BacktestDashboard:
             yaxis_title="Drawdown",
             yaxis_tickformat=".1%",
             hovermode="x unified",
-            showlegend=False,
+            showlegend=True,
+            legend=dict(yanchor="bottom", y=0.01, xanchor="right", x=0.99),
             template="plotly_white",
         )
 
         return fig
 
+    def _compute_benchmark_monthly_returns(self) -> dict[tuple[int, int], float]:
+        """从基准累积收益序列计算月度收益百分比
+
+        Returns:
+            dict: {(year, month): return_pct} e.g. {(2020, 3): -0.125}
+        """
+        br = self._benchmark_result
+        if br is None or not br.dates or not br.benchmark_cumulative:
+            return {}
+
+        # 按年月分组，取每月首尾累积值计算收益
+        from collections import defaultdict
+        monthly_data: dict[tuple[int, int], list[tuple[date, float]]] = defaultdict(list)
+        for d, cum in zip(br.dates, br.benchmark_cumulative):
+            monthly_data[(d.year, d.month)].append((d, cum))
+
+        result = {}
+        for (year, month), entries in monthly_data.items():
+            entries.sort(key=lambda x: x[0])
+            first_cum = entries[0][1]
+            last_cum = entries[-1][1]
+            if first_cum > 0:
+                result[(year, month)] = (last_cum - first_cum) / first_cum
+        return result
+
     def create_monthly_returns_heatmap(self) -> go.Figure:
-        """创建月度收益热力图
+        """创建月度收益热力图 (策略 + 基准)
+
+        有基准数据时显示两个热力图 (Strategy / Benchmark)，否则只显示策略。
 
         Returns:
             Plotly Figure
@@ -333,59 +400,135 @@ class BacktestDashboard:
         if not monthly:
             return go.Figure()
 
-        # 构建矩阵
-        years = sorted(set(m.year for m in monthly))
-        months = list(range(1, 13))
+        # 基准月度收益
+        bm_monthly = self._compute_benchmark_monthly_returns()
+        has_benchmark = bool(bm_monthly)
 
-        z = []
-        text = []
+        # 合并年份列表 (策略 + 基准)
+        strategy_years = set(m.year for m in monthly)
+        bm_years = set(y for (y, _) in bm_monthly) if bm_monthly else set()
+        years = sorted(strategy_years | bm_years)
+        months = list(range(1, 13))
+        month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        year_labels = [str(y) for y in years]
+
+        # 策略矩阵
+        z_strategy = []
+        text_strategy = []
         for year in years:
             row = []
             text_row = []
             for month in months:
-                # 查找对应月份
                 found = None
                 for m in monthly:
                     if m.year == year and m.month == month:
                         found = m
                         break
-
                 if found:
-                    row.append(found.return_pct * 100)  # 转为百分比
+                    row.append(found.return_pct * 100)
                     text_row.append(f"{found.return_pct:.1%}")
                 else:
                     row.append(None)
                     text_row.append("")
+            z_strategy.append(row)
+            text_strategy.append(text_row)
 
-            z.append(row)
-            text.append(text_row)
+        colorscale = [
+            [0, self.COLORS["negative"]],
+            [0.5, "white"],
+            [1, self.COLORS["positive"]],
+        ]
 
-        # 月份名称
-        month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        if not has_benchmark:
+            # 无基准: 单图
+            fig = go.Figure(data=go.Heatmap(
+                z=z_strategy,
+                x=month_names,
+                y=year_labels,
+                text=text_strategy,
+                texttemplate="%{text}",
+                textfont=dict(size=10),
+                colorscale=colorscale,
+                zmid=0,
+                hoverongaps=False,
+                hovertemplate="Year: %{y}<br>Month: %{x}<br>Return: %{text}<extra></extra>",
+            ))
+            fig.update_layout(
+                title=dict(text="Monthly Returns", x=0.5, xanchor="center"),
+                xaxis_title="Month",
+                yaxis_title="Year",
+                template="plotly_white",
+            )
+            return fig
 
-        fig = go.Figure(data=go.Heatmap(
-            z=z,
+        # 基准矩阵
+        z_benchmark = []
+        text_benchmark = []
+        for year in years:
+            row = []
+            text_row = []
+            for month in months:
+                val = bm_monthly.get((year, month))
+                if val is not None:
+                    row.append(val * 100)
+                    text_row.append(f"{val:.1%}")
+                else:
+                    row.append(None)
+                    text_row.append("")
+            z_benchmark.append(row)
+            text_benchmark.append(text_row)
+
+        # 计算共享 color range
+        all_vals = [v for row in z_strategy for v in row if v is not None]
+        all_vals += [v for row in z_benchmark for v in row if v is not None]
+        z_abs_max = max(abs(v) for v in all_vals) if all_vals else 20
+
+        bm_name = self._benchmark_result.benchmark_name if self._benchmark_result else "Benchmark"
+
+        # 两行子图
+        fig = make_subplots(
+            rows=2, cols=1,
+            subplot_titles=[f"Strategy Monthly Returns", f"{bm_name} Monthly Returns"],
+            vertical_spacing=0.12,
+        )
+
+        # 策略热力图
+        fig.add_trace(go.Heatmap(
+            z=z_strategy,
             x=month_names,
-            y=[str(y) for y in years],
-            text=text,
+            y=year_labels,
+            text=text_strategy,
             texttemplate="%{text}",
             textfont=dict(size=10),
-            colorscale=[
-                [0, self.COLORS["negative"]],
-                [0.5, "white"],
-                [1, self.COLORS["positive"]],
-            ],
-            zmid=0,
+            colorscale=colorscale,
+            zmin=-z_abs_max,
+            zmax=z_abs_max,
             hoverongaps=False,
             hovertemplate="Year: %{y}<br>Month: %{x}<br>Return: %{text}<extra></extra>",
-        ))
+            showscale=False,
+        ), row=1, col=1)
+
+        # 基准热力图 (共享色阶范围)
+        fig.add_trace(go.Heatmap(
+            z=z_benchmark,
+            x=month_names,
+            y=year_labels,
+            text=text_benchmark,
+            texttemplate="%{text}",
+            textfont=dict(size=10),
+            colorscale=colorscale,
+            zmin=-z_abs_max,
+            zmax=z_abs_max,
+            hoverongaps=False,
+            hovertemplate="Year: %{y}<br>Month: %{x}<br>Return: %{text}<extra></extra>",
+            colorbar=dict(title="Return %", ticksuffix="%"),
+        ), row=2, col=1)
 
         fig.update_layout(
             title=dict(text="Monthly Returns", x=0.5, xanchor="center"),
-            xaxis_title="Month",
-            yaxis_title="Year",
             template="plotly_white",
+            height=max(500, len(years) * 50 + 200),
         )
 
         return fig
@@ -425,7 +568,7 @@ class BacktestDashboard:
             if record.action in (TradeAction.OPEN, TradeAction.STOCK_BUY):
                 positions_dict[key]["open"] = record
             # 平仓类：期权平仓/到期/行权 + 股票卖出
-            elif record.action in (TradeAction.CLOSE, TradeAction.EXPIRE, TradeAction.ASSIGN_PUT, TradeAction.ASSIGN_CALL, TradeAction.STOCK_SELL):
+            elif record.action in (TradeAction.CLOSE, TradeAction.ROLL, TradeAction.EXPIRE, TradeAction.ASSIGN_PUT, TradeAction.ASSIGN_CALL, TradeAction.STOCK_SELL):
                 positions_dict[key]["close"] = record
 
         # 构建时间线数据
@@ -584,7 +727,7 @@ class BacktestDashboard:
             option_type = getattr(record, "option_type", None)
 
             # 平仓类（计算 PnL）：期权平仓/到期/行权 + 股票卖出
-            if record.action in (TradeAction.CLOSE, TradeAction.EXPIRE, TradeAction.ASSIGN_PUT, TradeAction.ASSIGN_CALL, TradeAction.STOCK_SELL) and record.pnl is not None:
+            if record.action in (TradeAction.CLOSE, TradeAction.ROLL, TradeAction.EXPIRE, TradeAction.ASSIGN_PUT, TradeAction.ASSIGN_CALL, TradeAction.STOCK_SELL) and record.pnl is not None:
                 stats_by_underlying[underlying]["pnl"] += record.pnl
 
             # 开仓类：期权开仓 + 股票买入
@@ -779,6 +922,7 @@ class BacktestDashboard:
             close_by_date = {k.timestamp.date(): k.close for k in klines}
             open_marks = []
             close_marks = []
+            roll_marks = []
 
             for rec in self._market_context.trade_records:
                 if getattr(rec, "underlying", None) != symbol:
@@ -789,6 +933,8 @@ class BacktestDashboard:
                 dt_str = rec.trade_date.isoformat()
                 if rec.action == "OPEN":
                     open_marks.append((dt_str, price))
+                elif rec.action == "ROLL":
+                    roll_marks.append((dt_str, price))
                 elif rec.action in ("CLOSE", "EXPIRE"):
                     close_marks.append((dt_str, price))
 
@@ -799,6 +945,16 @@ class BacktestDashboard:
                     mode="markers", name="Open Trade",
                     marker=dict(symbol="triangle-up", size=12,
                                 color=self.COLORS["positive"],
+                                line=dict(width=1, color="white")),
+                ), row=1, col=1)
+
+            if roll_marks:
+                fig.add_trace(go.Scatter(
+                    x=[m[0] for m in roll_marks],
+                    y=[m[1] for m in roll_marks],
+                    mode="markers", name="Roll",
+                    marker=dict(symbol="diamond", size=10,
+                                color=self.COLORS["secondary"],
                                 line=dict(width=1, color="white")),
                 ), row=1, col=1)
 
@@ -821,6 +977,212 @@ class BacktestDashboard:
             hovermode="x unified",
             template="plotly_white",
             height=500,
+        )
+
+        return fig
+
+    def create_signal_timeline(self, symbol: str, sma_period: int = 200) -> go.Figure:
+        """创建信号时间线图 (股价 + SMA + 交易信号标记)
+
+        显示:
+        - 股票收盘价 (蓝色实线)
+        - SMA 均线 (橙色虚线)
+        - 开仓标记 (绿色向上三角，含 hover 信息)
+        - 平仓标记 (红色向下三角，含 hover 信息)
+        - 投资/现金区间背景色
+
+        Args:
+            symbol: 标的代码
+            sma_period: SMA 周期 (默认 200)
+
+        Returns:
+            Plotly Figure
+        """
+        if not self._market_context or symbol not in self._market_context.symbol_klines:
+            fig = go.Figure()
+            fig.add_annotation(
+                text=f"No kline data for {symbol}",
+                xref="paper", yref="paper", x=0.5, y=0.5,
+                showarrow=False, font=dict(size=14, color="gray"),
+            )
+            fig.update_layout(
+                title=dict(text=f"{symbol} Signal Timeline", x=0.5, xanchor="center"),
+                template="plotly_white",
+            )
+            return fig
+
+        klines = self._market_context.symbol_klines[symbol]
+        dates = [k.timestamp.date() for k in klines]
+        closes = [k.close for k in klines]
+        date_strs = [d.isoformat() for d in dates]
+
+        fig = go.Figure()
+
+        # 1. 股价收盘线
+        fig.add_trace(go.Scatter(
+            x=date_strs, y=closes,
+            mode="lines", name=f"{symbol} Close",
+            line=dict(color=self.COLORS["primary"], width=1.5),
+        ))
+
+        # 2. 计算并绘制 SMA
+        sma_values = []
+        for i in range(len(closes)):
+            if i + 1 >= sma_period:
+                sma_val = sum(closes[i + 1 - sma_period : i + 1]) / sma_period
+                sma_values.append(sma_val)
+            else:
+                sma_values.append(None)
+
+        sma_dates = [d for d, v in zip(date_strs, sma_values) if v is not None]
+        sma_vals = [v for v in sma_values if v is not None]
+
+        if sma_vals:
+            fig.add_trace(go.Scatter(
+                x=sma_dates, y=sma_vals,
+                mode="lines", name=f"SMA{sma_period}",
+                line=dict(color=self.COLORS["secondary"], width=1.5, dash="dash"),
+            ))
+
+        # 3. 投资/现金区间背景色 (close > SMA → invested, else → cash)
+        if sma_values:
+            prev_invested = None
+            region_start = None
+            for i, (d, close_val, sma_val) in enumerate(zip(date_strs, closes, sma_values)):
+                if sma_val is None:
+                    continue
+                invested = close_val > sma_val
+                if prev_invested is None:
+                    prev_invested = invested
+                    region_start = d
+                elif invested != prev_invested:
+                    # 结束上一个区间
+                    fig.add_vrect(
+                        x0=region_start, x1=d,
+                        fillcolor="rgba(46,204,113,0.08)" if prev_invested else "rgba(231,76,60,0.08)",
+                        layer="below", line_width=0,
+                    )
+                    prev_invested = invested
+                    region_start = d
+            # 最后一段区间
+            if region_start is not None and prev_invested is not None:
+                fig.add_vrect(
+                    x0=region_start, x1=date_strs[-1],
+                    fillcolor="rgba(46,204,113,0.08)" if prev_invested else "rgba(231,76,60,0.08)",
+                    layer="below", line_width=0,
+                )
+
+        # 4. 交易标记
+        trade_records = self._result.trade_records or []
+        close_by_date = {d: c for d, c in zip(dates, closes)}
+
+        open_x, open_y, open_hover = [], [], []
+        close_x, close_y, close_hover = [], [], []
+        roll_x, roll_y, roll_hover = [], [], []
+
+        for rec in trade_records:
+            underlying = getattr(rec, "underlying", None) or (
+                rec.symbol.split("_")[0] if "_" in rec.symbol else rec.symbol
+            )
+            if underlying != symbol:
+                continue
+
+            td = rec.trade_date
+            if td not in close_by_date:
+                continue
+            price = close_by_date[td]
+
+            # 构建 hover 文本
+            action_str = rec.action.value if hasattr(rec.action, "value") else str(rec.action)
+            opt_type = ""
+            if rec.option_type:
+                opt_type = rec.option_type.value if hasattr(rec.option_type, "value") else str(rec.option_type)
+            strike_str = f"K={rec.strike}" if rec.strike else ""
+            exp_str = f"Exp={rec.expiration}" if rec.expiration else ""
+            qty_str = f"Qty={rec.quantity}"
+            price_str = f"@${rec.price:.2f}"
+
+            parts = [f"<b>{action_str.upper()}</b>"]
+            if opt_type or strike_str:
+                parts.append(" ".join(filter(None, [opt_type, strike_str, exp_str])))
+            parts.append(f"{qty_str} {price_str}")
+
+            # 决策原因
+            if rec.decision_reason:
+                parts.append(f"Reason: {rec.decision_reason}")
+            elif rec.reason:
+                parts.append(f"Reason: {rec.reason}")
+
+            # 触发信号
+            if rec.trigger_alerts:
+                alerts = ", ".join(rec.trigger_alerts[:3])
+                parts.append(f"Alerts: {alerts}")
+
+            # PnL (平仓时)
+            if rec.pnl is not None:
+                parts.append(f"PnL: ${rec.pnl:+,.0f}")
+
+            hover = "<br>".join(parts)
+
+            if rec.action in (TradeAction.OPEN, TradeAction.STOCK_BUY):
+                open_x.append(td.isoformat())
+                open_y.append(price)
+                open_hover.append(hover)
+            elif rec.action == TradeAction.ROLL:
+                roll_x.append(td.isoformat())
+                roll_y.append(price)
+                roll_hover.append(hover)
+            elif rec.action in (TradeAction.CLOSE, TradeAction.EXPIRE,
+                                TradeAction.ASSIGN_PUT, TradeAction.ASSIGN_CALL,
+                                TradeAction.STOCK_SELL):
+                close_x.append(td.isoformat())
+                close_y.append(price)
+                close_hover.append(hover)
+
+        if open_x:
+            fig.add_trace(go.Scatter(
+                x=open_x, y=open_y,
+                mode="markers", name="Entry",
+                marker=dict(symbol="triangle-up", size=14,
+                            color=self.COLORS["positive"],
+                            line=dict(width=1, color="white")),
+                hovertext=open_hover,
+                hoverinfo="text",
+            ))
+
+        if roll_x:
+            fig.add_trace(go.Scatter(
+                x=roll_x, y=roll_y,
+                mode="markers", name="Roll",
+                marker=dict(symbol="diamond", size=12,
+                            color=self.COLORS["secondary"],
+                            line=dict(width=1, color="white")),
+                hovertext=roll_hover,
+                hoverinfo="text",
+            ))
+
+        if close_x:
+            fig.add_trace(go.Scatter(
+                x=close_x, y=close_y,
+                mode="markers", name="Exit",
+                marker=dict(symbol="triangle-down", size=14,
+                            color=self.COLORS["negative"],
+                            line=dict(width=1, color="white")),
+                hovertext=close_hover,
+                hoverinfo="text",
+            ))
+
+        fig.update_layout(
+            title=dict(
+                text=f"{symbol} Signal Timeline (SMA{sma_period} Timing)",
+                x=0.5, xanchor="center",
+            ),
+            xaxis_title="Date",
+            yaxis_title="Price ($)",
+            hovermode="closest",
+            template="plotly_white",
+            height=500,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         )
 
         return fig
@@ -1411,9 +1773,9 @@ class BacktestDashboard:
             # 操作颜色
             action_color = "#2ecc71" if action == "OPEN" else "#e74c3c" if action == "CLOSE" else "#ff7f0e" if action == "EXPIRE" else "#3498db" if action == "ROLL" else "#95a5a6" if action == "ASSIGN_PUT" else "#e67e22" if action == "ASSIGN_CALL" else "#16a085" if action == "STOCK_BUY" else "#27ae60" if action == "STOCK_SELL" else "#999"
 
-            # Reason (所有非 OPEN 类型均显示)
+            # Reason (所有 action 均显示)
             reason = getattr(record, "reason", None)
-            if action != "OPEN" and reason:
+            if reason:
                 reason_str = reason
             else:
                 reason_str = "-"
@@ -1541,6 +1903,176 @@ class BacktestDashboard:
         """
         return html
 
+    def create_position_pct_chart(self) -> "go.Figure":
+        """Position% 时序图: target_pct + current_pct"""
+        _check_plotly()
+
+        snapshots = self._result.daily_snapshots
+        dates = []
+        target_pcts = []
+        current_pcts = []
+
+        for s in snapshots:
+            sm = getattr(s, "strategy_metrics", {}) or {}
+            dates.append(s.date)
+            target_pcts.append(sm.get("target_pct"))
+            current_pcts.append(sm.get("current_pct"))
+
+        # 回退: 若无 strategy_metrics，用 positions_value/nlv 作近似
+        has_data = any(t is not None for t in target_pcts)
+        if not has_data:
+            target_pcts = [None] * len(dates)
+            current_pcts = [
+                s.positions_value / s.nlv if s.nlv > 0 else 0.0
+                for s in snapshots
+            ]
+
+        fig = go.Figure()
+
+        if has_data:
+            fig.add_trace(go.Scatter(
+                x=dates, y=target_pcts,
+                mode="lines", name="Target %",
+                line=dict(color="#1f77b4", width=2),
+            ))
+
+        fig.add_trace(go.Scatter(
+            x=dates, y=current_pcts,
+            mode="lines", name="Current %",
+            fill="tozeroy",
+            line=dict(color="#9467bd", width=1.5),
+            fillcolor="rgba(148, 103, 189, 0.25)",
+        ))
+
+        fig.add_hline(y=1.0, line_dash="dash", line_color="gray",
+                       annotation_text="100%", annotation_position="bottom right")
+
+        fig.update_layout(
+            title="Position Exposure %",
+            xaxis_title="Date",
+            yaxis_title="Exposure (fraction of NLV)",
+            yaxis=dict(tickformat=".0%"),
+            height=350,
+            margin=dict(l=60, r=40, t=50, b=40),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        return fig
+
+    def create_strategy_indicators_chart(self) -> "go.Figure":
+        """策略指标时序图: 价格+SMA / 动量分+VIX / target_pct+current_pct+vol_scalar"""
+        _check_plotly()
+
+        snapshots = self._result.daily_snapshots
+        dates = []
+        closes = []
+        sma20s = []
+        sma50s = []
+        sma200s = []
+        scores = []
+        vixes = []
+        target_pcts = []
+        current_pcts = []
+        vol_scalars = []
+
+        for s in snapshots:
+            sm = getattr(s, "strategy_metrics", {}) or {}
+            dates.append(s.date)
+            closes.append(sm.get("close"))
+            sma20s.append(sm.get("sma20"))
+            sma50s.append(sm.get("sma50"))
+            sma200s.append(sm.get("sma200"))
+            scores.append(sm.get("momentum_score"))
+            vixes.append(sm.get("vix"))
+            target_pcts.append(sm.get("target_pct"))
+            current_pcts.append(sm.get("current_pct"))
+            vol_scalars.append(sm.get("vol_scalar"))
+
+        has_data = any(c is not None for c in closes)
+        if not has_data:
+            return go.Figure().update_layout(
+                title="Strategy Indicators (no data)",
+                annotations=[dict(text="No strategy_metrics available", showarrow=False,
+                                  xref="paper", yref="paper", x=0.5, y=0.5, font=dict(size=16))]
+            )
+
+        fig = make_subplots(
+            rows=3, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.06,
+            row_heights=[0.45, 0.25, 0.30],
+            subplot_titles=("Price & SMAs", "Momentum Score & VIX", "Exposure & Vol Scalar"),
+            specs=[[{"secondary_y": False}],
+                   [{"secondary_y": True}],
+                   [{"secondary_y": True}]],
+        )
+
+        # Row 1: Price + SMAs
+        fig.add_trace(go.Scatter(
+            x=dates, y=closes, mode="lines", name="Close",
+            line=dict(color="#333", width=1.5),
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=dates, y=sma20s, mode="lines", name="SMA20",
+            line=dict(color="#ff7f0e", width=1, dash="dot"),
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=dates, y=sma50s, mode="lines", name="SMA50",
+            line=dict(color="#2ca02c", width=1, dash="dot"),
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=dates, y=sma200s, mode="lines", name="SMA200",
+            line=dict(color="#d62728", width=1.5, dash="dash"),
+        ), row=1, col=1)
+
+        # Row 2: Momentum Score (bar) + VIX (right axis)
+        # Color bars by score value
+        bar_colors = [
+            "#2ca02c" if (s or 0) >= 5 else "#ff7f0e" if (s or 0) >= 3 else "#d62728"
+            for s in scores
+        ]
+        fig.add_trace(go.Bar(
+            x=dates, y=scores, name="Momentum Score",
+            marker_color=bar_colors, opacity=0.7,
+        ), row=2, col=1, secondary_y=False)
+        fig.add_trace(go.Scatter(
+            x=dates, y=vixes, mode="lines", name="VIX",
+            line=dict(color="#9467bd", width=1.5),
+        ), row=2, col=1, secondary_y=True)
+
+        # Row 3: target_pct + current_pct + vol_scalar (right axis)
+        fig.add_trace(go.Scatter(
+            x=dates, y=target_pcts, mode="lines", name="Target %",
+            line=dict(color="#1f77b4", width=2),
+        ), row=3, col=1, secondary_y=False)
+        fig.add_trace(go.Scatter(
+            x=dates, y=current_pcts, mode="lines", name="Current %",
+            fill="tonexty",
+            line=dict(color="#9467bd", width=1.5),
+            fillcolor="rgba(148, 103, 189, 0.2)",
+        ), row=3, col=1, secondary_y=False)
+        fig.add_trace(go.Scatter(
+            x=dates, y=vol_scalars, mode="lines", name="Vol Scalar",
+            line=dict(color="#ff7f0e", width=1, dash="dash"),
+        ), row=3, col=1, secondary_y=True)
+
+        # Axis labels
+        fig.update_yaxes(title_text="Price", row=1, col=1)
+        fig.update_yaxes(title_text="Score (0-7)", row=2, col=1, secondary_y=False,
+                         range=[0, 7.5])
+        fig.update_yaxes(title_text="VIX", row=2, col=1, secondary_y=True)
+        fig.update_yaxes(title_text="Exposure %", row=3, col=1, secondary_y=False,
+                         tickformat=".0%")
+        fig.update_yaxes(title_text="Vol Scalar", row=3, col=1, secondary_y=True)
+
+        fig.update_layout(
+            title="Strategy Indicators",
+            height=800,
+            margin=dict(l=60, r=60, t=60, b=40),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            barmode="overlay",
+        )
+        return fig
+
     def generate_report(
         self,
         output_path: str | Path,
@@ -1566,8 +2098,10 @@ class BacktestDashboard:
         if include_charts is None:
             include_charts = [
                 "equity", "benchmark", "drawdown", "monthly", "asset",
+                "position_pct", "strategy_indicators",
+                "signal_timeline",
                 "symbol_klines", "spy_kline", "vix_kline", "events_calendar",
-                "attribution", "timeline",
+                "attribution",
             ]
 
         # 生成图表 HTML
@@ -1593,6 +2127,31 @@ class BacktestDashboard:
         if "asset" in include_charts:
             fig = self.create_asset_breakdown()
             chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
+
+        # Position Exposure % chart
+        if "position_pct" in include_charts:
+            try:
+                fig = self.create_position_pct_chart()
+                chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
+            except Exception:
+                pass
+
+        # Strategy Indicators chart
+        if "strategy_indicators" in include_charts:
+            try:
+                fig = self.create_strategy_indicators_chart()
+                chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
+            except Exception:
+                pass
+
+        # Signal Timeline (股价 + 均线 + 交易信号)
+        if "signal_timeline" in include_charts and self._market_context:
+            for symbol in self._market_context.symbol_klines:
+                try:
+                    fig = self.create_signal_timeline(symbol)
+                    chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
+                except Exception:
+                    pass
 
         # Symbol K-lines (每个标的一张)
         if "symbol_klines" in include_charts and self._market_context:
@@ -1631,14 +2190,6 @@ class BacktestDashboard:
         if "attribution" in include_charts and self._attribution_charts is not None:
             try:
                 fig = self._attribution_charts.create_cumulative_attribution()
-                chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
-                fig = self._attribution_charts.create_daily_attribution_bar()
-                chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
-                fig = self._attribution_charts.create_greeks_exposure_timeline()
-                chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
-
-                # Per-Trade Attribution Table
-                fig = self._attribution_charts.create_trade_attribution_table()
                 chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
 
                 # 切片归因图表
@@ -1679,11 +2230,6 @@ class BacktestDashboard:
                     chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
             except Exception:
                 pass
-
-        # Position Timeline (放在最后，紧接 Trade Records 表格)
-        if "timeline" in include_charts:
-            fig = self.create_trade_timeline()
-            chart_html_list.append(fig.to_html(full_html=False, include_plotlyjs=False))
 
         # 生成指标面板
         metrics_html = self.create_metrics_panel()

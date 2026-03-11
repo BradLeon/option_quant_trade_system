@@ -103,10 +103,10 @@ class Alert:
 
 
 @dataclass
-class StrategyMetricsData:
+class PricingMetricsData:
     """策略级指标（由 engine 层计算）
 
-    逻辑分组容器，明确"哪些字段由 engine/strategy 计算"。
+    逻辑分组容器，明确"哪些字段由 engine/pricing 计算"。
     通过 PositionData._strategy_metrics 持有，原有扁平字段保留为 @property 代理。
     """
 
@@ -211,33 +211,33 @@ class PositionData:
     close_call_signal: Optional[str] = None  # none/weak/moderate/strong
     close_stock_signal: Optional[str] = None  # none/moderate/strong
 
-    # === 策略指标（由 engine 计算，存储在 StrategyMetricsData 子容器中）===
+    # === 策略指标（由 engine 计算，存储在 PricingMetricsData 子容器中）===
     # 扁平字段保留用于向后兼容（直接读写透传到 _strategy_metrics）
     strategy_type: Optional[StrategyType] = None  # StrategyType 枚举
-    prei: Optional[float] = None  # 来自 StrategyMetrics.prei
-    tgr: Optional[float] = None  # 来自 StrategyMetrics.tgr
-    sas: Optional[float] = None  # 来自 StrategyMetrics.sas
-    roc: Optional[float] = None  # 来自 StrategyMetrics.roc
-    expected_roc: Optional[float] = None  # 来自 StrategyMetrics.expected_roc
-    sharpe: Optional[float] = None  # 来自 StrategyMetrics.sharpe_ratio
-    kelly: Optional[float] = None  # 来自 StrategyMetrics.kelly_fraction
-    win_probability: Optional[float] = None  # 来自 StrategyMetrics.win_probability
+    prei: Optional[float] = None  # 来自 PricingMetrics.prei
+    tgr: Optional[float] = None  # 来自 PricingMetrics.tgr
+    sas: Optional[float] = None  # 来自 PricingMetrics.sas
+    roc: Optional[float] = None  # 来自 PricingMetrics.roc
+    expected_roc: Optional[float] = None  # 来自 PricingMetrics.expected_roc
+    sharpe: Optional[float] = None  # 来自 PricingMetrics.sharpe_ratio
+    kelly: Optional[float] = None  # 来自 PricingMetrics.kelly_fraction
+    win_probability: Optional[float] = None  # 来自 PricingMetrics.win_probability
 
     # === 核心策略指标（用于详细展示）===
-    expected_return: Optional[float] = None  # 来自 StrategyMetrics.expected_return
-    max_profit: Optional[float] = None  # 来自 StrategyMetrics.max_profit
-    max_loss: Optional[float] = None  # 来自 StrategyMetrics.max_loss
-    breakeven: Optional[float | list[float]] = None  # 来自 StrategyMetrics.breakeven
-    return_std: Optional[float] = None  # 来自 StrategyMetrics.return_std
+    expected_return: Optional[float] = None  # 来自 PricingMetrics.expected_return
+    max_profit: Optional[float] = None  # 来自 PricingMetrics.max_profit
+    max_loss: Optional[float] = None  # 来自 PricingMetrics.max_loss
+    breakeven: Optional[float | list[float]] = None  # 来自 PricingMetrics.breakeven
+    return_std: Optional[float] = None  # 来自 PricingMetrics.return_std
 
     # === 资金相关指标 ===
     margin: Optional[float] = None  # 保证金需求
     capital_at_risk: Optional[float] = None  # 风险资本
     gamma_risk_pct: Optional[float] = None  # Gamma 风险百分比: |Gamma| / Margin
 
-    def get_strategy_metrics(self) -> StrategyMetricsData:
+    def get_strategy_metrics(self) -> PricingMetricsData:
         """获取策略指标子容器（按需从扁平字段构建）"""
-        return StrategyMetricsData(
+        return PricingMetricsData(
             strategy_type=self.strategy_type,
             prei=self.prei,
             tgr=self.tgr,
@@ -256,7 +256,7 @@ class PositionData:
             gamma_risk_pct=self.gamma_risk_pct,
         )
 
-    def set_strategy_metrics(self, metrics: StrategyMetricsData) -> None:
+    def set_strategy_metrics(self, metrics: PricingMetricsData) -> None:
         """从策略指标子容器批量写入扁平字段"""
         self.strategy_type = metrics.strategy_type
         self.prei = metrics.prei

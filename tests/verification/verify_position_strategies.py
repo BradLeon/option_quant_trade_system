@@ -3,7 +3,7 @@
 
 Verifies strategy metrics for each option position in the account.
 Uses data models to drive all calculations:
-  AccountPosition → StockVolatility → OptionLeg + StrategyParams → Strategy → StrategyMetrics
+  AccountPosition → StockVolatility → OptionLeg + PricingParams → Pricer → PricingMetrics
 
 This script:
 1. Classifies each option position into strategy types (short_put, covered_call, strangle, etc.)
@@ -41,12 +41,12 @@ from src.data.models.stock import StockVolatility
 from src.data.providers import IBKRProvider, FutuProvider
 from src.data.providers.account_aggregator import AccountAggregator
 from src.engine.models.enums import PositionSide
-from src.engine.models.strategy import OptionLeg, StrategyMetrics, StrategyParams
-from src.engine.strategy import (
-    StrategyInstance,
-    create_strategies_from_position,
+from src.engine.models.pricing import OptionLeg, PricingMetrics, PricingParams
+from src.engine.pricing import (
+    PricerInstance,
+    create_pricers_from_position,
 )
-from src.engine.strategy.factory import calc_dte_from_expiry
+from src.engine.pricing.factory import calc_dte_from_expiry
 
 # Configure logging
 logging.basicConfig(
@@ -129,7 +129,7 @@ def print_strategy_debug_info(strategy, position: AccountPosition) -> None:
     """Print detailed strategy information for debugging (verbose mode).
 
     Args:
-        strategy: OptionStrategy instance.
+        strategy: OptionPricer instance.
         position: Original AccountPosition.
     """
     print(f"\n{'='*80}")
@@ -162,9 +162,9 @@ def print_strategy_debug_info(strategy, position: AccountPosition) -> None:
         else:
             print("    Vega: None")
 
-    # StrategyParams Info
+    # PricingParams Info
     params = strategy.params
-    print(f"\nStrategyParams:")
+    print(f"\nPricingParams:")
     print(f"  Spot Price: ${params.spot_price:.2f}")
     print(f"  Volatility (IV): {params.volatility:.4f} ({params.volatility*100:.2f}%)")
     print(f"  Time to Expiry: {params.time_to_expiry:.4f} years")
@@ -361,14 +361,14 @@ def print_summary_tables(rows: list[StrategyRow]) -> None:
 
 
 def print_strategy_metrics_detail(
-    position: AccountPosition, strategy_type: str, metrics: StrategyMetrics
+    position: AccountPosition, strategy_type: str, metrics: PricingMetrics
 ) -> None:
     """Print strategy metrics in detailed format (legacy, for verbose mode).
 
     Args:
         position: Original AccountPosition.
         strategy_type: Strategy classification.
-        metrics: Calculated StrategyMetrics.
+        metrics: Calculated PricingMetrics.
     """
     # Header
     dte = calc_dte_from_expiry(position.expiry)
@@ -524,7 +524,7 @@ def verify_position_strategies(
         total_positions += 1
 
         # Step 1: Create strategy instance(s) using factory
-        strategy_instances = create_strategies_from_position(
+        strategy_instances = create_pricers_from_position(
             position=pos,
             all_positions=portfolio.positions,
             ibkr_provider=ibkr_provider,
@@ -538,7 +538,7 @@ def verify_position_strategies(
 
         # Step 2: Process each strategy instance
         for idx, instance in enumerate(strategy_instances, 1):
-            strategy = instance.strategy
+            strategy = instance.pricer
             ratio = instance.quantity_ratio
             desc = instance.description
 

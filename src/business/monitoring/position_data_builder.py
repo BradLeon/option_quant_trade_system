@@ -7,14 +7,14 @@
 - moneyness / OTM% 计算
 - unrealized_pnl_pct 计算
 - 策略指标批量填充 (tgr, prei, sas, roc 等)
-- 策略对象创建 (复用 engine/strategy 工厂)
+- 策略对象创建 (复用 engine/pricing 工厂)
 """
 
 import logging
 import math
 from typing import Optional
 
-from src.business.monitoring.models import PositionData, StrategyMetricsData
+from src.business.monitoring.models import PositionData
 from src.engine.models.enums import StrategyType
 
 logger = logging.getLogger(__name__)
@@ -186,9 +186,9 @@ class PositionDataBuilder:
         fallback_iv = iv or 0.2
 
         if strategy_type == StrategyType.SHORT_PUT:
-            from src.engine.strategy.short_put import ShortPutStrategy
+            from src.engine.pricing.short_put import ShortPutPricer
 
-            return ShortPutStrategy(
+            return ShortPutPricer(
                 spot_price=underlying_price,
                 strike_price=strike,
                 premium=abs_premium,
@@ -202,9 +202,41 @@ class PositionDataBuilder:
                 vega=vega,
             )
         elif strategy_type in (StrategyType.NAKED_CALL, StrategyType.COVERED_CALL):
-            from src.engine.strategy.short_call import ShortCallStrategy
+            from src.engine.pricing.short_call import ShortCallPricer
 
-            return ShortCallStrategy(
+            return ShortCallPricer(
+                spot_price=underlying_price,
+                strike_price=strike,
+                premium=abs_premium,
+                volatility=fallback_iv,
+                time_to_expiry=time_to_expiry,
+                risk_free_rate=risk_free_rate,
+                dte=dte,
+                delta=delta,
+                gamma=gamma,
+                theta=theta,
+                vega=vega,
+            )
+        elif strategy_type == StrategyType.LONG_PUT:
+            from src.engine.pricing.long_put import LongPutPricer
+
+            return LongPutPricer(
+                spot_price=underlying_price,
+                strike_price=strike,
+                premium=abs_premium,
+                volatility=fallback_iv,
+                time_to_expiry=time_to_expiry,
+                risk_free_rate=risk_free_rate,
+                dte=dte,
+                delta=delta,
+                gamma=gamma,
+                theta=theta,
+                vega=vega,
+            )
+        elif strategy_type == StrategyType.LONG_CALL:
+            from src.engine.pricing.long_call import LongCallPricer
+
+            return LongCallPricer(
                 spot_price=underlying_price,
                 strike_price=strike,
                 premium=abs_premium,

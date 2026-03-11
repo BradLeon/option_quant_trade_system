@@ -1,27 +1,30 @@
-"""Tests for option strategy implementations."""
+"""Tests for option pricing implementations."""
 
 import math
 
 import pytest
 
-from src.engine.strategy import (
-    CoveredCallStrategy,
+from src.engine.pricing import (
+    CoveredCallPricer,
+    LongCallPricer,
+    LongPutPricer,
     OptionLeg,
     OptionType,
     PositionSide,
-    ShortPutStrategy,
-    ShortStrangleStrategy,
-    StrategyMetrics,
-    StrategyParams,
+    ShortCallPricer,
+    ShortPutPricer,
+    ShortStranglePricer,
+    PricingMetrics,
+    PricingParams,
 )
 
 
-class TestShortPutStrategy:
+class TestShortPutPricer:
     """Tests for Short Put strategy."""
 
     def test_init(self):
         """Test strategy initialization."""
-        strategy = ShortPutStrategy(
+        strategy = ShortPutPricer(
             spot_price=580,
             strike_price=550,
             premium=6.5,
@@ -39,7 +42,7 @@ class TestShortPutStrategy:
 
         OTM put (S > K) should have positive expected return.
         """
-        strategy = ShortPutStrategy(
+        strategy = ShortPutPricer(
             spot_price=580,
             strike_price=550,
             premium=6.5,
@@ -54,7 +57,7 @@ class TestShortPutStrategy:
 
     def test_calc_expected_return_atm(self):
         """Test expected return for ATM put."""
-        strategy = ShortPutStrategy(
+        strategy = ShortPutPricer(
             spot_price=100,
             strike_price=100,
             premium=5.0,
@@ -67,7 +70,7 @@ class TestShortPutStrategy:
 
     def test_calc_return_variance(self):
         """Test return variance calculation."""
-        strategy = ShortPutStrategy(
+        strategy = ShortPutPricer(
             spot_price=580,
             strike_price=550,
             premium=6.5,
@@ -79,7 +82,7 @@ class TestShortPutStrategy:
 
     def test_calc_return_std(self):
         """Test return standard deviation calculation."""
-        strategy = ShortPutStrategy(
+        strategy = ShortPutPricer(
             spot_price=580,
             strike_price=550,
             premium=6.5,
@@ -92,7 +95,7 @@ class TestShortPutStrategy:
 
     def test_calc_max_profit(self):
         """Test max profit = premium."""
-        strategy = ShortPutStrategy(
+        strategy = ShortPutPricer(
             spot_price=580,
             strike_price=550,
             premium=6.5,
@@ -104,7 +107,7 @@ class TestShortPutStrategy:
 
     def test_calc_max_loss(self):
         """Test max loss = strike - premium."""
-        strategy = ShortPutStrategy(
+        strategy = ShortPutPricer(
             spot_price=580,
             strike_price=550,
             premium=6.5,
@@ -116,7 +119,7 @@ class TestShortPutStrategy:
 
     def test_calc_breakeven(self):
         """Test breakeven = strike - premium."""
-        strategy = ShortPutStrategy(
+        strategy = ShortPutPricer(
             spot_price=580,
             strike_price=550,
             premium=6.5,
@@ -128,7 +131,7 @@ class TestShortPutStrategy:
 
     def test_calc_win_probability_otm(self):
         """Test win probability for OTM put."""
-        strategy = ShortPutStrategy(
+        strategy = ShortPutPricer(
             spot_price=580,
             strike_price=550,
             premium=6.5,
@@ -141,7 +144,7 @@ class TestShortPutStrategy:
 
     def test_calc_exercise_probability(self):
         """Test exercise probability."""
-        strategy = ShortPutStrategy(
+        strategy = ShortPutPricer(
             spot_price=580,
             strike_price=550,
             premium=6.5,
@@ -154,7 +157,7 @@ class TestShortPutStrategy:
 
     def test_calc_sharpe_ratio(self):
         """Test Sharpe ratio calculation."""
-        strategy = ShortPutStrategy(
+        strategy = ShortPutPricer(
             spot_price=580,
             strike_price=550,
             premium=6.5,
@@ -166,7 +169,7 @@ class TestShortPutStrategy:
 
     def test_calc_kelly_fraction(self):
         """Test Kelly fraction calculation."""
-        strategy = ShortPutStrategy(
+        strategy = ShortPutPricer(
             spot_price=580,
             strike_price=550,
             premium=6.5,
@@ -178,7 +181,7 @@ class TestShortPutStrategy:
 
     def test_calc_metrics(self):
         """Test full metrics calculation."""
-        strategy = ShortPutStrategy(
+        strategy = ShortPutPricer(
             spot_price=580,
             strike_price=550,
             premium=6.5,
@@ -186,7 +189,7 @@ class TestShortPutStrategy:
             time_to_expiry=30 / 365,
         )
         metrics = strategy.calc_metrics()
-        assert isinstance(metrics, StrategyMetrics)
+        assert isinstance(metrics, PricingMetrics)
         assert metrics.expected_return > 0
         assert metrics.return_std > 0
         assert metrics.max_profit == 6.5
@@ -195,12 +198,12 @@ class TestShortPutStrategy:
         assert 0 < metrics.win_probability < 1
 
 
-class TestCoveredCallStrategy:
+class TestCoveredCallPricer:
     """Tests for Covered Call strategy."""
 
     def test_init(self):
         """Test strategy initialization."""
-        strategy = CoveredCallStrategy(
+        strategy = CoveredCallPricer(
             spot_price=100,
             strike_price=105,
             premium=3.0,
@@ -213,7 +216,7 @@ class TestCoveredCallStrategy:
 
     def test_calc_expected_return(self):
         """Test expected return calculation."""
-        strategy = CoveredCallStrategy(
+        strategy = CoveredCallPricer(
             spot_price=100,
             strike_price=105,
             premium=3.0,
@@ -226,7 +229,7 @@ class TestCoveredCallStrategy:
 
     def test_calc_max_profit(self):
         """Test max profit = (strike - cost) + premium."""
-        strategy = CoveredCallStrategy(
+        strategy = CoveredCallPricer(
             spot_price=100,
             strike_price=105,
             premium=3.0,
@@ -240,7 +243,7 @@ class TestCoveredCallStrategy:
 
     def test_calc_max_loss(self):
         """Test max loss = stock cost - premium."""
-        strategy = CoveredCallStrategy(
+        strategy = CoveredCallPricer(
             spot_price=100,
             strike_price=105,
             premium=3.0,
@@ -254,7 +257,7 @@ class TestCoveredCallStrategy:
 
     def test_calc_breakeven(self):
         """Test breakeven = stock cost - premium."""
-        strategy = CoveredCallStrategy(
+        strategy = CoveredCallPricer(
             spot_price=100,
             strike_price=105,
             premium=3.0,
@@ -267,7 +270,7 @@ class TestCoveredCallStrategy:
 
     def test_calc_assignment_probability(self):
         """Test assignment probability."""
-        strategy = CoveredCallStrategy(
+        strategy = CoveredCallPricer(
             spot_price=100,
             strike_price=105,
             premium=3.0,
@@ -280,7 +283,7 @@ class TestCoveredCallStrategy:
 
     def test_calc_win_probability(self):
         """Test win probability."""
-        strategy = CoveredCallStrategy(
+        strategy = CoveredCallPricer(
             spot_price=100,
             strike_price=105,
             premium=3.0,
@@ -293,12 +296,12 @@ class TestCoveredCallStrategy:
         assert 0.5 < win_prob < 1.0
 
 
-class TestShortStrangleStrategy:
+class TestShortStranglePricer:
     """Tests for Short Strangle strategy."""
 
     def test_init(self):
         """Test strategy initialization."""
-        strategy = ShortStrangleStrategy(
+        strategy = ShortStranglePricer(
             spot_price=100,
             put_strike=95,
             call_strike=105,
@@ -314,7 +317,7 @@ class TestShortStrangleStrategy:
 
     def test_total_premium(self):
         """Test total premium calculation."""
-        strategy = ShortStrangleStrategy(
+        strategy = ShortStranglePricer(
             spot_price=100,
             put_strike=95,
             call_strike=105,
@@ -327,7 +330,7 @@ class TestShortStrangleStrategy:
 
     def test_calc_expected_return(self):
         """Test expected return for short strangle."""
-        strategy = ShortStrangleStrategy(
+        strategy = ShortStranglePricer(
             spot_price=100,
             put_strike=95,
             call_strike=105,
@@ -342,7 +345,7 @@ class TestShortStrangleStrategy:
 
     def test_calc_max_profit(self):
         """Test max profit = total premium."""
-        strategy = ShortStrangleStrategy(
+        strategy = ShortStranglePricer(
             spot_price=100,
             put_strike=95,
             call_strike=105,
@@ -356,7 +359,7 @@ class TestShortStrangleStrategy:
 
     def test_calc_max_loss(self):
         """Test max loss on downside."""
-        strategy = ShortStrangleStrategy(
+        strategy = ShortStranglePricer(
             spot_price=100,
             put_strike=95,
             call_strike=105,
@@ -371,7 +374,7 @@ class TestShortStrangleStrategy:
 
     def test_calc_breakeven(self):
         """Test two breakeven points."""
-        strategy = ShortStrangleStrategy(
+        strategy = ShortStranglePricer(
             spot_price=100,
             put_strike=95,
             call_strike=105,
@@ -389,7 +392,7 @@ class TestShortStrangleStrategy:
 
     def test_calc_win_probability(self):
         """Test win probability (between breakevens)."""
-        strategy = ShortStrangleStrategy(
+        strategy = ShortStranglePricer(
             spot_price=100,
             put_strike=95,
             call_strike=105,
@@ -404,7 +407,7 @@ class TestShortStrangleStrategy:
 
     def test_calc_exercise_probabilities(self):
         """Test individual exercise probabilities."""
-        strategy = ShortStrangleStrategy(
+        strategy = ShortStranglePricer(
             spot_price=100,
             put_strike=95,
             call_strike=105,
@@ -422,7 +425,7 @@ class TestShortStrangleStrategy:
 
     def test_different_volatilities(self):
         """Test with different volatilities for each leg."""
-        strategy = ShortStrangleStrategy(
+        strategy = ShortStranglePricer(
             spot_price=100,
             put_strike=95,
             call_strike=105,
@@ -443,7 +446,7 @@ class TestStrategyBase:
 
     def test_leg_property(self):
         """Test leg property returns first leg."""
-        strategy = ShortPutStrategy(
+        strategy = ShortPutPricer(
             spot_price=100,
             strike_price=95,
             premium=3.0,
@@ -461,13 +464,13 @@ class TestStrategyBase:
             premium=3.0,
             volatility=0.25,
         )
-        params = StrategyParams(
+        params = PricingParams(
             spot_price=100,
             volatility=0.20,
             time_to_expiry=30 / 365,
         )
 
-        class TestStrategy(ShortPutStrategy):
+        class TestStrategy(ShortPutPricer):
             pass
 
         strategy = TestStrategy(
@@ -484,7 +487,7 @@ class TestStrategyBase:
 
     def test_get_leg_volatility_fallback(self):
         """Test get_leg_volatility falls back to strategy volatility."""
-        strategy = ShortPutStrategy(
+        strategy = ShortPutPricer(
             spot_price=100,
             strike_price=95,
             premium=3.0,
@@ -496,7 +499,7 @@ class TestStrategyBase:
 
     def test_sharpe_ratio_annualized(self):
         """Test annualized Sharpe ratio."""
-        strategy = ShortPutStrategy(
+        strategy = ShortPutPricer(
             spot_price=580,
             strike_price=550,
             premium=6.5,
@@ -513,7 +516,7 @@ class TestStrategyBase:
 
     def test_calc_metrics_extended(self):
         """Test extended metrics with PREI, SAS, TGR, ROC."""
-        strategy = ShortPutStrategy(
+        strategy = ShortPutPricer(
             spot_price=100,
             strike_price=95,
             premium=2.0,
@@ -543,7 +546,7 @@ class TestStrategyBase:
 
     def test_calc_metrics_extended_without_optional_params(self):
         """Test extended metrics are None when optional params not provided."""
-        strategy = ShortPutStrategy(
+        strategy = ShortPutPricer(
             spot_price=100,
             strike_price=95,
             premium=2.0,
@@ -565,7 +568,7 @@ class TestStrategyBase:
 
     def test_calc_metrics_partial_extended(self):
         """Test partial extended metrics when some data provided."""
-        strategy = ShortPutStrategy(
+        strategy = ShortPutPricer(
             spot_price=100,
             strike_price=95,
             premium=2.0,
@@ -591,7 +594,7 @@ class TestStrategyBase:
 
     def test_calc_individual_extended_methods(self):
         """Test individual calc_prei, calc_sas, calc_tgr, calc_roc methods."""
-        strategy = ShortPutStrategy(
+        strategy = ShortPutPricer(
             spot_price=100,
             strike_price=95,
             premium=2.0,
@@ -665,3 +668,340 @@ class TestPositionLevelTGR:
 
         assert calc_tgr(pos1) is None
         assert calc_tgr(pos2) is None
+
+
+class TestLongPutPricer:
+    """Tests for Long Put strategy."""
+
+    def test_init(self):
+        """Test strategy initialization."""
+        strategy = LongPutPricer(
+            spot_price=580,
+            strike_price=550,
+            premium=6.5,
+            volatility=0.20,
+            time_to_expiry=30 / 365,
+        )
+        assert strategy.leg.option_type == OptionType.PUT
+        assert strategy.leg.side == PositionSide.LONG
+        assert strategy.leg.strike == 550
+        assert strategy.leg.premium == 6.5
+
+    def test_expected_return_otm(self):
+        """OTM long put (S > K) should have negative expected return."""
+        strategy = LongPutPricer(
+            spot_price=580,
+            strike_price=550,
+            premium=6.5,
+            volatility=0.20,
+            time_to_expiry=30 / 365,
+        )
+        e_return = strategy.calc_expected_return()
+        # OTM long put: paying premium with low probability of profit
+        assert e_return < 0
+
+    def test_expected_return_mirror(self):
+        """E[Long Put] + E[Short Put] ≈ 0 (exact mirror)."""
+        params = dict(
+            spot_price=580,
+            strike_price=550,
+            premium=6.5,
+            volatility=0.20,
+            time_to_expiry=30 / 365,
+            risk_free_rate=0.03,
+        )
+        long_put = LongPutPricer(**params)
+        short_put = ShortPutPricer(**params)
+
+        e_long = long_put.calc_expected_return()
+        e_short = short_put.calc_expected_return()
+
+        assert abs(e_long + e_short) < 1e-10, (
+            f"Mirror violation: E[Long]={e_long}, E[Short]={e_short}, sum={e_long + e_short}"
+        )
+
+    def test_variance_mirror(self):
+        """Var[Long Put] ≈ Var[Short Put] (variance unchanged by negation)."""
+        params = dict(
+            spot_price=580,
+            strike_price=550,
+            premium=6.5,
+            volatility=0.20,
+            time_to_expiry=30 / 365,
+        )
+        long_put = LongPutPricer(**params)
+        short_put = ShortPutPricer(**params)
+
+        var_long = long_put.calc_return_variance()
+        var_short = short_put.calc_return_variance()
+
+        assert abs(var_long - var_short) < 1e-6, (
+            f"Variance mismatch: Long={var_long}, Short={var_short}"
+        )
+
+    def test_max_profit(self):
+        """Max profit = K - C."""
+        strategy = LongPutPricer(
+            spot_price=580,
+            strike_price=550,
+            premium=6.5,
+            volatility=0.20,
+            time_to_expiry=30 / 365,
+        )
+        assert strategy.calc_max_profit() == 550 - 6.5
+
+    def test_max_loss(self):
+        """Max loss = premium paid."""
+        strategy = LongPutPricer(
+            spot_price=580,
+            strike_price=550,
+            premium=6.5,
+            volatility=0.20,
+            time_to_expiry=30 / 365,
+        )
+        assert strategy.calc_max_loss() == 6.5
+
+    def test_breakeven(self):
+        """Breakeven = K - C."""
+        strategy = LongPutPricer(
+            spot_price=580,
+            strike_price=550,
+            premium=6.5,
+            volatility=0.20,
+            time_to_expiry=30 / 365,
+        )
+        assert strategy.calc_breakeven() == 550 - 6.5
+
+    def test_win_probability(self):
+        """OTM long put should have < 50% win probability."""
+        strategy = LongPutPricer(
+            spot_price=580,
+            strike_price=550,
+            premium=6.5,
+            volatility=0.20,
+            time_to_expiry=30 / 365,
+        )
+        win_prob = strategy.calc_win_probability()
+        assert 0 < win_prob < 0.5
+
+    def test_seller_metrics_none(self):
+        """Seller-specific metrics should return None for buyers."""
+        strategy = LongPutPricer(
+            spot_price=580,
+            strike_price=550,
+            premium=6.5,
+            volatility=0.20,
+            time_to_expiry=30 / 365,
+            hv=0.18,
+            dte=30,
+            gamma=0.02,
+            theta=-0.03,
+            vega=0.15,
+        )
+        assert strategy.calc_tgr() is None
+        assert strategy.calc_sas() is None
+        assert strategy.calc_premium_rate() is None
+        assert strategy.calc_theta_margin_ratio() is None
+
+    def test_effective_margin_is_premium(self):
+        """Effective margin for long options = premium paid."""
+        strategy = LongPutPricer(
+            spot_price=580,
+            strike_price=550,
+            premium=6.5,
+            volatility=0.20,
+            time_to_expiry=30 / 365,
+        )
+        assert strategy.get_effective_margin() == 6.5
+
+    def test_calc_metrics(self):
+        """Test full metrics calculation."""
+        strategy = LongPutPricer(
+            spot_price=580,
+            strike_price=550,
+            premium=6.5,
+            volatility=0.20,
+            time_to_expiry=30 / 365,
+            dte=30,
+        )
+        metrics = strategy.calc_metrics()
+        assert isinstance(metrics, PricingMetrics)
+        assert metrics.expected_return < 0  # OTM long put
+        assert metrics.return_std > 0
+        assert metrics.max_profit == 550 - 6.5
+        assert metrics.max_loss == 6.5
+        assert metrics.breakeven == 550 - 6.5
+        assert 0 < metrics.win_probability < 1
+        # Seller metrics should be None
+        assert metrics.tgr is None
+        assert metrics.sas is None
+        assert metrics.premium_rate is None
+        assert metrics.theta_margin_ratio is None
+
+
+class TestLongCallPricer:
+    """Tests for Long Call strategy."""
+
+    def test_init(self):
+        """Test strategy initialization."""
+        strategy = LongCallPricer(
+            spot_price=100,
+            strike_price=105,
+            premium=3.0,
+            volatility=0.25,
+            time_to_expiry=30 / 365,
+        )
+        assert strategy.leg.option_type == OptionType.CALL
+        assert strategy.leg.side == PositionSide.LONG
+        assert strategy.leg.strike == 105
+        assert strategy.leg.premium == 3.0
+
+    def test_expected_return_otm(self):
+        """OTM long call (S < K) should have negative expected return."""
+        strategy = LongCallPricer(
+            spot_price=100,
+            strike_price=105,
+            premium=3.0,
+            volatility=0.25,
+            time_to_expiry=30 / 365,
+        )
+        e_return = strategy.calc_expected_return()
+        assert e_return < 0
+
+    def test_expected_return_mirror(self):
+        """E[Long Call] + E[Short Call] ≈ 0 (exact mirror)."""
+        params = dict(
+            spot_price=100,
+            strike_price=105,
+            premium=3.0,
+            volatility=0.25,
+            time_to_expiry=30 / 365,
+            risk_free_rate=0.03,
+        )
+        long_call = LongCallPricer(**params)
+        short_call = ShortCallPricer(**params)
+
+        e_long = long_call.calc_expected_return()
+        e_short = short_call.calc_expected_return()
+
+        assert abs(e_long + e_short) < 1e-10, (
+            f"Mirror violation: E[Long]={e_long}, E[Short]={e_short}, sum={e_long + e_short}"
+        )
+
+    def test_variance_mirror(self):
+        """Var[Long Call] ≈ Var[Short Call] (variance unchanged by negation)."""
+        params = dict(
+            spot_price=100,
+            strike_price=105,
+            premium=3.0,
+            volatility=0.25,
+            time_to_expiry=30 / 365,
+        )
+        long_call = LongCallPricer(**params)
+        short_call = ShortCallPricer(**params)
+
+        var_long = long_call.calc_return_variance()
+        var_short = short_call.calc_return_variance()
+
+        assert abs(var_long - var_short) < 1e-6, (
+            f"Variance mismatch: Long={var_long}, Short={var_short}"
+        )
+
+    def test_max_profit(self):
+        """Max profit = 10 * K (unlimited, practical bound)."""
+        strategy = LongCallPricer(
+            spot_price=100,
+            strike_price=105,
+            premium=3.0,
+            volatility=0.25,
+            time_to_expiry=30 / 365,
+        )
+        assert strategy.calc_max_profit() == 10 * 105
+
+    def test_max_loss(self):
+        """Max loss = premium paid."""
+        strategy = LongCallPricer(
+            spot_price=100,
+            strike_price=105,
+            premium=3.0,
+            volatility=0.25,
+            time_to_expiry=30 / 365,
+        )
+        assert strategy.calc_max_loss() == 3.0
+
+    def test_breakeven(self):
+        """Breakeven = K + C."""
+        strategy = LongCallPricer(
+            spot_price=100,
+            strike_price=105,
+            premium=3.0,
+            volatility=0.25,
+            time_to_expiry=30 / 365,
+        )
+        assert strategy.calc_breakeven() == 105 + 3.0
+
+    def test_win_probability(self):
+        """OTM long call should have < 50% win probability."""
+        strategy = LongCallPricer(
+            spot_price=100,
+            strike_price=105,
+            premium=3.0,
+            volatility=0.25,
+            time_to_expiry=30 / 365,
+        )
+        win_prob = strategy.calc_win_probability()
+        assert 0 < win_prob < 0.5
+
+    def test_seller_metrics_none(self):
+        """Seller-specific metrics should return None for buyers."""
+        strategy = LongCallPricer(
+            spot_price=100,
+            strike_price=105,
+            premium=3.0,
+            volatility=0.25,
+            time_to_expiry=30 / 365,
+            hv=0.20,
+            dte=30,
+            gamma=0.02,
+            theta=-0.03,
+            vega=0.15,
+        )
+        assert strategy.calc_tgr() is None
+        assert strategy.calc_sas() is None
+        assert strategy.calc_premium_rate() is None
+        assert strategy.calc_theta_margin_ratio() is None
+
+    def test_effective_margin_is_premium(self):
+        """Effective margin for long options = premium paid."""
+        strategy = LongCallPricer(
+            spot_price=100,
+            strike_price=105,
+            premium=3.0,
+            volatility=0.25,
+            time_to_expiry=30 / 365,
+        )
+        assert strategy.get_effective_margin() == 3.0
+
+    def test_calc_metrics(self):
+        """Test full metrics calculation."""
+        strategy = LongCallPricer(
+            spot_price=100,
+            strike_price=105,
+            premium=3.0,
+            volatility=0.25,
+            time_to_expiry=30 / 365,
+            dte=30,
+        )
+        metrics = strategy.calc_metrics()
+        assert isinstance(metrics, PricingMetrics)
+        assert metrics.expected_return < 0  # OTM long call
+        assert metrics.return_std > 0
+        assert metrics.max_profit == 10 * 105
+        assert metrics.max_loss == 3.0
+        assert metrics.breakeven == 105 + 3.0
+        assert 0 < metrics.win_probability < 1
+        # Seller metrics should be None
+        assert metrics.tgr is None
+        assert metrics.sas is None
+        assert metrics.premium_rate is None
+        assert metrics.theta_margin_ratio is None
