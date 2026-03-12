@@ -84,12 +84,17 @@ class SmaLeapsStrategy(BacktestStrategy):
     def on_day_start(self, market: MarketSnapshot, portfolio: PortfolioState) -> None:
         self._last_nlv = portfolio.nlv
         self._pending_roll = False
+        leaps = [p for p in portfolio.positions if p.is_option]
+        self.log("day_start", "info",
+                 nlv=portfolio.nlv, cash=portfolio.cash,
+                 leaps_positions=len(leaps))
 
     def compute_exit_signals(
         self, market: MarketSnapshot, portfolio: PortfolioState, data_provider: Any
     ) -> list[Signal]:
         leaps = [p for p in portfolio.positions if p.is_option]
         if not leaps:
+            self.log("exit_scan", "skip", reason="无LEAPS持仓")
             return []
 
         signals: list[Signal] = []
@@ -98,7 +103,14 @@ class SmaLeapsStrategy(BacktestStrategy):
         result = self._sma.compute(market, data_provider)
         self._last_signal_detail = result
 
+        sma_val = result.get("sma", 0)
+        close = result.get("close", 0)
+
         if not result["invested"]:
+            self.log("exit_scan:sma", "pass",
+                     signal="bearish", close=close, sma=sma_val,
+                     action=f"退出全部 {len(leaps)} 个LEAPS",
+                     positions=[f"{p.instrument.symbol} qty={p.quantity} DTE={p.dte}" for p in leaps])
             # SMA bearish → exit all
             for pos in leaps:
                 signals.append(Signal(
@@ -112,11 +124,18 @@ class SmaLeapsStrategy(BacktestStrategy):
                 ))
             return signals
 
+        self.log("exit_scan:sma", "skip",
+                 signal="bullish", close=close, sma=sma_val,
+                 reason="SMA看多，检查DTE roll")
+
         # 2. DTE roll check
         cfg = self._config
         for pos in leaps:
             if pos.dte is not None and pos.dte <= cfg.roll_dte_threshold:
                 self._pending_roll = True
+                self.log(f"exit_scan:roll", "pass",
+                         symbol=pos.instrument.symbol,
+                         dte=pos.dte, threshold=cfg.roll_dte_threshold)
                 signals.append(Signal(
                     type=SignalType.EXIT,
                     instrument=pos.instrument,
@@ -126,6 +145,11 @@ class SmaLeapsStrategy(BacktestStrategy):
                     priority=5,
                     metadata={"alert_type": "roll_dte"},
                 ))
+            else:
+                self.log(f"exit_scan:dte_check", "skip",
+                         symbol=pos.instrument.symbol,
+                         dte=pos.dte, threshold=cfg.roll_dte_threshold,
+                         reason="DTE充足")
 
         # 3. DTE <= 5 safety net
         for pos in leaps:
@@ -153,15 +177,29 @@ class SmaLeapsStrategy(BacktestStrategy):
         # Need entry if: pending roll, or no positions + SMA bullish + decision day
         leaps = [p for p in portfolio.positions if p.is_option]
         need_entry = False
+        entry_reason = ""
         if self._pending_roll:
             need_entry = True
+            entry_reason = "pending_roll"
         elif not leaps:
             result = self._sma.compute(market, data_provider)
             if result["invested"] and self._is_decision_day(cfg.decision_frequency):
                 need_entry = True
+                entry_reason = f"无持仓+SMA看多+决策日 (freq={cfg.decision_frequency})"
+            elif not result["invested"]:
+                entry_reason = "SMA看空"
+            else:
+                entry_reason = f"非决策日 (day={self._trading_day_count} freq={cfg.decision_frequency})"
+        else:
+            entry_reason = f"已有LEAPS持仓 ({len(leaps)}个)"
 
         if not need_entry:
+            self.log("entry_signal:check", "skip", reason=entry_reason)
             return []
+
+        self.log("entry_signal:check", "info",
+                 reason=entry_reason, nlv=self._last_nlv, cash=portfolio.cash,
+                 target_leverage=cfg.target_leverage)
 
         # Find LEAPS opportunities
         symbols = list(market.prices.keys())
@@ -170,6 +208,7 @@ class SmaLeapsStrategy(BacktestStrategy):
         for symbol in symbols:
             spot = market.get_price_or_zero(symbol)
             if spot <= 0:
+                self.log(f"entry_signal:{symbol}", "fail", reason=f"价格无效 spot={spot}")
                 continue
 
             best = self._find_best_leaps(symbol, spot, market.date, data_provider)
@@ -183,6 +222,8 @@ class SmaLeapsStrategy(BacktestStrategy):
             if best.bid is not None and best.ask is not None and best.ask > 0:
                 mid = (best.bid + best.ask) / 2
             if not delta or delta <= 0 or not mid or mid <= 0:
+                self.log(f"entry_signal:{symbol}", "fail",
+                         reason="合约无效", delta=delta, mid=mid)
                 continue
 
             lot_size = contract.lot_size or 100
@@ -200,9 +241,17 @@ class SmaLeapsStrategy(BacktestStrategy):
                 contracts = min(contracts, max_contracts)
 
             if contracts <= 0:
+                self.log(f"entry_signal:{symbol}", "fail",
+                         reason="sizing=0", budget=available, mid=mid, lot_size=lot_size)
                 continue
 
             dte = (contract.expiry_date - market.date).days
+
+            self.log(f"contract_select:{symbol}", "pass",
+                     strike=contract.strike_price, dte=dte,
+                     delta=delta, mid=mid, contracts=contracts,
+                     leverage=cfg.target_leverage, budget=available)
+
             instrument = Instrument(
                 type=InstrumentType.OPTION,
                 underlying=symbol,
@@ -241,25 +290,33 @@ class SmaLeapsStrategy(BacktestStrategy):
             expiry_max_days=cfg.max_dte,
         )
         if not chain or not chain.calls:
+            self.log(f"option_chain:{symbol}", "fail",
+                     reason="无CALL合约",
+                     dte_range=f"[{cfg.min_dte}-{cfg.max_dte}]")
             return None
 
         best_score = -float("inf")
         best = None
+        total = len(chain.calls)
+        reject = {"dte": 0, "no_price": 0, "no_delta": 0}
 
         for call in chain.calls:
             contract = call.contract
             dte = (contract.expiry_date - current_date).days
             if dte < cfg.min_dte or dte > cfg.max_dte:
+                reject["dte"] += 1
                 continue
 
             mid = call.last_price
             if call.bid is not None and call.ask is not None and call.ask > 0:
                 mid = (call.bid + call.ask) / 2
             if mid is None or mid <= 0:
+                reject["no_price"] += 1
                 continue
 
             delta = call.greeks.delta if call.greeks else None
             if delta is None or delta <= 0:
+                reject["no_delta"] += 1
                 continue
 
             dte_dev = abs(dte - cfg.target_dte) / cfg.target_dte if cfg.target_dte > 0 else 0
@@ -269,5 +326,16 @@ class SmaLeapsStrategy(BacktestStrategy):
             if score > best_score:
                 best_score = score
                 best = call
+
+        if not best:
+            self.log(f"contract_select:{symbol}", "fail",
+                     total=total, passed=0,
+                     rejected_by={k: v for k, v in reject.items() if v > 0},
+                     filters=f"DTE=[{cfg.min_dte}-{cfg.max_dte}] target_K={target_strike:.0f} moneyness={cfg.target_moneyness}")
+        else:
+            self.log(f"option_chain:{symbol}", "pass",
+                     total=total,
+                     rejected_by={k: v for k, v in reject.items() if v > 0},
+                     target_strike=target_strike)
 
         return best

@@ -87,6 +87,12 @@ class BullPutSpreadStrategy(BacktestStrategy):
         """Close spreads at profit target or DTE exit."""
         signals: list[Signal] = []
 
+        short_puts = [p for p in portfolio.get_option_positions()
+                      if p.instrument.right == OptionRight.PUT and p.quantity < 0]
+        if not short_puts:
+            self.log("exit_scan", "skip", reason="无Spread持仓")
+            return signals
+
         # Build index of long legs for pairing
         long_puts = {
             (pos.instrument.underlying, pos.instrument.expiry, pos.instrument.strike): pos
@@ -118,7 +124,16 @@ class BullPutSpreadStrategy(BacktestStrategy):
                         should_close = True
                         reason = f"Profit target: {profit_pct:.0%} of max"
 
+            if not should_close:
+                self.log(f"exit_scan:{pos.instrument.symbol}", "skip",
+                         dte=pos.dte, dte_exit=self._config.dte_exit,
+                         pnl=pos.unrealized_pnl,
+                         profit_target=self._config.profit_target_pct,
+                         reason="未触发退出条件")
+
             if should_close:
+                self.log(f"exit_scan:{pos.instrument.symbol}", "pass",
+                         reason=reason, dte=pos.dte)
                 # Close short leg
                 signals.append(Signal(
                     type=SignalType.EXIT,
@@ -152,11 +167,16 @@ class BullPutSpreadStrategy(BacktestStrategy):
     ) -> list[Signal]:
         """Open new spread when SMA is bullish and capacity available."""
         if not self._is_decision_day(self._config.decision_frequency):
+            self.log("entry_signal", "skip",
+                     reason=f"非决策日 (day={self._trading_day_count} freq={self._config.decision_frequency})")
             return []
 
         # Check SMA trend
         sma_result = self._sma.compute(market, data_provider)
         if not sma_result.get("invested", False):
+            self.log("entry_signal:sma", "fail",
+                     close=sma_result.get("close", 0), sma=sma_result.get("sma", 0),
+                     reason="SMA看空，不开仓")
             return []
 
         # Check position capacity (count short put legs)
@@ -165,7 +185,14 @@ class BullPutSpreadStrategy(BacktestStrategy):
             if p.instrument.right == OptionRight.PUT and p.quantity < 0
         )
         if current_spreads >= self._config.max_spreads:
+            self.log("entry_signal", "skip",
+                     current=current_spreads, max=self._config.max_spreads,
+                     reason="已达最大Spread数量")
             return []
+
+        self.log("entry_signal:sma", "pass",
+                 close=sma_result.get("close", 0), sma=sma_result.get("sma", 0),
+                 current_spreads=current_spreads, max_spreads=self._config.max_spreads)
 
         # Find suitable put options for the spread
         underlying = list(market.prices.keys())[0] if market.prices else None
@@ -181,6 +208,9 @@ class BullPutSpreadStrategy(BacktestStrategy):
             expiry_max_days=self._config.target_dte_max,
         )
         if not chain or not chain.puts:
+            self.log(f"option_chain:{underlying}", "fail",
+                     reason="无PUT合约",
+                     dte_range=f"[{self._config.target_dte_min}-{self._config.target_dte_max}]")
             return []
 
         # Find target expiry from available expirations
@@ -298,6 +328,11 @@ class BullPutSpreadStrategy(BacktestStrategy):
             "net_credit": net_credit,
             "num_spreads": num_spreads,
         }
+
+        self.log(f"contract_select:{underlying}", "pass",
+                 short_strike=actual_short_strike, long_strike=actual_long_strike,
+                 net_credit=net_credit, num_spreads=num_spreads,
+                 max_loss=max_loss_per_spread, spread_width=spread_width)
 
         return signals
 

@@ -326,9 +326,11 @@ class BacktestPipeline:
     def _create_data_provider(self):
         """Create the appropriate data provider.
 
-        If the strategy config has `leaps_config.use_synthetic: true`,
-        wraps DuckDBProvider with SyntheticLeapsProvider to generate
-        B-S synthetic option chains instead of reading from parquet.
+        Priority:
+        1. SyntheticLeapsProvider — when strategy declares requires_synthetic_data
+        2. SyntheticOptionFallbackProvider — when config.use_synthetic_fallback=True
+           (uses real data when available, BSM synthetic when missing)
+        3. Plain DuckDBProvider — default
         """
         from src.backtest.data.duckdb_provider import DuckDBProvider
 
@@ -339,6 +341,12 @@ class BacktestPipeline:
 
             logger.info("Using SyntheticLeapsProvider for LEAPS backtest")
             return SyntheticLeapsProvider(base_provider)
+
+        if getattr(self.config, "use_synthetic_fallback", False):
+            from src.backtest.data.synthetic_option_provider import SyntheticOptionFallbackProvider
+
+            logger.info("Using SyntheticOptionFallbackProvider (BSM fallback when real data missing)")
+            return SyntheticOptionFallbackProvider(base_provider)
 
         return base_provider
 

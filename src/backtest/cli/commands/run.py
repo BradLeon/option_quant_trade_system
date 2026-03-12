@@ -118,6 +118,11 @@ logger = logging.getLogger(__name__)
     help="每月出金金额 (默认: 0, 不出金)",
 )
 @click.option(
+    "--synthetic-fallback",
+    is_flag=True,
+    help="期权链数据不存在时自动使用 BSM 合成数据（扩展回测窗口）",
+)
+@click.option(
     "--verbose",
     "-v",
     is_flag=True,
@@ -146,6 +151,7 @@ def run(
     report_dir: str,
     check_only: bool,
     monthly_withdrawal: float,
+    synthetic_fallback: bool,
     verbose: bool,
     benchmark: str,
 ) -> None:
@@ -214,6 +220,7 @@ def run(
         skip_market_check=skip_market_check,
         benchmark_symbol=benchmark.upper(),
         monthly_withdrawal=monthly_withdrawal,
+        use_synthetic_fallback=synthetic_fallback,
     )
 
     # 创建 Pipeline

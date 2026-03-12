@@ -11,6 +11,7 @@ from src.business.cli.commands.monitor import monitor
 from src.business.cli.commands.notify import notify
 from src.business.cli.commands.dashboard import dashboard
 from src.business.cli.commands.trade import trade
+from src.business.cli.commands.strategy import strategy
 
 
 @click.group()
@@ -29,6 +30,7 @@ cli.add_command(monitor)
 cli.add_command(notify)
 cli.add_command(dashboard)
 cli.add_command(trade)
+cli.add_command(strategy)
 
 
 if __name__ == "__main__":

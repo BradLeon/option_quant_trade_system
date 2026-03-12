@@ -110,6 +110,14 @@ class MomentumMixedStrategy(BacktestStrategy):
         self._pending_leaps_topup = 0
         self._pending_stock_topup_pct = 0.0
 
+        stock_pos = portfolio.get_stock_positions()
+        leaps_pos = [p for p in portfolio.get_option_positions()
+                     if p.instrument.right == OptionRight.CALL and p.quantity > 0]
+        self.log("day_start", "info",
+                 nlv=portfolio.nlv, cash=portfolio.cash,
+                 stock_positions=len(stock_pos), leaps_positions=len(leaps_pos),
+                 mode="stock+LEAPS" if self._config.use_stock_component else "LEAPS-only")
+
     def compute_exit_signals(
         self, market: MarketSnapshot, portfolio: PortfolioState, data_provider: Any
     ) -> list[Signal]:
@@ -119,6 +127,7 @@ class MomentumMixedStrategy(BacktestStrategy):
                      if p.instrument.right == OptionRight.CALL and p.quantity > 0]
 
         if not stock_pos and not leaps_pos:
+            self.log("exit_scan", "skip", reason="无持仓")
             return []
 
         result = self._momentum.compute(market, data_provider)
@@ -127,6 +136,13 @@ class MomentumMixedStrategy(BacktestStrategy):
 
         current_pct = self._compute_current_exposure(stock_pos, leaps_pos, market)
         self._last_signal_detail["current_pct"] = current_pct
+
+        self.log("exit_scan:momentum", "info",
+                 target_pct=target_pct, current_pct=current_pct,
+                 momentum_score=result.get("momentum_score", 0),
+                 vix=result.get("vix", 0),
+                 positions=([f"Stock: {p.instrument.underlying} qty={p.quantity}" for p in stock_pos]
+                            + [f"LEAPS: {p.instrument.symbol} qty={p.quantity} DTE={p.dte} delta={p.delta or 0:.2f}" for p in leaps_pos]))
 
         signals: list[Signal] = []
 
@@ -150,9 +166,12 @@ class MomentumMixedStrategy(BacktestStrategy):
                     position_id=pos.position_id, priority=10,
                     metadata={"alert_type": "voltgt_exit"},
                 ))
+            self.log("exit_scan:voltgt_exit", "pass",
+                     action="全部退出", count=len(signals),
+                     momentum_score=score, vix=vix)
             return signals
 
-        # b) LEAPS DTE roll
+        # b) LEAPS DTE roll check
         for pos in leaps_pos:
             if pos.dte is not None and pos.dte <= cfg.roll_dte_threshold:
                 self._pending_rebalance = True
@@ -188,14 +207,28 @@ class MomentumMixedStrategy(BacktestStrategy):
                     target_leaps_pct, leaps_pos[0], market
                 )
                 self._pending_leaps_topup = max(0, target_contracts - surviving_qty)
+            self.log("exit_scan:roll", "pass",
+                     closing=len(signals), surviving=surviving_qty,
+                     pending_topup=self._pending_leaps_topup,
+                     roll_dte_threshold=cfg.roll_dte_threshold)
             return signals
 
         # c) Rebalance check
         delta_pct = target_pct - current_pct
         if abs(delta_pct) <= cfg.rebalance_threshold:
+            self.log("exit_scan:rebalance", "skip",
+                     delta_pct=delta_pct,
+                     threshold=cfg.rebalance_threshold,
+                     reason=f"|{delta_pct:.2f}| <= {cfg.rebalance_threshold}")
             return []
         if not self._rebalance_cooldown_ok(self._last_rebalance_day, cfg.min_rebalance_interval):
+            self.log("exit_scan:rebalance", "skip",
+                     reason=f"冷却期未满 (间隔要求={cfg.min_rebalance_interval}天)")
             return []
+
+        self.log("exit_scan:rebalance", "info",
+                 delta_pct=delta_pct, threshold=cfg.rebalance_threshold,
+                 action="触发再平衡")
 
         signals.extend(self._rebalance_signals(
             stock_pos, leaps_pos, target_pct, current_pct, market
@@ -219,13 +252,22 @@ class MomentumMixedStrategy(BacktestStrategy):
                      if p.instrument.right == OptionRight.CALL and p.quantity > 0]
 
         need_entry = False
+        entry_reason = ""
         if self._pending_rebalance or self._pending_stock_topup_pct > 0:
             need_entry = True
+            entry_reason = f"pending_rebalance={self._pending_rebalance} pending_stock_topup={self._pending_stock_topup_pct:.2f}"
         elif target_pct > 0 and not stock_pos and not leaps_pos:
             if self._is_decision_day(cfg.decision_frequency):
                 need_entry = True
+                entry_reason = f"无持仓+决策日 (freq={cfg.decision_frequency})"
+            else:
+                entry_reason = f"无持仓但非决策日 (day={self._trading_day_count} freq={cfg.decision_frequency})"
 
         if not need_entry or target_pct <= 0:
+            self.log("entry_signal:check", "skip",
+                     target_pct=target_pct,
+                     need_entry=need_entry,
+                     reason=entry_reason or (f"target_pct={target_pct:.2f}<=0" if target_pct <= 0 else "无入场条件"))
             return []
 
         signals: list[Signal] = []
@@ -245,6 +287,11 @@ class MomentumMixedStrategy(BacktestStrategy):
             leaps_pct = max(0.0, target_pct - 1.0)
         else:
             leaps_pct = target_pct
+
+        self.log("entry_signal:allocation", "info",
+                 target_pct=target_pct, stock_pct=stock_pct, leaps_pct=leaps_pct,
+                 nlv=self._last_nlv, cash=self._last_cash,
+                 reason=entry_reason)
 
         for symbol in symbols:
             spot = market.get_price_or_zero(symbol)
@@ -425,23 +472,31 @@ class MomentumMixedStrategy(BacktestStrategy):
             expiry_max_days=cfg.max_dte,
         )
         if not chain or not chain.calls:
+            self.log(f"option_chain:{symbol}", "fail",
+                     reason="无CALL合约",
+                     dte_range=f"[{cfg.min_dte}-{cfg.max_dte}]")
             return None
 
         # Select best contract
         best = None
         best_score = -float("inf")
+        total = len(chain.calls)
+        reject = {"dte": 0, "no_price": 0, "no_delta": 0}
         for call in chain.calls:
             contract = call.contract
             dte = (contract.expiry_date - market.date).days
             if dte < cfg.min_dte or dte > cfg.max_dte:
+                reject["dte"] += 1
                 continue
             mid = call.last_price
             if call.bid is not None and call.ask is not None and call.ask > 0:
                 mid = (call.bid + call.ask) / 2
             if not mid or mid <= 0:
+                reject["no_price"] += 1
                 continue
             delta = call.greeks.delta if call.greeks else None
             if not delta or delta <= 0:
+                reject["no_delta"] += 1
                 continue
             dte_dev = abs(dte - cfg.target_dte) / cfg.target_dte if cfg.target_dte > 0 else 0
             strike_dev = abs(contract.strike_price - target_strike) / target_strike if target_strike > 0 else 0
@@ -451,6 +506,10 @@ class MomentumMixedStrategy(BacktestStrategy):
                 best = call
 
         if not best:
+            self.log(f"contract_select:{symbol}", "fail",
+                     total=total, passed=0,
+                     rejected_by={k: v for k, v in reject.items() if v > 0},
+                     filters=f"DTE=[{cfg.min_dte}-{cfg.max_dte}] target_K={target_strike:.0f} target_DTE={cfg.target_dte}")
             return None
 
         contract = best.contract
@@ -482,7 +541,17 @@ class MomentumMixedStrategy(BacktestStrategy):
             contracts = min(contracts, max_contracts)
 
         if contracts <= 0:
+            self.log(f"contract_select:{symbol}", "fail",
+                     reason="sizing=0",
+                     budget=budget, mid=mid, lot_size=lot_size)
             return None
+
+        self.log(f"contract_select:{symbol}", "pass",
+                 total=total, passed=1,
+                 strike=contract.strike_price, dte=(contract.expiry_date - market.date).days,
+                 delta=delta, mid=mid, contracts=contracts,
+                 budget=budget,
+                 filters=f"DTE=[{cfg.min_dte}-{cfg.max_dte}] moneyness={cfg.target_moneyness}")
 
         dte = (contract.expiry_date - market.date).days
         instrument = Instrument(

@@ -1,11 +1,8 @@
 """Backtest Strategy Abstraction Layer (V2)
 
-New strategy framework designed specifically for backtesting:
-- Single entry point: generate_signals() replaces 3-method lifecycle
-- Native multi-asset: Instrument (stock/option/combo) as first-class citizens
-- Composable signals: SmaComputer, MomentumVolTargetComputer
-- Pluggable risk: RiskGuard middleware chain
-- Signal-to-execution bridge: SignalConverter
+Strategy framework for backtesting. Core models and protocols are shared
+with live trading via src/strategy/. This package adds backtest-specific
+features (BacktestStrategy, SignalConverter, Registry).
 
 Usage:
     from src.backtest.strategy import BacktestStrategyRegistry

@@ -120,6 +120,7 @@ class BacktestConfig:
     verbose: bool = False  # 详细日志
     skip_market_check: bool = False  # 跳过筛选的市场环境检查
     benchmark_symbol: str = "QQQ"  # 基准标的 (QQQ / SPY)
+    use_synthetic_fallback: bool = False  # 期权链数据不存在时自动使用 BSM 合成数据
 
     # ========== 配置覆盖 (优先级最高) ==========
     # 这些覆盖会应用在 BACKTEST 模式默认值之上
@@ -251,6 +252,7 @@ class BacktestConfig:
             "skip_market_check": self.skip_market_check,
             "benchmark_symbol": self.benchmark_symbol,
             "monthly_withdrawal": self.monthly_withdrawal,
+            "use_synthetic_fallback": self.use_synthetic_fallback,
             # 配置覆盖
             "risk_overrides": self.risk_overrides,
             "screening_overrides": self.screening_overrides,

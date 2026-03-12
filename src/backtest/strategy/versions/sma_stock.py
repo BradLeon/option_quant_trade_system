@@ -69,16 +69,32 @@ class SmaStockStrategy(BacktestStrategy):
         data_provider: Any,
     ) -> list[Signal]:
         if not portfolio.positions:
+            self.log("exit_scan", "skip", reason="无持仓")
             return []
 
         if not self._is_decision_day(self._config.decision_frequency):
+            self.log("exit_scan", "skip",
+                     reason=f"非决策日 (day={self._trading_day_count} freq={self._config.decision_frequency})")
             return []
 
         result = self._sma.compute(market, data_provider)
         self._last_signal_detail = result
 
+        sma_val = result.get("sma", 0)
+        close = result.get("close", 0)
+        mode = "SMA_CROSS" if self._config.comparison == SmaComparison.SMA_CROSS else "PRICE_VS_SMA"
+
         if result["invested"]:
+            self.log("exit_scan:sma", "skip",
+                     signal="bullish", mode=mode,
+                     close=close, sma=sma_val,
+                     reason="SMA看多，继续持有")
             return []
+
+        self.log("exit_scan:sma", "pass",
+                 signal="bearish", mode=mode,
+                 close=close, sma=sma_val,
+                 action=f"退出全部 {len(portfolio.positions)} 个持仓")
 
         # SMA bearish → exit all positions
         signals = []
@@ -103,29 +119,50 @@ class SmaStockStrategy(BacktestStrategy):
     ) -> list[Signal]:
         # Don't enter if already holding
         if portfolio.positions:
+            self.log("entry_signal", "skip", reason="已有持仓")
             return []
 
         if not self._is_decision_day(self._config.decision_frequency):
+            self.log("entry_signal", "skip",
+                     reason=f"非决策日 (day={self._trading_day_count} freq={self._config.decision_frequency})")
             return []
 
         result = self._sma.compute(market, data_provider)
         self._last_signal_detail = result
 
+        sma_val = result.get("sma", 0)
+        close = result.get("close", 0)
+        mode = "SMA_CROSS" if self._config.comparison == SmaComparison.SMA_CROSS else "PRICE_VS_SMA"
+
         if not result["invested"]:
+            self.log("entry_signal:sma", "fail",
+                     signal="bearish", mode=mode,
+                     close=close, sma=sma_val,
+                     reason="SMA看空，不入场")
             return []
 
         # SMA bullish → buy stock
         symbol = result.get("symbol") or (self._config.symbols[0] if self._config.symbols else None)
         if not symbol:
+            self.log("entry_signal", "fail", reason="无标的")
             return []
 
         price = market.get_price_or_zero(symbol)
         if price <= 0:
+            self.log(f"entry_signal:{symbol}", "fail", reason=f"价格无效 price={price}")
             return []
 
         shares = math.floor(self._config.capital_allocation * portfolio.cash / price)
         if shares <= 0:
+            self.log(f"entry_signal:{symbol}", "fail",
+                     reason="资金不足", cash=portfolio.cash, price=price,
+                     allocation=self._config.capital_allocation)
             return []
+
+        self.log(f"entry_signal:{symbol}", "pass",
+                 mode=mode, close=close, sma=sma_val,
+                 shares=shares, price=price,
+                 cost=shares * price, cash=portfolio.cash)
 
         instrument = Instrument(type=InstrumentType.STOCK, underlying=symbol, lot_size=1)
 

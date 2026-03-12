@@ -1,25 +1,9 @@
-"""Risk Guard Protocol — pluggable risk middleware."""
+"""Risk Guard Protocol — Re-export from shared layer.
 
-from __future__ import annotations
+The RiskGuard protocol has been promoted to src/strategy/risk.py for use
+by both backtest and live trading. This file re-exports for backward compatibility.
+"""
 
-from typing import Protocol
+from src.strategy.risk import RiskGuard  # noqa: F401
 
-from src.backtest.strategy.models import MarketSnapshot, PortfolioState, Signal
-
-
-class RiskGuard(Protocol):
-    """Risk guard: filters or modifies signals between strategy and execution.
-
-    The executor calls guards in sequence:
-        for guard in risk_chain:
-            signals = guard.check(signals, portfolio, market)
-    """
-
-    def check(
-        self,
-        signals: list[Signal],
-        portfolio: PortfolioState,
-        market: MarketSnapshot,
-    ) -> list[Signal]:
-        """Filter/modify signals. Returns approved signals."""
-        ...
+__all__ = ["RiskGuard"]

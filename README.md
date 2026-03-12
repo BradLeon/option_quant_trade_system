@@ -10,9 +10,10 @@
 | **持仓监控** (`optrade monitor`) | 组合级 / 持仓级 / 资金级三层风险预警 |
 | **实时仪表盘** (`optrade dashboard`) | Plotly 可视化面板，支持自动刷新 |
 | **自动交易** (`optrade trade`) | 筛选/监控信号 → 决策 → 订单执行（仅 Paper） |
+| **V2 策略实盘** (`optrade strategy`) | 回测策略零修改部署到实盘，自动化 Paper Trading |
 | **策略回测** (`backtest run`) | 基于历史数据的期权策略验证，含归因分析与交互式报告 |
 
-**支持的策略**：Short Put、Covered Call、Short Strangle
+**支持的策略**：Short Put、Covered Call、Short Strangle、SMA Stock、SMA LEAPS、Momentum Mixed、Bull Put Spread
 
 **数据源**：Yahoo Finance（基本面/宏观）、Futu OpenAPI（港股）、IBKR TWS（美股交易）、ThetaData（回测历史数据）
 
@@ -320,6 +321,49 @@ uv run optrade trade screen -m us --execute
 uv run optrade trade monitor --execute
 ```
 
+### strategy — V2 策略实盘执行
+
+将回测中验证过的 V2 策略（`src/backtest/strategy/`）零修改部署到实盘 Paper Trading。策略代码完全相同，只是数据源从 DuckDB 切换为 IBKR 实时行情。
+
+```bash
+# 查看可用策略
+uv run optrade strategy list
+
+# Dry-run（仅生成信号，不下单）
+uv run optrade strategy run -s spy_leaps_only_vol_target -S SPY
+
+# 实际下单到 IBKR Paper
+uv run optrade strategy run -s spy_leaps_only_vol_target -S SPY --execute
+
+# 下单 + 推送飞书通知
+uv run optrade strategy run -s spy_leaps_only_vol_target -S QQQ --execute --push
+
+# 多标的 + 风控参数
+uv run optrade strategy run -s sma_stock -S SPY -S AAPL --max-margin 0.50
+```
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `-s, --strategy-name` | 策略名称 | 必填 |
+| `-S, --symbol` | 标的代码（可多次指定） | 必填 |
+| `-a, --account` | 账户类型：`paper` / `live` | `paper` |
+| `--execute` | 实际下单（默认 dry-run） | 否 |
+| `--max-margin` | 最大保证金使用率 | `0.60` |
+| `--max-positions` | 最大持仓数量 | `10` |
+| `--push/--no-push` | 推送结果到飞书 | 不推送 |
+| `-v, --verbose` | 详细日志 | 否 |
+
+**执行流程**（两阶段设计，解决 IBKR 单连接限制）：
+
+```
+Phase A: IBKRProvider 连接 → 市场快照 → 组合状态 → 策略信号 → 风控过滤
+Phase B: 断开数据连接 → TradingPipeline 连接 → 订单执行 → 断开交易连接
+```
+
+**飞书推送卡片**包含：策略/标的/账户摘要、市场快照（价格/VIX/无风险利率）、资金概览+风控指标（保证金使用率/现金比率，红绿标识）、股票/期权持仓 Markdown 表格（盈亏红绿标识）、信号管线汇总、订单详情。
+
+**结构化执行日志**：每个策略步骤（初始化 → 退出扫描 → 入场信号 → 合约筛选 → 风控 → 执行）均有详细 trace 输出，便于排查问题。
+
 ### 常用工作流
 
 ```bash
@@ -331,6 +375,9 @@ uv run optrade dashboard -a paper -r 30
 
 # 收盘后风险检查
 uv run optrade monitor -a paper -l red --push
+
+# V2 策略自动交易（美股开盘后 10:30 AM ET，cron 自动执行）
+uv run optrade strategy run -s spy_leaps_only_vol_target -S QQQ --execute --push
 ```
 
 ---
@@ -382,17 +429,22 @@ option_quant_trade_system/
 │   │   └── pipeline.py             # 回测 Pipeline (完整流程编排)
 │   ├── business/                   # 业务层 (实盘交易)
 │   │   ├── cli/                    # CLI 入口 (optrade 命令)
-│   │   ├── strategy/               # 策略抽象层 (多版本共存)
+│   │   │   └── commands/strategy.py# V2 策略实盘 CLI (optrade strategy)
+│   │   ├── strategy/               # V1 策略抽象层 (Screen/Monitor 驱动)
 │   │   │   ├── base.py             # BaseTradeStrategy 抽象基类
 │   │   │   ├── factory.py          # 策略工厂
 │   │   │   ├── models.py           # TradeSignal, MarketContext
 │   │   │   └── versions/           # 具体策略实现
-│   │   │       ├── short_options_with_expire_itm_stock_trade.py
-│   │   │       └── short_options_without_expire_itm_stock_trade.py
 │   │   ├── screening/              # 开仓筛选 Pipeline
 │   │   ├── monitoring/             # 持仓监控 Pipeline
 │   │   ├── dashboard/              # 实时仪表盘
+│   │   ├── notification/           # 飞书推送
+│   │   │   └── formatters/         # 消息格式化 (dashboard, strategy, trading...)
 │   │   └── trading/                # 交易执行
+│   │       ├── live_executor.py    # V2 策略实盘执行器
+│   │       ├── live_snapshot_builder.py # IBKR → MarketSnapshot/PortfolioState
+│   │       ├── live_signal_converter.py # Signal → TradingDecision
+│   │       └── pipeline.py         # TradingPipeline (IBKR 下单)
 │   ├── engine/                     # 计算引擎 (回测与实盘共用)
 │   │   ├── models/                 # 数据模型 (BSParams, Position, Strategy)
 │   │   ├── bs/                     # Black-Scholes 模型
@@ -425,13 +477,13 @@ find_opportunities()  →  市场筛选，寻找开仓机会
 generate_entry_signals() → 仓位计算，生成开仓信号
 ```
 
-#### 回测 V2 策略 (`src/backtest/strategy/`)
+#### V2 策略 (`src/backtest/strategy/` + `src/strategy/`)
 
-专为回测设计，单入口 `generate_signals()`，原生多资产支持：
+单入口 `generate_signals()`，回测与实盘共用同一份策略代码：
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│              StrategyProtocol (回测策略最小契约)                       │
+│              StrategyProtocol (策略最小契约)                          │
 ├─────────────────────────────────────────────────────────────────────┤
 │  generate_signals(market, portfolio, data_provider) → list[Signal]  │
 └─────────────────────────────────────────────────────────────────────┘
@@ -440,14 +492,20 @@ generate_entry_signals() → 仓位计算，生成开仓信号
     (SMA择时+股票)      (SMA择时+LEAPS)    (动量+Stock/LEAPS)
 ```
 
+**回测路径**: DuckDBProvider → generate_signals() → TradeSimulator
+**实盘路径**: IBKRProvider → generate_signals() → TradingPipeline → IBKR Paper
+
+策略代码零修改，仅数据源和执行层不同。`LiveStrategyExecutor` 负责实盘编排：
+构建 MarketSnapshot → 构建 PortfolioState → 调用策略 → RiskGuard 链 → Signal→Decision 转换 → 下单。
+
 **V2 核心改进**：
 - **单入口**: `generate_signals()` 替代 3 个生命周期方法
+- **回测/实盘统一**: 同一策略代码，两种执行路径
 - **原生多资产**: `Instrument` 模型消除 stock proxy hack
 - **可组合**: `SmaComputer` / `MomentumVolTargetComputer` 信号计算器复用
 - **可插拔风控**: `RiskGuard` 中间件链
+- **结构化日志**: `ExecutionLog` 记录每步 trace，CLI 和飞书卡片均可渲染
 - **代码精简**: 7 个旧策略 → 4 个参数化新策略 (代码量 -55%)
-
-> 详细设计：`docs/development/backtest_v2_architecture.md`
 
 ### 核心设计
 
@@ -543,15 +601,15 @@ PROJECT_DIR=/path/to/option_quant_trade_system
 HTTP_PROXY=http://127.0.0.1:33210
 HTTPS_PROXY=http://127.0.0.1:33210
 
-# HK 筛选: 北京时间 9:30-16:30, 周一到周五
-30 9,10,11,12,13,14,15,16 * * 1-5 cd $PROJECT_DIR && uv run optrade screen -m hk --push >> logs/screen_hk.log 2>&1
+# Dashboard 持仓报告: 北京时间 9:30, 16:30, 22:30, 周一到周五
+30 9,16,22 * * 1-5 $PROJECT_DIR/scripts/ensure_tws.sh paper && cd $PROJECT_DIR && uv run optrade dashboard -a paper --push >> logs/dashboard.log 2>&1
 
-# US 筛选: 北京时间 21:30-6:30
-30 21,22,23 * * 1-5 cd $PROJECT_DIR && uv run optrade screen -m us --push >> logs/screen_us.log 2>&1
-
-# 收盘前监控
-0 15 * * 1-5 cd $PROJECT_DIR && uv run optrade monitor -a live --push >> logs/monitor.log 2>&1
+# V2 策略实盘 (Paper): US 10:30 AM ET, 每日一次
+# 夏令时=北京22:30 / 冬令时=北京23:30, 推迟到10:30因为开盘后spread收窄、LEAPS报价更完整
+30 22,23 * * 1-5 $PROJECT_DIR/scripts/ensure_tws.sh paper && cd $PROJECT_DIR && uv run optrade strategy run -s spy_leaps_only_vol_target -S QQQ --execute --push >> logs/paper_trade.log 2>&1
 ```
+
+> 夏令时/冬令时覆盖：同一任务设置两个时间点（如 `22,23`），策略内部检查当前持仓状态，重复执行不会重复建仓。
 
 ---
 

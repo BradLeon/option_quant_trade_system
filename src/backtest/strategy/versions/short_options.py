@@ -119,14 +119,19 @@ class ShortPutStrategy(BacktestStrategy):
         """Generate exit signals for existing short option positions."""
         signals: list[Signal] = []
         cfg = self._config
+        short_options = [p for p in portfolio.get_option_positions() if p.quantity < 0]
 
-        for pos in portfolio.get_option_positions():
-            # Only manage short positions
-            if pos.quantity >= 0:
-                continue
+        if not short_options:
+            self.log("exit_scan", "skip", reason="no_short_positions")
+            return signals
 
+        for pos in short_options:
+            sym = pos.instrument.symbol
             should_close = False
             reason = ""
+
+            pnl_pct = self._calc_pnl_pct(pos)
+            tgr = self._calc_tgr(pos)
 
             # Rule 1: DTE <= 0 and ITM — force close (no-assignment variant only)
             if not cfg.allow_assignment and pos.dte is not None and pos.dte <= 0:
@@ -136,7 +141,6 @@ class ShortPutStrategy(BacktestStrategy):
 
             # Rule 2: Early profit taking — PnL >= threshold and DTE > min
             if not should_close:
-                pnl_pct = self._calc_pnl_pct(pos)
                 if (
                     pnl_pct is not None
                     and pnl_pct >= cfg.take_profit_pnl
@@ -154,7 +158,6 @@ class ShortPutStrategy(BacktestStrategy):
 
             # Rule 4: TGR too low
             if not should_close:
-                tgr = self._calc_tgr(pos)
                 if tgr is not None and tgr < cfg.min_tgr_exit:
                     should_close = True
                     reason = f"TGR too low: {tgr:.2f} < {cfg.min_tgr_exit}"
@@ -167,6 +170,9 @@ class ShortPutStrategy(BacktestStrategy):
                     reason = f"Win prob too low: {win_prob:.0%} < {cfg.min_win_prob:.0%}"
 
             if should_close:
+                self.log(f"exit_scan:{sym}", "pass",
+                         dte=pos.dte, delta=pos.delta, pnl_pct=pnl_pct, tgr=tgr,
+                         action="EXIT", reason=reason)
                 signals.append(
                     Signal(
                         type=SignalType.EXIT,
@@ -178,6 +184,11 @@ class ShortPutStrategy(BacktestStrategy):
                         metadata={"alert_type": "short_put_exit"},
                     )
                 )
+            else:
+                self.log(f"exit_scan:{sym}", "info",
+                         dte=pos.dte, delta=pos.delta, pnl_pct=pnl_pct, tgr=tgr,
+                         action="HOLD",
+                         thresholds=f"profit>{cfg.take_profit_pnl:.0%} |delta|>{cfg.max_delta_exit} TGR<{cfg.min_tgr_exit}")
 
         return signals
 
@@ -197,12 +208,26 @@ class ShortPutStrategy(BacktestStrategy):
         self._entries_today = 0
 
         if not self._is_decision_day(cfg.decision_frequency):
+            self.log("trend_filter", "skip",
+                     reason="not_decision_day", day=self._trading_day_count, freq=cfg.decision_frequency)
             return []
 
         # SMA trend filter
         sma_result = self._sma.compute(market, data_provider)
+        sma_symbol = sma_result.get("symbol", "")
+        sma_close = sma_result.get("close", 0.0)
+        sma_value = sma_result.get("sma_long", 0.0)
+
         if not sma_result.get("invested", False):
+            self.log("trend_filter", "fail",
+                     symbol=sma_symbol, close=sma_close, sma=sma_value,
+                     condition=f"close > SMA({self._sma.period})",
+                     reason="bearish")
             return []
+
+        self.log("trend_filter", "pass",
+                 symbol=sma_symbol, close=sma_close, sma=sma_value,
+                 condition=f"close > SMA({self._sma.period})")
 
         signals: list[Signal] = []
 
@@ -226,13 +251,18 @@ class ShortPutStrategy(BacktestStrategy):
                 expiry_max_days=cfg.max_dte,
             )
             if not chain or not chain.puts:
+                self.log(f"option_chain:{symbol}", "fail",
+                         reason="no_chain_or_puts", dte_range=f"{cfg.min_dte}-{cfg.max_dte}")
                 continue
+
+            self.log(f"option_chain:{symbol}", "pass", puts=len(chain.puts))
 
             # Find best candidate
             best = self._select_best_contract(
                 chain, underlying_price, symbol, market.date, data_provider
             )
             if best is None:
+                self.log(f"contract_select:{symbol}", "fail", reason="no_contract_passed_filters")
                 continue
 
             quote, margin_per_contract, expected_roc = best
@@ -262,19 +292,28 @@ class ShortPutStrategy(BacktestStrategy):
                     "vega": quote.greeks.vega,
                 }
 
+            delta_val = quote.greeks.delta if quote.greeks else None
+            reason = (
+                f"Short Put {symbol} {strike:.0f} "
+                f"DTE={dte} delta={delta_val:.2f} "
+                f"@ ${price:.2f} x{contracts} "
+                f"ROC={expected_roc:.1f}%"
+                if delta_val
+                else f"Short Put {symbol} {strike:.0f} DTE={dte} @ ${price:.2f} x{contracts}"
+            )
+
+            self.log(
+                f"entry_signal:{symbol}", "pass",
+                strike=strike, dte=dte, delta=delta_val or 0,
+                price=price, roc=expected_roc,
+            )
+
             signals.append(
                 Signal(
                     type=SignalType.ENTRY,
                     instrument=instrument,
                     target_quantity=-contracts,  # sell
-                    reason=(
-                        f"Short Put {symbol} {strike:.0f} "
-                        f"DTE={dte} delta={quote.greeks.delta:.2f} "
-                        f"@ ${price:.2f} x{contracts} "
-                        f"ROC={expected_roc:.1f}%"
-                        if quote.greeks and quote.greeks.delta
-                        else f"Short Put {symbol} {strike:.0f} DTE={dte} @ ${price:.2f} x{contracts}"
-                    ),
+                    reason=reason,
                     priority=0,
                     quote_price=price,
                     greeks=greeks_dict,
@@ -338,6 +377,8 @@ class ShortPutStrategy(BacktestStrategy):
                 end_date=as_of_date,
             )
             if not klines or len(klines) < 20:
+                self.log(f"technical_filter:{symbol}", "skip",
+                         reason="insufficient_data", bars=len(klines) if klines else 0)
                 return True  # Insufficient data — skip filter
 
             closes = [k.close for k in klines]
@@ -349,17 +390,28 @@ class ShortPutStrategy(BacktestStrategy):
             rsi = calc_rsi(closes, period=14)
             if rsi is not None:
                 if rsi < cfg.min_rsi or rsi > cfg.max_rsi:
+                    self.log(f"technical_filter:{symbol}", "fail",
+                             rsi=rsi, rsi_require=f"[{cfg.min_rsi}-{cfg.max_rsi}]",
+                             reason="RSI out of range")
                     return False
 
             from src.engine.position.technical.adx import calc_adx
 
             adx_result = calc_adx(highs, lows, closes, period=14)
-            if adx_result is not None:
-                if adx_result.adx > cfg.max_adx:
+            adx_val = adx_result.adx if adx_result else None
+            if adx_val is not None:
+                if adx_val > cfg.max_adx:
+                    self.log(f"technical_filter:{symbol}", "fail",
+                             rsi=rsi, adx=adx_val, adx_require=f"<{cfg.max_adx}",
+                             reason="ADX too high")
                     return False
 
+            self.log(f"technical_filter:{symbol}", "pass",
+                     rsi=rsi, rsi_require=f"[{cfg.min_rsi}-{cfg.max_rsi}]",
+                     adx=adx_val, adx_require=f"<{cfg.max_adx}")
             return True
-        except Exception:
+        except Exception as e:
+            self.log(f"technical_filter:{symbol}", "skip", reason=f"error: {e}")
             return True  # On error, skip filter
 
     def _select_best_contract(
@@ -377,40 +429,52 @@ class ShortPutStrategy(BacktestStrategy):
         cfg = self._config
         candidates = []
 
-        # Get HV for IV/HV ratio check — pass symbol string, not character list
+        # Get HV for IV/HV ratio check
         hv = self._get_hv(symbol, current_date, data_provider)
 
+        # Track rejection counts per filter
+        reject = {"dte": 0, "price": 0, "no_greeks": 0, "delta": 0,
+                  "spread": 0, "oi": 0, "iv_hv": 0}
+        total = 0
+
         for quote in chain.puts:
+            total += 1
             contract = quote.contract
             expiry = contract.expiry_date
             if expiry is None:
                 continue
             dte = (expiry - current_date).days
             if dte < cfg.min_dte or dte > cfg.max_dte:
+                reject["dte"] += 1
                 continue
 
             # Price check
             price = quote.mid_price or quote.close or quote.last_price
             if price is None or price <= 0.05:
+                reject["price"] += 1
                 continue
 
             # Delta check
             delta = quote.greeks.delta if quote.greeks else None
             if delta is None:
+                reject["no_greeks"] += 1
                 continue
             abs_delta = abs(delta)
             if abs_delta < cfg.min_abs_delta or abs_delta > cfg.max_abs_delta:
+                reject["delta"] += 1
                 continue
 
             # Bid-ask spread check
             if quote.bid is not None and quote.ask is not None and price > 0:
                 spread_ratio = (quote.ask - quote.bid) / price
                 if spread_ratio > cfg.max_bid_ask_spread:
+                    reject["spread"] += 1
                     continue
 
             # Open interest check
             oi = getattr(quote, "open_interest", None) or 0
             if oi < cfg.min_open_interest:
+                reject["oi"] += 1
                 continue
 
             # IV/HV ratio check
@@ -418,6 +482,7 @@ class ShortPutStrategy(BacktestStrategy):
             if iv is not None and hv is not None and hv > 0:
                 iv_hv = iv / hv
                 if iv_hv < cfg.min_iv_hv_ratio or iv_hv > cfg.max_iv_hv_ratio:
+                    reject["iv_hv"] += 1
                     continue
 
             # Calculate margin (for ROC ranking only, not sizing)
@@ -435,7 +500,7 @@ class ShortPutStrategy(BacktestStrategy):
             except Exception:
                 margin_per_contract = strike * lot_size * 0.20
 
-            # Expected ROC for ranking — probability-weighted (matches V1 ShortPutPricer)
+            # Expected ROC for ranking
             margin_per_share = margin_per_contract / lot_size if lot_size > 0 else 0
             expected_roc = self._calc_expected_roc(
                 premium=price,
@@ -449,12 +514,40 @@ class ShortPutStrategy(BacktestStrategy):
 
             candidates.append((quote, margin_per_contract, expected_roc))
 
+        # Log filter results with rejection breakdown
+        # Only include non-zero rejection counts
+        reject_detail = {k: v for k, v in reject.items() if v > 0}
+        filter_desc = (
+            f"|delta|=[{cfg.min_abs_delta}-{cfg.max_abs_delta}] "
+            f"DTE=[{cfg.min_dte}-{cfg.max_dte}] "
+            f"spread<{cfg.max_bid_ask_spread:.0%} "
+            f"IV/HV=[{cfg.min_iv_hv_ratio}-{cfg.max_iv_hv_ratio}]"
+        )
+
         if not candidates:
+            self.log(
+                f"contract_select:{symbol}", "fail",
+                total=total, passed=0,
+                rejected_by=reject_detail,
+                filters=filter_desc,
+                hv=hv,
+            )
             return None
 
         # Sort by expected ROC descending
         candidates.sort(key=lambda x: x[2], reverse=True)
         best_quote, best_margin, best_roc = candidates[0]
+        best_contract = best_quote.contract
+        best_delta = best_quote.greeks.delta if best_quote.greeks else None
+
+        self.log(
+            f"contract_select:{symbol}", "pass",
+            total=total, passed=len(candidates),
+            rejected_by=reject_detail,
+            best=f"{best_contract.strike_price:.0f}P DTE={(best_contract.expiry_date - current_date).days}",
+            delta=best_delta,
+            roc=best_roc,
+        )
         return (best_quote, best_margin, best_roc)
 
     def _get_hv(
