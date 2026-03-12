@@ -75,7 +75,7 @@ class BacktestConfig:
         default_factory=lambda: [StrategyType.SHORT_PUT]
     )
     # 策略架构版本（决定监控/筛选配置和行为差异）
-    strategy_version: str = "short_options_with_expire_itm_stock_trade"
+    strategy_version: str = "short_put_with_assignment"
     # 指向监控配置文件
     monitoring_config: str = "config/monitoring/thresholds.yaml"
     # 已废弃: 使用 strategy_types 代替
@@ -111,6 +111,9 @@ class BacktestConfig:
 
     # ========== 策略行为 ==========
     max_new_positions_per_day: int = 1  # 每日最大新开仓数量
+
+    # ========== 现金流配置 ==========
+    monthly_withdrawal: float = 0.0  # 每月出金金额 (0 = 不出金)
 
     # ========== 其他选项 ==========
     random_seed: int | None = None  # 随机种子 (用于可重复性)
@@ -247,6 +250,7 @@ class BacktestConfig:
             "verbose": self.verbose,
             "skip_market_check": self.skip_market_check,
             "benchmark_symbol": self.benchmark_symbol,
+            "monthly_withdrawal": self.monthly_withdrawal,
             # 配置覆盖
             "risk_overrides": self.risk_overrides,
             "screening_overrides": self.screening_overrides,

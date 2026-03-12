@@ -76,8 +76,8 @@ logger = logging.getLogger(__name__)
 @click.option(
     "--strategy-version",
     "-sv",
-    default="short_options_with_expire_itm_stock_trade",
-    help="具体的策略架构版本 (例如: short_options_with_expire_itm_stock_trade, short_options_without_expire_itm_stock_trade) (默认: short_options_with_expire_itm_stock_trade)",
+    default="short_put_with_assignment",
+    help="策略版本 (例如: short_put_with_assignment, short_put_without_assignment, bull_put_spread) (默认: short_put_with_assignment)",
 )
 @click.option(
     "--max-positions",
@@ -112,6 +112,12 @@ logger = logging.getLogger(__name__)
     help="仅检查数据缺口，不运行回测",
 )
 @click.option(
+    "--monthly-withdrawal",
+    default=0.0,
+    type=float,
+    help="每月出金金额 (默认: 0, 不出金)",
+)
+@click.option(
     "--verbose",
     "-v",
     is_flag=True,
@@ -139,6 +145,7 @@ def run(
     no_report: bool,
     report_dir: str,
     check_only: bool,
+    monthly_withdrawal: float,
     verbose: bool,
     benchmark: str,
 ) -> None:
@@ -206,6 +213,7 @@ def run(
         strategy_version=strategy_version,
         skip_market_check=skip_market_check,
         benchmark_symbol=benchmark.upper(),
+        monthly_withdrawal=monthly_withdrawal,
     )
 
     # 创建 Pipeline
@@ -247,6 +255,12 @@ def run(
             click.echo(f"Sharpe Ratio: {metrics.sharpe_ratio:.2f}")
         if metrics.win_rate:
             click.echo(f"Win Rate: {metrics.win_rate:.1%}")
+
+        if monthly_withdrawal > 0 and metrics.total_withdrawals > 0:
+            click.echo(f"Monthly Withdrawal: ${monthly_withdrawal:,.0f}")
+            click.echo(f"Total Withdrawals: ${metrics.total_withdrawals:,.0f}")
+            if metrics.withdrawal_adjusted_return_pct is not None:
+                click.echo(f"Withdrawal-Adjusted Return: {metrics.withdrawal_adjusted_return_pct:.2%}")
 
         if result.benchmark_result:
             br = result.benchmark_result

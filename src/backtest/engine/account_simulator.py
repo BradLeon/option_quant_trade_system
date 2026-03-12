@@ -270,6 +270,9 @@ class AccountSimulator:
         # 累计已实现盈亏
         self._realized_pnl_cumulative = 0.0
 
+        # 累计出金
+        self._total_withdrawals = 0.0
+
         # 每日快照
         self._equity_snapshots: list[EquitySnapshot] = []
 
@@ -815,6 +818,29 @@ class AccountSimulator:
         )
         return True
 
+    def withdraw_cash(self, amount: float) -> float:
+        """出金（从账户提取现金）
+
+        Args:
+            amount: 出金金额
+
+        Returns:
+            实际出金金额
+        """
+        self._cash -= amount
+        self._total_withdrawals += amount
+        if self._cash < 0:
+            logger.warning(
+                f"Cash negative after withdrawal: ${self._cash:,.2f} "
+                f"(withdrew ${amount:,.2f})"
+            )
+        return amount
+
+    @property
+    def total_withdrawals(self) -> float:
+        """累计出金总额"""
+        return self._total_withdrawals
+
     def accrue_interest(self, amount: float) -> None:
         """计提现金利息。不创建交易记录，不影响 realized_pnl。"""
         if amount > 0:
@@ -826,5 +852,6 @@ class AccountSimulator:
         self._positions.clear()
         self._closed_positions.clear()
         self._realized_pnl_cumulative = 0.0
+        self._total_withdrawals = 0.0
         self._equity_snapshots.clear()
         self._current_date = None

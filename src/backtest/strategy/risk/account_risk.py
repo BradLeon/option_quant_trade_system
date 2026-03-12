@@ -3,7 +3,9 @@
 Enforces account-level constraints:
 - Max positions count
 - Max margin utilization
-- Min cash reserve
+- Cash/margin reserve check (asset-type aware):
+  - Option entries: use NLV-based available margin (stock collateral allowed, Reg-T)
+  - Stock entries: use raw cash (no leverage)
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ import logging
 from dataclasses import dataclass
 
 from src.backtest.strategy.models import (
+    InstrumentType,
     MarketSnapshot,
     PortfolioState,
     Signal,
@@ -26,13 +29,19 @@ class AccountRiskConfig:
     """Account risk guard configuration."""
     max_positions: int = 20
     max_margin_utilization: float = 0.70
-    min_cash_reserve_pct: float = 0.05  # Keep 5% cash minimum
+    min_cash_reserve_pct: float = 0.05  # Stock entries: keep 5% cash minimum
+    min_available_margin: float = 10_000  # Option entries: min NLV-based available margin
 
 
 class AccountRiskGuard:
     """Filters ENTRY signals that would violate account-level constraints.
 
     EXIT/ROLL signals are always passed through (reducing risk is always OK).
+
+    Cash check is asset-type aware:
+    - Option entries use NLV-based available margin (stock collateral counts,
+      matching Reg-T margin lending in real brokerages like IBKR).
+    - Stock entries use raw cash (no leverage allowed).
     """
 
     def __init__(self, config: AccountRiskConfig | None = None) -> None:
@@ -72,15 +81,31 @@ class AccountRiskGuard:
                     )
                     continue
 
-            # Check cash reserve
-            if portfolio.nlv > 0:
-                cash_pct = portfolio.cash / portfolio.nlv
-                if cash_pct < self._config.min_cash_reserve_pct and signal.type == SignalType.ENTRY:
-                    logger.debug(
-                        f"AccountRisk: blocked {signal.instrument.symbol} — "
-                        f"cash {cash_pct:.1%} < min reserve {self._config.min_cash_reserve_pct:.1%}"
+            # Asset-type aware capital check
+            if portfolio.nlv > 0 and signal.type == SignalType.ENTRY:
+                if signal.instrument.is_option:
+                    # Option entries: NLV-based available margin (stock collateral allowed)
+                    available = (
+                        portfolio.nlv * self._config.max_margin_utilization
+                        - portfolio.margin_used
                     )
-                    continue
+                    if available < self._config.min_available_margin:
+                        logger.debug(
+                            f"AccountRisk: blocked {signal.instrument.symbol} — "
+                            f"available margin ${available:,.0f} < "
+                            f"min ${self._config.min_available_margin:,.0f}"
+                        )
+                        continue
+                else:
+                    # Stock entries: raw cash only (no leverage)
+                    cash_pct = portfolio.cash / portfolio.nlv
+                    if cash_pct < self._config.min_cash_reserve_pct:
+                        logger.debug(
+                            f"AccountRisk: blocked {signal.instrument.symbol} — "
+                            f"cash {cash_pct:.1%} < min reserve "
+                            f"{self._config.min_cash_reserve_pct:.1%}"
+                        )
+                        continue
 
             approved.append(signal)
             if signal.type == SignalType.ENTRY:

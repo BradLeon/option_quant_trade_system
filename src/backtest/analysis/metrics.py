@@ -124,6 +124,12 @@ class BacktestMetrics:
     avg_days_in_trade: float | None = None  # 平均持仓天数
     avg_dte_at_entry: float | None = None  # 开仓时平均 DTE
 
+    # ========== 出金相关指标 ==========
+    total_withdrawals: float = 0.0  # 累计出金总额
+    withdrawal_adjusted_return_pct: float | None = None  # 出金调整后收益率
+    income_coverage_ratio: float | None = None  # 收入覆盖率 (已实现盈亏/出金总额)
+    months_capital_preserved: int | None = None  # NLV 保持在初始资金以上的月数
+
     # ========== 费用统计 ==========
     total_commission: float = 0.0
     total_slippage: float = 0.0
@@ -213,6 +219,28 @@ class BacktestMetrics:
             if drawdown_periods:
                 max_dd_duration = max(p.duration_days for p in drawdown_periods)
 
+        # ========== 出金相关指标 ==========
+        total_withdrawals = sum(
+            s.withdrawal_amount for s in daily_snapshots
+            if hasattr(s, 'withdrawal_amount')
+        )
+        withdrawal_adjusted_return_pct = None
+        income_coverage_ratio = None
+        months_capital_preserved = None
+        if total_withdrawals > 0 and result.initial_capital > 0:
+            withdrawal_adjusted_return_pct = (
+                (result.final_nlv + total_withdrawals - result.initial_capital)
+                / result.initial_capital
+            )
+            realized = result.daily_snapshots[-1].realized_pnl_cumulative if daily_snapshots else 0
+            income_coverage_ratio = realized / total_withdrawals if total_withdrawals > 0 else None
+            # 按月检查 NLV 是否保持在初始资金以上
+            months_above = set()
+            for s in daily_snapshots:
+                if s.nlv >= result.initial_capital:
+                    months_above.add((s.date.year, s.date.month))
+            months_capital_preserved = len(months_above)
+
         # 费用占比
         total_fees = result.total_commission + result.total_slippage
         commission_pct = total_fees / result.initial_capital if result.initial_capital > 0 else 0
@@ -260,6 +288,11 @@ class BacktestMetrics:
             expiration_rate=option_metrics.get("expiration_rate"),
             avg_days_in_trade=option_metrics.get("avg_days_in_trade"),
             avg_dte_at_entry=option_metrics.get("avg_dte_at_entry"),
+            # 出金相关指标
+            total_withdrawals=total_withdrawals,
+            withdrawal_adjusted_return_pct=withdrawal_adjusted_return_pct,
+            income_coverage_ratio=income_coverage_ratio,
+            months_capital_preserved=months_capital_preserved,
             # 费用统计
             total_commission=result.total_commission,
             total_slippage=result.total_slippage,

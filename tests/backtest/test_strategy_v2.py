@@ -310,9 +310,25 @@ class TestRegistry:
         assert "sma_leaps" in available
         assert "momentum_mixed" in available
 
-    def test_v2_detection(self):
-        assert BacktestStrategyRegistry.is_v2_strategy("sma_stock")
-        assert not BacktestStrategyRegistry.is_v2_strategy("short_options_with_expire_itm_stock_trade")
+    def test_short_put_is_native_v2(self):
+        """Short put strategies are now native V2 (no legacy bridge)."""
+        strategy = BacktestStrategyRegistry.create("short_put_with_assignment")
+        assert isinstance(strategy, StrategyProtocol)
+        assert not getattr(strategy, "uses_legacy_executor", False)
+        assert "short_put" in strategy.name
+
+    def test_short_put_variants(self):
+        """Both with/without assignment variants work via all aliases."""
+        s1 = BacktestStrategyRegistry.create("short_put_with_assignment")
+        s2 = BacktestStrategyRegistry.create("short_put_without_assignment")
+        assert s1.name == "short_put_with_assignment"
+        assert s2.name == "short_put_without_assignment"
+
+        # Legacy aliases still work
+        s3 = BacktestStrategyRegistry.create("short_options_with_expire_itm_stock_trade")
+        s4 = BacktestStrategyRegistry.create("short_options_without_assignment")
+        assert s3.name == "short_put_with_assignment"
+        assert s4.name == "short_put_without_assignment"
 
 
 # ============================================================
@@ -484,3 +500,210 @@ class TestSignalConverter:
         trade_signals = converter.convert_to_trade_signals([signal], market, None)
         assert len(trade_signals) == 1
         assert trade_signals[0].position_id == "P1"
+
+
+# ============================================================
+# ShortOptionsStrategy Tests
+# ============================================================
+
+
+class TestShortPutStrategy:
+    def _make_market(self, prices=None):
+        return MarketSnapshot(
+            date=date(2026, 1, 15),
+            prices=prices or {"SPY": 500.0},
+            vix=18.0,
+        )
+
+    def _make_portfolio(self, positions=None, cash=1_000_000):
+        return PortfolioState(
+            date=date(2026, 1, 15),
+            nlv=1_000_000,
+            cash=cash,
+            margin_used=0,
+            positions=positions or [],
+        )
+
+    def test_exit_profit_target(self):
+        """Should take profit when PnL >= threshold and DTE > min."""
+        from src.backtest.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
+
+        config = ShortPutConfig(take_profit_pnl=0.50, take_profit_min_dte=10)
+        strategy = ShortPutStrategy(config)
+
+        option_inst = Instrument(
+            type=InstrumentType.OPTION, underlying="SPY",
+            right=OptionRight.PUT, strike=480, expiry=date(2026, 2, 21),
+        )
+        # Entry credit = 5.0 * 100 * 1 = 500, unrealized_pnl = 400 -> 80%
+        position = PositionView(
+            position_id="P1", instrument=option_inst, quantity=-1,
+            entry_price=5.0, entry_date=date(2025, 12, 15),
+            current_price=1.0, underlying_price=510, unrealized_pnl=400,
+            delta=-0.10, gamma=0.005, theta=-0.03, vega=0.05, dte=37,
+        )
+        market = self._make_market()
+        portfolio = self._make_portfolio(positions=[position])
+
+        signals = strategy.compute_exit_signals(market, portfolio, None)
+        assert len(signals) == 1
+        assert "Take profit" in signals[0].reason
+
+    def test_exit_delta_too_high(self):
+        """Should exit when |delta| exceeds threshold."""
+        from src.backtest.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
+
+        config = ShortPutConfig(max_delta_exit=0.65)
+        strategy = ShortPutStrategy(config)
+
+        option_inst = Instrument(
+            type=InstrumentType.OPTION, underlying="SPY",
+            right=OptionRight.PUT, strike=500, expiry=date(2026, 2, 21),
+        )
+        position = PositionView(
+            position_id="P1", instrument=option_inst, quantity=-1,
+            entry_price=8.0, entry_date=date(2025, 12, 15),
+            current_price=15.0, underlying_price=490, unrealized_pnl=-700,
+            delta=-0.70, gamma=0.02, theta=-0.08, vega=0.15, dte=37,
+        )
+        market = self._make_market()
+        portfolio = self._make_portfolio(positions=[position])
+
+        signals = strategy.compute_exit_signals(market, portfolio, None)
+        assert len(signals) == 1
+        assert "Delta too high" in signals[0].reason
+
+    def test_no_exit_for_long_positions(self):
+        """Should not generate exit for long option positions."""
+        from src.backtest.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
+
+        strategy = ShortPutStrategy(ShortPutConfig())
+
+        option_inst = Instrument(
+            type=InstrumentType.OPTION, underlying="SPY",
+            right=OptionRight.PUT, strike=480, expiry=date(2026, 1, 17),
+        )
+        position = PositionView(
+            position_id="P1", instrument=option_inst, quantity=1,  # LONG
+            entry_price=5.0, entry_date=date(2025, 12, 15),
+            current_price=2.0, underlying_price=500, unrealized_pnl=-300,
+            delta=0.20, dte=2,
+        )
+        market = self._make_market()
+        portfolio = self._make_portfolio(positions=[position])
+
+        signals = strategy.compute_exit_signals(market, portfolio, None)
+        assert len(signals) == 0
+
+    def test_no_dte_critical_force_close(self):
+        """V1 has no DTE-based force close — low DTE alone should NOT trigger exit."""
+        from src.backtest.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
+
+        strategy = ShortPutStrategy(ShortPutConfig(allow_assignment=True))
+
+        option_inst = Instrument(
+            type=InstrumentType.OPTION, underlying="SPY",
+            right=OptionRight.PUT, strike=480, expiry=date(2026, 1, 17),
+        )
+        # OTM, low DTE, good Greeks — should NOT be closed
+        position = PositionView(
+            position_id="P1", instrument=option_inst, quantity=-1,
+            entry_price=5.0, entry_date=date(2025, 12, 15),
+            current_price=0.10, underlying_price=510, unrealized_pnl=490,
+            delta=-0.05, gamma=0.001, theta=-0.01, vega=0.01, dte=2,
+        )
+        market = self._make_market()
+        portfolio = self._make_portfolio(positions=[position])
+
+        signals = strategy.compute_exit_signals(market, portfolio, None)
+        # Should NOT close just because DTE is low — V1 lets it expire
+        # (PnL ~98% > 70% and DTE=2 < min_dte=14, so take profit doesn't trigger either)
+        assert len(signals) == 0
+
+    def test_win_prob_disabled_for_assignment(self):
+        """Win probability exit should be disabled for allow_assignment=True."""
+        from src.backtest.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
+
+        config = ShortPutConfig(
+            allow_assignment=True,
+            win_probability_enabled=False,  # default for assignment variant
+        )
+        strategy = ShortPutStrategy(config)
+
+        option_inst = Instrument(
+            type=InstrumentType.OPTION, underlying="SPY",
+            right=OptionRight.PUT, strike=500, expiry=date(2026, 2, 21),
+        )
+        # delta=-0.55 → win_prob=0.45 < 0.50, but should NOT trigger exit
+        position = PositionView(
+            position_id="P1", instrument=option_inst, quantity=-1,
+            entry_price=8.0, entry_date=date(2025, 12, 15),
+            current_price=10.0, underlying_price=498, unrealized_pnl=-200,
+            delta=-0.55, gamma=0.02, theta=-0.08, vega=0.15, dte=37,
+        )
+        market = self._make_market()
+        portfolio = self._make_portfolio(positions=[position])
+
+        signals = strategy.compute_exit_signals(market, portfolio, None)
+        # delta=0.55 < max_delta_exit=0.65 → no delta exit
+        # TGR = 0.08/0.02 = 4.0 > 0.1 → no TGR exit
+        # win_prob disabled → no win_prob exit
+        assert len(signals) == 0
+
+    def test_win_prob_enabled_for_no_assignment(self):
+        """Win probability exit should be enabled for allow_assignment=False."""
+        from src.backtest.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
+
+        config = ShortPutConfig(
+            allow_assignment=False,
+            win_probability_enabled=True,  # enabled for no-assignment variant
+        )
+        strategy = ShortPutStrategy(config)
+
+        option_inst = Instrument(
+            type=InstrumentType.OPTION, underlying="SPY",
+            right=OptionRight.PUT, strike=500, expiry=date(2026, 2, 21),
+        )
+        # delta=-0.55 → win_prob=0.45 < 0.50, SHOULD trigger exit
+        position = PositionView(
+            position_id="P1", instrument=option_inst, quantity=-1,
+            entry_price=8.0, entry_date=date(2025, 12, 15),
+            current_price=10.0, underlying_price=498, unrealized_pnl=-200,
+            delta=-0.55, gamma=0.02, theta=-0.08, vega=0.15, dte=37,
+        )
+        market = self._make_market()
+        portfolio = self._make_portfolio(positions=[position])
+
+        signals = strategy.compute_exit_signals(market, portfolio, None)
+        assert len(signals) == 1
+        assert "Win prob too low" in signals[0].reason
+
+    def test_no_entry_without_sma_bullish(self):
+        """Should not enter when SMA is bearish."""
+        from src.backtest.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
+
+        strategy = ShortPutStrategy(ShortPutConfig(decision_frequency=1))
+
+        market = self._make_market()
+        portfolio = self._make_portfolio()
+
+        # Mock SMA bearish
+        strategy._sma._cached_date = market.date
+        strategy._sma._cached_result = {"invested": False, "close": 500.0, "sma_long": 520.0, "sma_short": 0.0, "symbol": "SPY"}
+
+        signals = strategy.compute_entry_signals(market, portfolio, None)
+        assert len(signals) == 0
+
+    def test_protocol_compliance(self):
+        """ShortPutStrategy satisfies StrategyProtocol."""
+        from src.backtest.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
+
+        strategy = ShortPutStrategy(ShortPutConfig())
+        assert isinstance(strategy, StrategyProtocol)
+
+    def test_backward_compat_aliases(self):
+        """Old class names ShortOptionsStrategy/Config still importable."""
+        from src.backtest.strategy.versions.short_options import ShortOptionsStrategy, ShortOptionsConfig
+
+        assert ShortOptionsStrategy is not None
+        assert ShortOptionsConfig is not None

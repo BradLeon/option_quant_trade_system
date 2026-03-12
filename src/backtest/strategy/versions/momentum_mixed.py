@@ -413,7 +413,9 @@ class MomentumMixedStrategy(BacktestStrategy):
         market: MarketSnapshot,
         data_provider: Any,
     ) -> Optional[Signal]:
-        """Find and size a LEAPS Call entry."""
+        """Find and size a LEAPS Call entry.
+        # TODO 把合约选择的逻辑注释。
+        """
         cfg = self._config
         target_strike = spot * cfg.target_moneyness
 

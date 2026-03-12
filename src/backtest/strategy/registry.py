@@ -1,7 +1,7 @@
-"""Backtest Strategy Registry — maps strategy names to classes.
+"""Backtest Strategy Registry — maps strategy names to factory functions.
 
-Replaces business/strategy/factory.py for backtest-specific strategies.
-Supports both new V2 strategies and legacy (pipeline-based) strategies.
+All strategies are native V2 implementations using the generate_signals()
+single entry point.
 """
 
 from __future__ import annotations
@@ -75,14 +75,63 @@ def _create_bull_put_spread(**kwargs) -> StrategyProtocol:
     return BullPutSpreadStrategy(config)
 
 
-def _create_short_options_with(**kwargs) -> StrategyProtocol:
-    from src.backtest.strategy.versions.short_options import ShortOptionsStrategy
-    return ShortOptionsStrategy(allow_assignment=True)
+def _create_bull_put_spread_more(**kwargs) -> StrategyProtocol:
+    """More spreads variant: 8 spreads instead of 10 default."""
+    from src.backtest.strategy.versions.spread import BullPutSpreadStrategy, BullPutSpreadConfig
+    overrides = dict(name="bull_put_spread_more", max_spreads=8, spread_width=10.0)
+    overrides.update(kwargs)
+    return BullPutSpreadStrategy(BullPutSpreadConfig(**overrides))
 
 
-def _create_short_options_without(**kwargs) -> StrategyProtocol:
-    from src.backtest.strategy.versions.short_options import ShortOptionsStrategy
-    return ShortOptionsStrategy(allow_assignment=False)
+def _create_bull_put_spread_tight(**kwargs) -> StrategyProtocol:
+    """Tighter profit target: 65% instead of 50%."""
+    from src.backtest.strategy.versions.spread import BullPutSpreadStrategy, BullPutSpreadConfig
+    overrides = dict(name="bull_put_spread_tight", profit_target_pct=0.65, spread_width=10.0)
+    overrides.update(kwargs)
+    return BullPutSpreadStrategy(BullPutSpreadConfig(**overrides))
+
+
+def _create_bull_put_spread_wide(**kwargs) -> StrategyProtocol:
+    """Wider spread: $15 width instead of $5."""
+    from src.backtest.strategy.versions.spread import BullPutSpreadStrategy, BullPutSpreadConfig
+    overrides = dict(name="bull_put_spread_wide", spread_width=15.0)
+    overrides.update(kwargs)
+    return BullPutSpreadStrategy(BullPutSpreadConfig(**overrides))
+
+
+def _create_bull_put_spread_conservative(**kwargs) -> StrategyProtocol:
+    """Conservative: fewer spreads, tighter DTE, lower delta."""
+    from src.backtest.strategy.versions.spread import BullPutSpreadStrategy, BullPutSpreadConfig
+    overrides = dict(
+        name="bull_put_spread_conservative",
+        max_spreads=3,
+        spread_width=5.0,
+        short_put_delta=0.20,
+        target_dte_min=30,
+        target_dte_max=45,
+    )
+    overrides.update(kwargs)
+    return BullPutSpreadStrategy(BullPutSpreadConfig(**overrides))
+
+
+def _create_short_put_with(**kwargs) -> StrategyProtocol:
+    from src.backtest.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
+    return ShortPutStrategy(ShortPutConfig(
+        name="short_put_with_assignment",
+        allow_assignment=True,
+        technical_enabled=True,
+        win_probability_enabled=False,
+    ))
+
+
+def _create_short_put_without(**kwargs) -> StrategyProtocol:
+    from src.backtest.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
+    return ShortPutStrategy(ShortPutConfig(
+        name="short_put_without_assignment",
+        allow_assignment=False,
+        technical_enabled=False,
+        win_probability_enabled=True,
+    ))
 
 
 # Registry: name → factory function
@@ -102,12 +151,18 @@ _REGISTRY: dict[str, Any] = {
 
     # Multi-leg combo strategies
     "bull_put_spread": _create_bull_put_spread,
+    "bull_put_spread_more": _create_bull_put_spread_more,
+    "bull_put_spread_tight": _create_bull_put_spread_tight,
+    "bull_put_spread_wide": _create_bull_put_spread_wide,
+    "bull_put_spread_conservative": _create_bull_put_spread_conservative,
 
-    # Short options (bridge to legacy pipelines)
-    "short_options_with_expire_itm_stock_trade": _create_short_options_with,
-    "short_options_without_expire_itm_stock_trade": _create_short_options_without,
-    "short_options_with_assignment": _create_short_options_with,
-    "short_options_without_assignment": _create_short_options_without,
+    # Short put (native V2)
+    "short_put_with_assignment": _create_short_put_with,
+    "short_put_without_assignment": _create_short_put_without,
+    "short_options_with_expire_itm_stock_trade": _create_short_put_with,
+    "short_options_without_expire_itm_stock_trade": _create_short_put_without,
+    "short_options_with_assignment": _create_short_put_with,
+    "short_options_without_assignment": _create_short_put_without,
 }
 
 
@@ -116,7 +171,7 @@ class BacktestStrategyRegistry:
 
     Usage:
         strategy = BacktestStrategyRegistry.create("sma_stock")
-        strategy = BacktestStrategyRegistry.create("spy_momentum_lev_vol_target")
+        strategy = BacktestStrategyRegistry.create("short_options_with_assignment")
     """
 
     @classmethod
@@ -150,13 +205,3 @@ class BacktestStrategyRegistry:
     def register(cls, name: str, factory) -> None:
         """Register a new strategy factory."""
         _REGISTRY[name.lower()] = factory
-
-    @classmethod
-    def is_v2_strategy(cls, name: str) -> bool:
-        """Check if a strategy name maps to a V2 (new-style) strategy.
-
-        V2 strategies use generate_signals() single entry point.
-        Non-V2 strategies use the legacy 3-method lifecycle.
-        """
-        strategy = cls.create(name)
-        return not getattr(strategy, "uses_legacy_executor", False)

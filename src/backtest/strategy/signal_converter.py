@@ -79,9 +79,15 @@ class SignalConverter:
                 if close_sig:
                     trade_signals.append(close_sig)
             elif signal.type in (SignalType.ENTRY, SignalType.REBALANCE):
-                open_sig = self._make_open_signal(signal, market, data_provider)
-                if open_sig:
-                    trade_signals.append(open_sig)
+                # Check for combo (spread) signal — open both legs
+                combo = signal.metadata.get("combo") if signal.metadata else None
+                if combo and signal.metadata.get("long_leg"):
+                    combo_sigs = self._make_combo_open_signals(signal, market, data_provider)
+                    trade_signals.extend(combo_sigs)
+                else:
+                    open_sig = self._make_open_signal(signal, market, data_provider)
+                    if open_sig:
+                        trade_signals.append(open_sig)
 
         return trade_signals
 
@@ -178,6 +184,47 @@ class SignalConverter:
             priority="normal",
             quote=quote,
         )
+
+    def _make_combo_open_signals(
+        self,
+        signal: Signal,
+        market: MarketSnapshot,
+        data_provider: Any,
+    ) -> list:
+        """Create open signals for both legs of a combo (spread) trade.
+
+        Tags all returned signals with ``_combo_group`` so the executor can
+        route them through ``add_combo_position()`` for correct spread margin.
+        """
+        self._combo_counter = getattr(self, "_combo_counter", 0) + 1
+        combo_id = f"COMBO_{self._combo_counter}"
+
+        results = []
+
+        # Short leg (the main signal)
+        short_sig = self._make_open_signal(signal, market, data_provider)
+        if short_sig:
+            short_sig._combo_group = combo_id  # type: ignore[attr-defined]
+            results.append(short_sig)
+
+        # Long leg (from metadata)
+        long_leg = signal.metadata.get("long_leg")
+        long_price = signal.metadata.get("long_price")
+        if long_leg and long_price:
+            long_signal = Signal(
+                type=SignalType.ENTRY,
+                instrument=long_leg,
+                target_quantity=abs(signal.target_quantity),  # positive = long
+                reason=f"Long leg: {signal.reason}",
+                quote_price=long_price,
+                metadata={},
+            )
+            long_trade_sig = self._make_open_signal(long_signal, market, data_provider)
+            if long_trade_sig:
+                long_trade_sig._combo_group = combo_id  # type: ignore[attr-defined]
+                results.append(long_trade_sig)
+
+        return results
 
     def _make_option_open_signal(
         self,
