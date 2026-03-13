@@ -1,114 +1,69 @@
-"""动量 + 波动率目标 混合策略 (Momentum + Vol Target Mixed Strategy)
+"""动量 + 波动率目标 混合策略 V2 — 在原版基础上增加 Theta Guard 和 Vega Guard
 
-用一个参数化策略替代两个旧策略 (~1600 行 → ~200 行)：
-- SpyMomentumLevVolTarget → MomentumMixedConfig(use_stock_component=True)
-- SpyLeapsOnlyVolTarget   → MomentumMixedConfig(use_stock_component=False, cash_interest_enabled=True)
+基于 momentum_mixed.py 的完整策略，集成两项经回测验证的风控改进：
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-一、信号系统 — 7 分动量评分 + 波动率目标调整
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  V1 Theta Guard — 提前 roll 合约
+  V2 Vega Guard  — VIX 飙升时减仓
 
-每日计算 7 分制动量评分 (MomentumVolTargetComputer):
-  +1  收盘价 > SMA20
-  +1  收盘价 > SMA50
-  +1  收盘价 > SMA200
-  +1  SMA20 > SMA50
-  +1  SMA50 > SMA200
-  +1  收盘价 > 20日前收盘价
-  +1  收盘价 > 60日前收盘价
-
-评分 → 原始目标敞口 (position_map):
-  0-1 分 → 0.0x (全现金)
-  2 分   → 0.5x
-  3 分   → 1.0x
-  4 分   → 1.5x
-  5 分   → 2.0x
-  6 分   → 2.5x
-  7 分   → 3.0x (最大杠杆)
-
-波动率目标调整:
-  vol_scalar = min(vol_scalar_max, vol_target / VIX)
-  最终目标 = min(max_exposure, 原始目标 × vol_scalar)
-
-  示例: VIX=15 → scalar=1.0; VIX=10 → scalar=1.5; VIX=30 → scalar=0.5
+10 年回测 (QQQ, 2016-06 ~ 2026-03) 验证结果:
+  ┌──────────────────────┬──────────┬──────────┬──────────┬──────────┐
+  │ 策略                 │ 总收益   │ 最大回撤 │ Sharpe   │ Calmar   │
+  ├──────────────────────┼──────────┼──────────┼──────────┼──────────┤
+  │ 原版 (baseline)      │ +1136%   │ -36.7%   │ 1.03     │ 0.80     │
+  │ +V1 Theta Guard      │ +1155%   │ -35.3%   │ 1.05     │ 0.84     │
+  │ +V2 Vega Guard       │ +1177%   │ -36.7%   │ 1.05     │ 0.82     │
+  │ +V1+V2 (本策略)      │ 待验证   │ 待验证   │ 待验证   │ 待验证   │
+  └──────────────────────┴──────────┴──────────┴──────────┴──────────┘
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-二、进场规则
+一、信号系统 — 与原版相同
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-触发条件 (满足任一):
-  1. 无持仓 + 决策日 (每 decision_frequency 天) + target_pct > 0
-  2. 有待执行的 roll 换仓 (pending_rebalance)
-  3. 有待执行的再平衡加仓 (pending_leaps_topup / pending_stock_topup)
-
-合约选择 (LeapsContractSelector, delta 驱动):
-  - DTE 范围: min_dte=180 ~ max_dte=400, 目标 target_dte=252 (~1年)
-  - Delta 范围: min_delta=0.50 ~ max_delta=0.85, 目标 target_delta=0.70
-  - 多因子评分: delta权重=3.0, 流动性=2.0, 价差=1.5, DTE=0.5
-  - 硬性过滤: OI ≥ 100, bid-ask spread ≤ 8%
-
-仓位定量 (delta-adjusted 杠杆):
-  contracts = floor(target_pct × NLV / (delta × lot_size × spot))
-  现金约束: contracts = min(contracts, floor(0.95 × cash / (mid × lot_size)))
-
-  示例: target=3.0, NLV=$1M, delta=0.70, spot=$500, lot_size=100
-        → contracts = floor(3.0 × 1M / (0.70 × 100 × 500)) = 85 张
+7 分动量评分 + 波动率目标调整 → target_pct (0 ~ 3.0x 杠杆)
+详见 momentum_mixed.py 的信号系统说明。
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-三、出场规则 (按优先级)
+二、进场规则 — 与原版相同
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-P10 动量信号归零:
-  评分 ≤ 1 → target_pct=0 → 全部清仓 (LEAPS 和股票)
-  这是核心的趋势跟踪退出，类似 SMA200 跌破卖出
-
-P10 安全网:
-  DTE ≤ 5 → 强制平仓 (防止到期行权风险)
-
-P5  DTE Roll 换仓:
-  DTE ≤ roll_dte_threshold (默认60) → 平仓旧合约 + 设置 pending_rebalance
-  → 下一步 compute_entry_signals 会自动买入新的 ~252 DTE 合约
+合约选择: delta=0.70 目标, DTE=252 目标
+仓位定量: contracts = floor(target_pct × NLV / (delta × lot_size × spot))
+详见 momentum_mixed.py 的进场规则说明。
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-四、仓位管理 — 再平衡
+三、出场规则 — 在原版基础上新增两项
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-触发条件:
-  |target_pct - current_pct| > rebalance_threshold (默认 0.25, 即 25%)
-  且距上次再平衡 ≥ min_rebalance_interval (默认 5 天) — 冷却期
+【原版保留】
+P10 动量信号归零: 评分 ≤ 1 → 全部清仓
+P10 安全网: DTE ≤ 5 → 强制平仓
 
-current_pct 的计算:
-  股票部分: Σ(qty × spot) / NLV
-  LEAPS部分: Σ(delta × qty × lot_size × spot) / NLV
+【V1 改动: Theta Guard — roll_dte_threshold 从 60 提升到 90】
+P5  DTE Roll 换仓: DTE ≤ 90 → 平仓旧合约 + 买入新 ~252 DTE 合约
 
-再平衡方向:
-  - 超配 (current > target): 卖出多余合约/股票
-  - 欠配 (current < target): 设置 pending_topup → 在 entry 阶段买入
+  为什么: LEAPS 的 theta 衰减在最后 90 天显著加速。提前 30 天 roll 可以:
+  - 以更高的时间价值卖出旧合约（减少衰减损耗）
+  - 以更优的价格进入新合约（DTE=252 时 theta 最小）
+  回测验证: 收益 +19.5%，回撤 -1.3%，Sharpe +0.01
 
-注意: 此策略在下跌时会加仓（欠配触发补仓），这是趋势策略的固有行为。
+【V2 新增: Vega Guard — VIX 飙升时减仓 50%】
+P8  VIX 飙升减仓: 当日 VIX > 1.3 × VIX 20日均值 → 减仓 50%
+
+  为什么: Long Call 持有正 Vega 敞口。VIX 飙升通常伴随:
+  - 短期: IV 上升 → 合约价值虽涨但不确定性极高
+  - 随后: Vol crush → IV 快速回落 → 合约价值大幅下跌
+  提前减仓可以:
+  - 锁定 VIX 飙升期间 IV 上升带来的浮盈
+  - 减少后续 vol crush 的损失
+  回测验证: 收益 +41.4%，胜率从 57.9% 提升到 59.9%
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-五、现金利息 (仅 LEAPS-only 模式)
+四、仓位管理 — 与原版相同
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-启用条件: cash_interest_enabled=True (LEAPS-only 模式默认开启)
-利率来源: ^TNX (10年期美债收益率)，回退值 4%
-计算方式: 每日利息 = max(0, cash) × (rate / 365)
-用途: LEAPS 只使用少量资金买合约，大量闲置现金赚取利息
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-六、两种组合模式
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Stock+LEAPS 模式 (use_stock_component=True):
-  - 股票仓位: min(1.0, target_pct) × NLV — 最多 1x 股票
-  - LEAPS仓位: max(0, target_pct - 1.0) × NLV — 超出 1x 的部分用 LEAPS
-  - 适合: 希望用股票做底仓 + LEAPS 做杠杆增强
-
-LEAPS-only 模式 (use_stock_component=False):
-  - 全部敞口通过 LEAPS Call 实现
-  - 闲置现金赚取利息
-  - 适合: 纯杠杆策略，资金效率最高
+再平衡: |target - current| > 25% 且冷却期 ≥ 5 天
+现金利息: LEAPS-only 模式下闲置现金赚取无风险利率
+详见 momentum_mixed.py 的仓位管理说明。
 """
 
 from __future__ import annotations
@@ -141,10 +96,15 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class MomentumMixedConfig:
-    """Configuration for Momentum Mixed strategy."""
+class MomentumMixedV2Config:
+    """Configuration for Momentum Mixed V2 strategy.
 
-    name: str = "momentum_mixed"
+    相比原版 MomentumMixedConfig 的变化:
+    - roll_dte_threshold: 60 → 90 (V1 Theta Guard)
+    - 新增 vega_guard_* 参数 (V2 Vega Guard)
+    """
+
+    name: str = "momentum_mixed_v2"
 
     # Signal config (passed to MomentumVolTargetComputer)
     momentum: MomentumConfig = field(default_factory=MomentumConfig)
@@ -164,8 +124,16 @@ class MomentumMixedConfig:
     target_dte: int = 252
     min_dte: int = 180
     max_dte: int = 400
-    roll_dte_threshold: int = 60
     max_capital_pct: float = 0.95
+
+    # [V1] Theta Guard: 提前 roll (原版 60 → 90)
+    roll_dte_threshold: int = 90
+
+    # [V2] Vega Guard: VIX 飙升减仓
+    vega_guard_enabled: bool = True
+    vega_guard_vix_spike_threshold: float = 1.30  # VIX > 1.3 × SMA20 触发
+    vega_guard_reduce_fraction: float = 0.50      # 减仓 50%
+    vega_guard_vix_lookback: int = 20             # VIX 均值回看天数
 
     # Cash interest (LeapsOnly feature, passive — mutually exclusive with cash_sweep)
     cash_interest_enabled: bool = False
@@ -175,19 +143,17 @@ class MomentumMixedConfig:
     cash_sweep_config: CashSweepConfig = field(default_factory=CashSweepConfig)
 
 
-class MomentumMixedStrategy(BacktestStrategy, CashSweepMixin):
-    """Momentum + Vol Target with configurable stock/LEAPS composition.
+class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
+    """动量 + 波动率目标混合策略 V2 — 增加 Theta Guard + Vega Guard。
 
-    Replaces:
-    - SpyMomentumLevVolTarget (730 lines) — use_stock_component=True
-    - SpyLeapsOnlyVolTarget (627 lines) — use_stock_component=False
-    - _momentum_vol_mixin (269 lines) — extracted to MomentumVolTargetComputer
-    Total: ~1626 lines → ~200 lines.
+    在 MomentumMixedStrategy 基础上增加:
+    - V1: roll_dte_threshold=90 (提前 roll，减少 theta 衰减)
+    - V2: VIX 飙升时减仓 50% (减少 vol crush 风险)
     """
 
-    def __init__(self, config: MomentumMixedConfig | None = None) -> None:
+    def __init__(self, config: MomentumMixedV2Config | None = None) -> None:
         super().__init__()
-        self._config = config or MomentumMixedConfig()
+        self._config = config or MomentumMixedV2Config()
         self._momentum = MomentumVolTargetComputer(self._config.momentum)
         self._last_nlv: float = 0.0
         self._last_cash: float = 0.0
@@ -201,6 +167,9 @@ class MomentumMixedStrategy(BacktestStrategy, CashSweepMixin):
         # Cash interest tracking (for LeapsOnly mode)
         self._cumulative_interest: float = 0.0
         self._tnx_cache: dict[date, float] = {}
+
+        # [V2] VIX history for spike detection
+        self._vix_history: list[float] = []
 
         # Cash sweep mixin
         self._cash_sweep_config = self._config.cash_sweep_config
@@ -256,6 +225,10 @@ class MomentumMixedStrategy(BacktestStrategy, CashSweepMixin):
         self._pending_rebalance = False
         self._pending_leaps_topup = 0
         self._pending_stock_topup_pct = 0.0
+
+        # [V2] Track VIX history
+        if market.vix and market.vix > 0:
+            self._vix_history.append(market.vix)
 
         stock_pos = portfolio.get_stock_positions()
         leaps_pos = [p for p in portfolio.get_option_positions()
@@ -318,7 +291,7 @@ class MomentumMixedStrategy(BacktestStrategy, CashSweepMixin):
                      momentum_score=score, vix=vix)
             return signals
 
-        # b) LEAPS DTE roll check
+        # b) LEAPS DTE roll check [V1: threshold=90 instead of 60]
         for pos in leaps_pos:
             if pos.dte is not None and pos.dte <= cfg.roll_dte_threshold:
                 self._pending_rebalance = True
@@ -360,7 +333,13 @@ class MomentumMixedStrategy(BacktestStrategy, CashSweepMixin):
                      roll_dte_threshold=cfg.roll_dte_threshold)
             return signals
 
-        # c) Rebalance check
+        # c) [V2] Vega Guard — VIX spike detection
+        if cfg.vega_guard_enabled and leaps_pos:
+            vega_signals = self._check_vega_guard(leaps_pos, market)
+            if vega_signals:
+                return vega_signals
+
+        # d) Rebalance check
         delta_pct = target_pct - current_pct
         if abs(delta_pct) <= cfg.rebalance_threshold:
             self.log("exit_scan:rebalance", "skip",
@@ -384,6 +363,40 @@ class MomentumMixedStrategy(BacktestStrategy, CashSweepMixin):
         if signals or self._pending_stock_topup_pct > 0 or self._pending_rebalance:
             self._last_rebalance_day = self._trading_day_count
 
+        return signals
+
+    def _check_vega_guard(
+        self, leaps_pos: list[PositionView], market: MarketSnapshot
+    ) -> list[Signal]:
+        """[V2] VIX 飙升时减仓 50% 以降低 vol crush 风险。"""
+        cfg = self._config
+        if not market.vix or len(self._vix_history) < cfg.vega_guard_vix_lookback:
+            return []
+
+        vix_sma = sum(self._vix_history[-cfg.vega_guard_vix_lookback:]) / cfg.vega_guard_vix_lookback
+        if market.vix <= cfg.vega_guard_vix_spike_threshold * vix_sma:
+            return []
+
+        # VIX spike detected
+        signals: list[Signal] = []
+        for pos in leaps_pos:
+            sell_qty = max(1, math.floor(pos.quantity * cfg.vega_guard_reduce_fraction))
+            sell_qty = min(sell_qty, pos.quantity)
+            signals.append(Signal(
+                type=SignalType.EXIT,
+                instrument=pos.instrument,
+                target_quantity=-sell_qty,
+                reason=f"Vega guard: VIX={market.vix:.1f} > {cfg.vega_guard_vix_spike_threshold}x SMA{cfg.vega_guard_vix_lookback}={vix_sma:.1f}",
+                position_id=pos.position_id,
+                priority=8,
+                metadata={"alert_type": "vega_guard"},
+            ))
+
+        if signals:
+            self.log("exit_scan:vega_guard", "pass",
+                     vix=market.vix, vix_sma=vix_sma,
+                     threshold=cfg.vega_guard_vix_spike_threshold,
+                     reduces=len(signals))
         return signals
 
     def compute_entry_signals(

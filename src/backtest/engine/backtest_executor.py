@@ -391,6 +391,11 @@ class BacktestExecutor:
         for pos in self._account_simulator.positions.values():
             if pos.underlying:  # 过滤掉 None (股票持仓没有 underlying)
                 target_symbols.add(pos.underlying)
+        # Add cash sweep ETF symbol if strategy uses active cash management
+        if hasattr(self._strategy, '_cash_sweep_config'):
+            _cs_cfg = self._strategy._cash_sweep_config
+            if _cs_cfg.enabled:
+                target_symbols.add(_cs_cfg.instrument_symbol)
         
         for symbol in target_symbols:
             stock_quote = self._data_provider.get_stock_quote(symbol)

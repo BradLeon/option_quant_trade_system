@@ -91,9 +91,16 @@ class LiveStrategyExecutor:
         self._dp = data_provider
         self._aggregator = account_aggregator
         self._pipeline = trading_pipeline
-        self._symbols = symbols
         self._risk_guards = risk_guards or []
-        self._snapshot_builder = LiveSnapshotBuilder(data_provider, symbols)
+
+        # Auto-add cash sweep ETF symbol (e.g. SHV) — no CLI change needed
+        all_symbols = list(symbols)
+        if hasattr(strategy, '_cash_sweep_config'):
+            cs_cfg = strategy._cash_sweep_config
+            if cs_cfg.enabled and cs_cfg.instrument_symbol not in all_symbols:
+                all_symbols.append(cs_cfg.instrument_symbol)
+        self._symbols = all_symbols
+        self._snapshot_builder = LiveSnapshotBuilder(data_provider, all_symbols)
         self._signal_converter = LiveSignalConverter()
 
         # Exposed after run_once() for deferred execution

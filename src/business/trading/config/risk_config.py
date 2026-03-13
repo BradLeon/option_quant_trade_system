@@ -18,8 +18,6 @@ from typing import Any
 
 import yaml
 
-from src.business.config.config_utils import merge_overrides
-
 
 @dataclass
 class RiskConfig:
@@ -66,9 +64,9 @@ class RiskConfig:
     # =========================================================================
 
     daily_limits_enabled: bool = True
-    daily_max_open_qty_per_underlying: int = 5
-    daily_max_close_qty_per_underlying: int = 5
-    daily_max_roll_qty_per_underlying: int = 5
+    daily_max_open_qty_per_underlying: int = 100
+    daily_max_close_qty_per_underlying: int = 100
+    daily_max_roll_qty_per_underlying: int = 100
     daily_max_value_pct_per_underlying: float = 10.0  # 单标的每日市值上限 (% of NLV)
     daily_max_total_value_pct: float = 25.0           # 全账户每日总市值上限 (% of NLV)
 
@@ -110,34 +108,21 @@ class RiskConfig:
     def load(cls, strategy_name: str | None = None) -> "RiskConfig":
         """加载配置
 
-        优先加载 base_option_strategy.yaml，然后被具体的 {strategy_name}.yaml 覆盖。
+        优先级: {strategy_name}.yaml 中显式指定的字段 > dataclass 默认值。
+        base_option_strategy.yaml 不参与加载链。
+
+        未指定的字段始终使用 dataclass 默认值。
         """
         config_dir = Path(__file__).parent.parent.parent.parent.parent / "config" / "trading"
 
-        # 1. 尝试加载基础配置
-        base_file = config_dir / "base_option_strategy.yaml"
-        base_data = {}
-        if base_file.exists():
-            with open(base_file, "r", encoding="utf-8") as f:
-                base_data = yaml.safe_load(f) or {}
-
-        # 2. 尝试加载策略专属的覆盖配置
+        strategy_data = {}
         if strategy_name:
             strategy_file = config_dir / f"{strategy_name}.yaml"
             if strategy_file.exists():
                 with open(strategy_file, "r", encoding="utf-8") as f:
                     strategy_data = yaml.safe_load(f) or {}
-                base_data = merge_overrides(base_data, strategy_data)
 
-        # 3. 如果没找到专属和基础配置，兼容查一下历史的 risk.yaml
-        if not base_data:
-            legacy_file = config_dir / "risk.yaml"
-            if legacy_file.exists():
-                with open(legacy_file, "r", encoding="utf-8") as f:
-                    base_data = yaml.safe_load(f) or {}
-
-        # 4. 应用最终字典
-        return cls._apply_dict(cls(), base_data)
+        return cls._apply_dict(cls(), strategy_data)
 
     @classmethod
     def from_dict(

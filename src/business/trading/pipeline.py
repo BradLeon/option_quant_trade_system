@@ -211,16 +211,16 @@ class TradingPipeline:
         batch_quantities: dict[str, int],
         batch_values: dict[str, float],
     ) -> str | None:
-        """检查决策是否超过每日限额
+        """检查决策是否超过每日限额，必要时截断数量。
 
         Args:
-            decision: 交易决策
+            decision: 交易决策（quantity 可能被截断修改）
             nlv: 账户净值
             batch_quantities: 本批次已累计的数量
             batch_values: 本批次已累计的市值
 
         Returns:
-            如果超限，返回原因字符串；否则返回 None
+            如果完全阻断，返回原因字符串；截断或通过返回 None
         """
         underlying = decision.underlying or decision.symbol
         quantity = decision.quantity
@@ -230,7 +230,7 @@ class TradingPipeline:
         check_qty = quantity + batch_quantities.get(underlying, 0)
         check_val = value + batch_values.get(underlying, 0.0)
 
-        allowed, reason = self._daily_tracker.check_limits(
+        allowed_qty, reason = self._daily_tracker.check_limits(
             underlying=underlying,
             quantity=check_qty,
             value=check_val,
@@ -238,7 +238,28 @@ class TradingPipeline:
             decision_type=decision.decision_type.value,
         )
 
-        return None if allowed else reason
+        if allowed_qty <= 0:
+            return reason
+
+        # 截断: allowed_qty 是包含 batch 累计量的总允许量，
+        # 减去 batch 已用量得到本次决策允许的数量
+        batch_used = batch_quantities.get(underlying, 0)
+        this_allowed = max(0, allowed_qty - batch_used)
+
+        if this_allowed <= 0:
+            return reason or f"{underlying} 批次内累计已达限额"
+
+        orig_qty = abs(decision.quantity)
+        if this_allowed < orig_qty:
+            # 保持原始符号（正/负）
+            sign = 1 if decision.quantity > 0 else -1
+            decision.quantity = sign * this_allowed
+            logger.info(
+                f"DailyLimits: truncated {decision.symbol} "
+                f"({decision.decision_type.value}): {orig_qty} → {this_allowed}"
+            )
+
+        return None
 
     def _calc_decision_value(self, decision: TradingDecision) -> float:
         """计算决策的市值

@@ -76,8 +76,16 @@ class AccountRiskGuard:
                 approved.append(signal)
                 continue
 
+            # Cash equivalent entries bypass position count and margin checks
+            if signal.metadata.get("is_cash_equivalent", False):
+                approved.append(signal)
+                entry_count += 1
+                continue
+
             # Check position count limit for entries
-            current_count = portfolio.position_count + entry_count
+            current_count = sum(
+                1 for p in portfolio.positions if not p.is_cash_equivalent
+            ) + entry_count
             if current_count >= self._config.max_positions:
                 logger.warning(
                     f"AccountRisk: blocked {signal.instrument.symbol} — "

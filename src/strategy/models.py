@@ -198,6 +198,11 @@ class PositionView:
         return self.instrument.is_option
 
     @property
+    def is_cash_equivalent(self) -> bool:
+        from src.strategy.cash_sweep import CASH_EQUIVALENT_SYMBOLS
+        return self.is_stock and self.instrument.underlying in CASH_EQUIVALENT_SYMBOLS
+
+    @property
     def market_value(self) -> float:
         return self.current_price * abs(self.quantity) * self.lot_size
 
@@ -224,3 +229,10 @@ class PortfolioState:
 
     def get_option_positions(self) -> list[PositionView]:
         return [p for p in self.positions if p.is_option]
+
+    def get_cash_equivalent_positions(self) -> list[PositionView]:
+        return [p for p in self.positions if p.is_cash_equivalent]
+
+    @property
+    def cash_equivalent_value(self) -> float:
+        return sum(p.market_value for p in self.get_cash_equivalent_positions())

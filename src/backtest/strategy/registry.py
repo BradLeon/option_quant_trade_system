@@ -69,6 +69,124 @@ def _create_leaps_only(**kwargs) -> StrategyProtocol:
     return MomentumMixedStrategy(config)
 
 
+def _create_leaps_baseline(**kwargs) -> StrategyProtocol:
+    """Baseline LEAPS (identical to leaps_only, for A/B comparison)."""
+    from src.backtest.strategy.versions.momentum_mixed import MomentumMixedStrategy, MomentumMixedConfig
+    config = MomentumMixedConfig(
+        name="leaps_baseline",
+        use_stock_component=False,
+        cash_interest_enabled=True,
+        **kwargs,
+    )
+    return MomentumMixedStrategy(config)
+
+
+def _create_leaps_theta_guard(**kwargs) -> StrategyProtocol:
+    from src.backtest.strategy.versions.leaps_variants import LeapsThetaGuardStrategy
+    from src.backtest.strategy.versions.momentum_mixed import MomentumMixedConfig
+    config = MomentumMixedConfig(
+        name="leaps_theta_guard",
+        use_stock_component=False,
+        cash_interest_enabled=True,
+        **kwargs,
+    )
+    return LeapsThetaGuardStrategy(config)
+
+
+def _create_leaps_vega_guard(**kwargs) -> StrategyProtocol:
+    from src.backtest.strategy.versions.leaps_variants import LeapsVegaGuardStrategy
+    from src.backtest.strategy.versions.momentum_mixed import MomentumMixedConfig
+    config = MomentumMixedConfig(
+        name="leaps_vega_guard",
+        use_stock_component=False,
+        cash_interest_enabled=True,
+        **kwargs,
+    )
+    return LeapsVegaGuardStrategy(config)
+
+
+def _create_leaps_rebal_down_only(**kwargs) -> StrategyProtocol:
+    from src.backtest.strategy.versions.leaps_variants import LeapsRebalDownOnlyStrategy
+    from src.backtest.strategy.versions.momentum_mixed import MomentumMixedConfig
+    config = MomentumMixedConfig(
+        name="leaps_rebal_down_only",
+        use_stock_component=False,
+        cash_interest_enabled=True,
+        **kwargs,
+    )
+    return LeapsRebalDownOnlyStrategy(config)
+
+
+def _create_leaps_stop_loss(**kwargs) -> StrategyProtocol:
+    from src.backtest.strategy.versions.leaps_variants import LeapsStopLossStrategy
+    from src.backtest.strategy.versions.momentum_mixed import MomentumMixedConfig
+    config = MomentumMixedConfig(
+        name="leaps_stop_loss",
+        use_stock_component=False,
+        cash_interest_enabled=True,
+        **kwargs,
+    )
+    return LeapsStopLossStrategy(config)
+
+
+def _create_leaps_dd_deleverage(**kwargs) -> StrategyProtocol:
+    from src.backtest.strategy.versions.leaps_variants import LeapsDrawdownDeleverageStrategy
+    from src.backtest.strategy.versions.momentum_mixed import MomentumMixedConfig
+    config = MomentumMixedConfig(
+        name="leaps_dd_deleverage",
+        use_stock_component=False,
+        cash_interest_enabled=True,
+        **kwargs,
+    )
+    return LeapsDrawdownDeleverageStrategy(config)
+
+
+def _create_momentum_mixed_v2(**kwargs) -> StrategyProtocol:
+    """LEAPS V2: Theta Guard (roll_dte=90) + Vega Guard (VIX spike reduce)."""
+    from src.backtest.strategy.versions.momentum_mixed_v2 import (
+        MomentumMixedV2Strategy,
+        MomentumMixedV2Config,
+    )
+    config = MomentumMixedV2Config(
+        name="momentum_mixed_v2",
+        use_stock_component=False,
+        cash_interest_enabled=True,
+        **kwargs,
+    )
+    return MomentumMixedV2Strategy(config)
+
+
+def _create_leaps_only_cash_sweep(**kwargs) -> StrategyProtocol:
+    """LEAPS-only with active SHV cash sweep (replaces passive interest)."""
+    from src.backtest.strategy.versions.momentum_mixed import MomentumMixedStrategy, MomentumMixedConfig
+    from src.strategy.cash_sweep import CashSweepConfig
+    config = MomentumMixedConfig(
+        name="spy_leaps_only_cash_sweep",
+        use_stock_component=False,
+        cash_interest_enabled=False,
+        cash_sweep_config=CashSweepConfig(enabled=True, instrument_symbol="SHV"),
+        **kwargs,
+    )
+    return MomentumMixedStrategy(config)
+
+
+def _create_leaps_v2_cash_sweep(**kwargs) -> StrategyProtocol:
+    """LEAPS V2 with active SHV cash sweep."""
+    from src.backtest.strategy.versions.momentum_mixed_v2 import (
+        MomentumMixedV2Strategy,
+        MomentumMixedV2Config,
+    )
+    from src.strategy.cash_sweep import CashSweepConfig
+    config = MomentumMixedV2Config(
+        name="leaps_v2_cash_sweep",
+        use_stock_component=False,
+        cash_interest_enabled=False,
+        cash_sweep_config=CashSweepConfig(enabled=True, instrument_symbol="SHV"),
+        **kwargs,
+    )
+    return MomentumMixedV2Strategy(config)
+
+
 def _create_bull_put_spread(**kwargs) -> StrategyProtocol:
     from src.backtest.strategy.versions.spread import BullPutSpreadStrategy, BullPutSpreadConfig
     config = BullPutSpreadConfig(**kwargs)
@@ -148,6 +266,22 @@ _REGISTRY: dict[str, Any] = {
     "long_leaps_call_sma_timing": _create_sma_leaps,
     "spy_momentum_lev_vol_target": _create_momentum_lev,
     "spy_leaps_only_vol_target": _create_leaps_only,
+
+    # LEAPS risk improvement variants (A/B testing)
+    "leaps_baseline": _create_leaps_baseline,
+    "leaps_theta_guard": _create_leaps_theta_guard,
+    "leaps_vega_guard": _create_leaps_vega_guard,
+    "leaps_rebal_down_only": _create_leaps_rebal_down_only,
+    "leaps_stop_loss": _create_leaps_stop_loss,
+    "leaps_dd_deleverage": _create_leaps_dd_deleverage,
+
+    # LEAPS V2 (combined V1+V2 improvements)
+    "momentum_mixed_v2": _create_momentum_mixed_v2,
+    "leaps_v2": _create_momentum_mixed_v2,
+
+    # LEAPS with active cash sweep (SHV ETF)
+    "leaps_cash_sweep": _create_leaps_only_cash_sweep,
+    "leaps_v2_cash_sweep": _create_leaps_v2_cash_sweep,
 
     # Multi-leg combo strategies
     "bull_put_spread": _create_bull_put_spread,

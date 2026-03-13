@@ -6,7 +6,7 @@ Daily Trade Limits - 每日交易限额管理
 
 Usage:
     tracker = DailyTradeTracker(order_store, config)
-    allowed, reason = tracker.check_limits("AAPL", quantity=-2, value=5000.0, nlv=100000.0)
+    allowed_qty, reason = tracker.check_limits("AAPL", quantity=-2, value=5000.0, nlv=100000.0)
 """
 
 import logging
@@ -67,12 +67,12 @@ class DailyLimitsConfig:
     enabled: bool = True
 
     # 按类型的每日数量限额（各 5 张）
-    max_open_quantity_per_underlying: int = 5   # 每日 OPEN 限额
-    max_close_quantity_per_underlying: int = 5  # 每日 CLOSE 限额
-    max_roll_quantity_per_underlying: int = 5   # 每日 ROLL 限额（注：1 ROLL = 2 张）
+    max_open_quantity_per_underlying: int = 100   # 每日 OPEN 限额
+    max_close_quantity_per_underlying: int = 100  # 每日 CLOSE 限额
+    max_roll_quantity_per_underlying: int = 100   # 每日 ROLL 限额（注：1 ROLL = 2 张）
 
     # 每个 underlying 每天开仓市值不超过 NLV 的 X%
-    max_value_pct_per_underlying: float = 5.0
+    max_value_pct_per_underlying: float = 10.0
 
     # 全账户每天总开仓市值不超过 NLV 的 X%
     max_total_value_pct: float = 25.0
@@ -177,8 +177,8 @@ class DailyTradeTracker:
     Usage:
         tracker = DailyTradeTracker(order_store, config)
 
-        # 检查是否允许新开仓
-        allowed, reason = tracker.check_limits("AAPL", quantity=-2, value=5000.0, nlv=100000.0)
+        # 检查允许的数量（截断而非阻断）
+        allowed_qty, reason = tracker.check_limits("AAPL", quantity=-2, value=5000.0, nlv=100000.0)
 
         # 过滤超限机会
         filtered = tracker.filter_opportunities(opportunities, account_state)
@@ -330,98 +330,101 @@ class DailyTradeTracker:
         value: float,
         nlv: float,
         decision_type: str | None = None,
-    ) -> tuple[bool, str]:
-        """检查是否允许新开仓
+    ) -> tuple[int, str]:
+        """检查每日限额，返回允许的数量（截断而非阻断）。
 
         Args:
             underlying: 标的代码
-            quantity: 开仓数量（可正可负，内部用 abs()）
+            quantity: 请求数量（可正可负，内部用 abs()）
             value: 订单市值（可正可负，内部用 abs()）
             nlv: 账户净值
             decision_type: 决策类型 ("open"/"close"/"roll" 等)
 
         Returns:
-            (allowed, reason) - 是否允许，拒绝原因
+            (allowed_qty, reason) - 允许的数量（0=完全阻断, <abs(qty)=截断）和原因
         """
         if not self._config.enabled:
-            return True, ""
+            return abs(quantity), ""
 
         if nlv <= 0:
             logger.warning("NLV <= 0, skipping daily limits check")
-            return True, ""
+            return abs(quantity), ""
 
         today = date.today()
         daily_stats = self.get_daily_stats(underlying, today)
 
-        # 使用绝对值
         abs_quantity = abs(quantity)
         abs_value = abs(value)
+        allowed_qty = abs_quantity  # 从请求量开始，逐步截断
 
         # 按类型检查数量限额
         if decision_type == "open":
-            new_total = daily_stats.open_quantity + abs_quantity
-            limit = self._config.max_open_quantity_per_underlying
-            if new_total > limit:
-                reason = (
+            remaining = self._config.max_open_quantity_per_underlying - daily_stats.open_quantity
+            if remaining <= 0:
+                return 0, (
                     f"{underlying} 已达当日 OPEN 数量限额: "
-                    f"{daily_stats.open_quantity}/{limit} 张, "
-                    f"新增 {abs_quantity} 张将超限"
+                    f"{daily_stats.open_quantity}/{self._config.max_open_quantity_per_underlying} 张"
                 )
-                logger.info(f"Daily limit exceeded: {reason}")
-                return False, reason
+            allowed_qty = min(allowed_qty, remaining)
         elif decision_type == "close":
-            new_total = daily_stats.close_quantity + abs_quantity
-            limit = self._config.max_close_quantity_per_underlying
-            if new_total > limit:
-                reason = (
+            remaining = self._config.max_close_quantity_per_underlying - daily_stats.close_quantity
+            if remaining <= 0:
+                return 0, (
                     f"{underlying} 已达当日 CLOSE 数量限额: "
-                    f"{daily_stats.close_quantity}/{limit} 张, "
-                    f"新增 {abs_quantity} 张将超限"
+                    f"{daily_stats.close_quantity}/{self._config.max_close_quantity_per_underlying} 张"
                 )
-                logger.info(f"Daily limit exceeded: {reason}")
-                return False, reason
+            allowed_qty = min(allowed_qty, remaining)
         elif decision_type == "roll":
-            # ROLL 会产生 2 个订单，1 个 ROLL decision 计为 2 张
-            roll_count = abs_quantity * 2
-            new_total = daily_stats.roll_quantity + roll_count
-            limit = self._config.max_roll_quantity_per_underlying
-            if new_total > limit:
-                reason = (
+            remaining = self._config.max_roll_quantity_per_underlying - daily_stats.roll_quantity
+            if remaining <= 0:
+                return 0, (
                     f"{underlying} 已达当日 ROLL 数量限额: "
-                    f"{daily_stats.roll_quantity}/{limit} 张, "
-                    f"新增 {roll_count} 张将超限"
+                    f"{daily_stats.roll_quantity}/{self._config.max_roll_quantity_per_underlying} 张"
                 )
-                logger.info(f"Daily limit exceeded: {reason}")
-                return False, reason
+            allowed_qty = min(allowed_qty, remaining // 2)  # ROLL: 1 decision = 2 张
 
         # 检查单标的市值占比限额
         existing_value_pct = (daily_stats.total_value / nlv) * 100
-        new_value_pct = (abs_value / nlv) * 100
-        total_value_pct = existing_value_pct + new_value_pct
-
-        if total_value_pct > self._config.max_value_pct_per_underlying:
-            reason = (
+        max_pct = self._config.max_value_pct_per_underlying
+        remaining_pct = max_pct - existing_value_pct
+        if remaining_pct <= 0:
+            return 0, (
                 f"{underlying} 已达当日市值限额: "
-                f"{existing_value_pct:.2f}% + {new_value_pct:.2f}% = {total_value_pct:.2f}% "
-                f"> {self._config.max_value_pct_per_underlying}% of NLV"
+                f"{existing_value_pct:.2f}% >= {max_pct}% of NLV"
             )
-            logger.info(f"Daily limit exceeded: {reason}")
-            return False, reason
+        # 按单位价格计算允许的最大数量
+        if abs_quantity > 0 and abs_value > 0:
+            per_unit_value = abs_value / abs_quantity
+            if per_unit_value > 0:
+                max_by_value = int((remaining_pct / 100 * nlv) / per_unit_value)
+                allowed_qty = min(allowed_qty, max_by_value)
 
         # 检查全账户总市值限额
         total_daily_value = self.get_total_daily_value(today)
-        total_daily_pct = ((total_daily_value + abs_value) / nlv) * 100
-
-        if total_daily_pct > self._config.max_total_value_pct:
-            reason = (
+        total_remaining_pct = self._config.max_total_value_pct - (total_daily_value / nlv) * 100
+        if total_remaining_pct <= 0:
+            return 0, (
                 f"全账户已达当日总市值限额: "
-                f"{(total_daily_value / nlv) * 100:.2f}% + {new_value_pct:.2f}% = {total_daily_pct:.2f}% "
-                f"> {self._config.max_total_value_pct}% of NLV"
+                f"{(total_daily_value / nlv) * 100:.2f}% >= {self._config.max_total_value_pct}% of NLV"
             )
-            logger.info(f"Daily limit exceeded: {reason}")
-            return False, reason
+        if abs_quantity > 0 and abs_value > 0:
+            per_unit_value = abs_value / abs_quantity
+            if per_unit_value > 0:
+                max_by_total = int((total_remaining_pct / 100 * nlv) / per_unit_value)
+                allowed_qty = min(allowed_qty, max_by_total)
 
-        return True, ""
+        if allowed_qty <= 0:
+            return 0, f"{underlying} 截断后数量为 0"
+
+        reason = ""
+        if allowed_qty < abs_quantity:
+            reason = (
+                f"{underlying} 截断: {abs_quantity} → {allowed_qty} "
+                f"(数量限额或市值限额)"
+            )
+            logger.info(f"Daily limit truncated: {reason}")
+
+        return allowed_qty, reason
 
     def filter_opportunities(
         self,
@@ -472,14 +475,14 @@ class DailyTradeTracker:
             check_qty = quantity + batch_qty
             check_val = market_value + batch_val
 
-            allowed, reason = self.check_limits(
+            allowed_qty, reason = self.check_limits(
                 underlying=underlying,
                 quantity=check_qty,
                 value=check_val,
                 nlv=nlv,
             )
 
-            if allowed:
+            if allowed_qty > 0:
                 passed.append(opp)
                 # 更新本批次累加量
                 batch_quantities[underlying] = batch_qty + abs(quantity)
