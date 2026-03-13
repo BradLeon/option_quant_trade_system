@@ -80,12 +80,6 @@ logger = logging.getLogger(__name__)
     help="策略版本 (例如: short_put_with_assignment, short_put_without_assignment, bull_put_spread) (默认: short_put_with_assignment)",
 )
 @click.option(
-    "--max-positions",
-    default=20,
-    type=int,
-    help="最大持仓数 (默认: 20)",
-)
-@click.option(
     "--skip-download",
     is_flag=True,
     help="跳过数据下载检查",
@@ -144,7 +138,6 @@ def run(
     capital: int,
     strategy: str,
     strategy_version: str,
-    max_positions: int,
     skip_download: bool,
     skip_market_check: bool,
     no_report: bool,
@@ -203,7 +196,7 @@ def run(
     else:  # all
         strategy_types = [StrategyType.SHORT_PUT, StrategyType.COVERED_CALL]
 
-    # 创建配置
+    # 创建配置 (风控参数从 RiskConfig YAML 加载，按 strategy_version 查找覆盖)
     from src.backtest.config.backtest_config import BacktestConfig
 
     config = BacktestConfig(
@@ -214,7 +207,6 @@ def run(
         symbols=list(symbols),
         data_dir=str(data_path),
         initial_capital=capital,
-        max_positions=max_positions,
         strategy_types=strategy_types,
         strategy_version=strategy_version,
         skip_market_check=skip_market_check,

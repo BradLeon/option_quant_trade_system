@@ -1,24 +1,17 @@
 # 风控配置（LIVE 基准值）
 #
-# 配置模式:
-# - LIVE: 使用下方主配置 (严格的生产环境值)
-# - BACKTEST: 自动合并 backtest_overrides (放宽参数)
+# 唯一配置源: RiskConfig 从此文件加载
+# 策略专属覆盖: config/trading/{strategy_name}.yaml
 
 risk_limits:
-  # Layer 1: Account-Level Limits
-  max_margin_utilization: 0.70      # 70% - 超过则禁止开仓
-  min_cash_ratio: 0.10              # 10% - 低于则禁止开仓
-  max_gross_leverage: 4.0           # 4x - 超过则禁止开仓
-  max_stress_test_loss: 0.20        # 20% - 压力测试最大损失
+  # Signal-Level Limits (AccountRiskGuard)
+  max_positions: 20                 # 最大持仓数
+  max_margin_utilization: 0.70      # 70% - 超过则禁止入场
+  min_cash_reserve_pct: 0.05        # 股票入场最低现金比例
+  min_available_margin: 10000       # 期权入场最低可用保证金
 
-  # Layer 2: Position-Level Limits
-  max_contracts_per_underlying: 10  # 单标的最大合约数
-  max_notional_pct_per_underlying: 0.05  # 5% of NLV
-  max_total_option_positions: 100   # 期权持仓总数上限
-  max_concentration_pct: 0.20       # 20% - 单标的最大集中度
-
-  # Layer 3: Order-Level Limits
-  max_projected_margin_utilization: 0.80  # 80%
+  # Order-Level Limits (RiskChecker)
+  max_projected_margin_utilization: 0.80  # 80% - 开仓后预估上限
   max_price_deviation_pct: 0.05     # 5%
   max_order_value_pct: 0.10         # 10% of NLV
 
@@ -28,18 +21,6 @@ risk_limits:
   margin_rate_minimum: 0.10
   margin_safety_buffer: 0.80
 
-  # Emergency Thresholds
-  emergency_margin_utilization: 0.85
-  emergency_cash_ratio: 0.05
-
-  # Kelly Criterion
-  kelly_fraction: 0.25              # 1/4 Kelly - 保守策略
-
-  # Signal-Level Limits (AccountRiskGuard)
-  max_positions: 20                 # 最大持仓数
-  min_cash_reserve_pct: 0.05        # 股票入场最低现金比例
-  min_available_margin: 10000       # 期权入场最低可用保证金
-
   # Daily Limits (DailyTradeTracker)
   daily_limits_enabled: true
   daily_max_open_qty_per_underlying: 5
@@ -48,10 +29,16 @@ risk_limits:
   daily_max_value_pct_per_underlying: 10.0  # 10% of NLV
   daily_max_total_value_pct: 25.0           # 25% of NLV
 
+  # Emergency Thresholds (预留)
+  emergency_margin_utilization: 0.85
+  emergency_cash_ratio: 0.05
+
+  # Kelly Criterion
+  kelly_fraction: 0.25              # 1/4 Kelly - 保守策略
+
 # ============================================================
 # 回测模式覆盖 (仅在 BACKTEST 模式下生效)
 # ============================================================
 backtest_overrides:
   risk_limits:
-    max_notional_pct_per_underlying: 0.50  # 50% (live: 5%)
     kelly_fraction: 0.75                    # 3/4 Kelly (live: 1/4)

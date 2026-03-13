@@ -1,0 +1,26 @@
+# short_put_with_assignment — Naked Short Put 策略风控覆盖
+#
+# 继承 base_option_strategy.yaml，仅覆盖与 Short Put 策略相关的字段。
+#
+# 策略特征:
+# - 卖出 naked put (SELL)，有 margin 要求
+# - 被行权后接股票，需预留足够资金
+# - 每日最多开 1 个新仓位 (策略内控)，风控层可适度放宽
+# - 保证金控制是核心风控
+
+risk_limits:
+  # Signal-Level: naked put 需严格控制 margin
+  max_positions: 10                   # Short put 更保守 (base: 20)
+  max_margin_utilization: 0.60        # 60% (base: 70%)，预留行权资金
+  min_available_margin: 20000         # 最低可用保证金 $20k (base: $10k)
+
+  # Order-Level: 单笔风险不宜过大
+  max_order_value_pct: 0.08           # 8% of NLV (base: 10%)
+  max_projected_margin_utilization: 0.70  # 70% (base: 80%)
+
+  # Daily Limits: 策略本身限制每日 1 仓，风控层给小余量
+  daily_max_open_qty_per_underlying: 2
+  daily_max_value_pct_per_underlying: 8.0   # 8% of NLV
+
+  # Kelly: 保守
+  kelly_fraction: 0.25                # 1/4 Kelly — 保守 (与 base 相同)

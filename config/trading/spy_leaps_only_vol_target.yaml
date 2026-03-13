@@ -1,0 +1,27 @@
+# spy_leaps_only_vol_target — LEAPS-only 策略风控覆盖
+#
+# 继承 base_option_strategy.yaml，仅覆盖与 LEAPS 策略相关的字段。
+#
+# 策略特征:
+# - 仅买入 LEAPS Call (BUY)，无 naked short，无 margin 占用
+# - 保证金限制对 long option 无意义，放宽
+# - LEAPS 单张价值高，需提高单笔订单上限
+# - 每日交易频率低 (再平衡驱动)，放宽每日限额
+
+risk_limits:
+  # Signal-Level: LEAPS 不占 margin，放宽 margin 限制
+  max_margin_utilization: 0.90        # Long option 不占 margin, 宽松
+  min_available_margin: 0             # Long option 不需要可用保证金
+
+  # Order-Level: LEAPS 单张价值高
+  max_order_value_pct: 0.30           # 30% of NLV (LEAPS 单张较贵)
+  max_projected_margin_utilization: 0.95  # Long option 基本不影响 margin
+
+  # Daily Limits: 再平衡驱动，频率低
+  daily_max_open_qty_per_underlying: 10
+  daily_max_close_qty_per_underlying: 10
+  daily_max_value_pct_per_underlying: 50.0  # 50% of NLV (LEAPS 可占大比例)
+  daily_max_total_value_pct: 60.0           # 60% of NLV
+
+  # Kelly: 回测可更激进
+  kelly_fraction: 0.50                # 1/2 Kelly

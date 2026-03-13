@@ -65,20 +65,6 @@ def list_strategies() -> None:
     help="实际下单 (默认 dry-run 仅显示信号)",
 )
 @click.option(
-    "--max-margin",
-    type=float,
-    default=0.60,
-    show_default=True,
-    help="最大保证金使用率",
-)
-@click.option(
-    "--max-positions",
-    type=int,
-    default=10,
-    show_default=True,
-    help="最大持仓数量",
-)
-@click.option(
     "--push/--no-push",
     default=False,
     help="推送结果到飞书",
@@ -94,8 +80,6 @@ def run(
     symbol: tuple[str, ...],
     account: str,
     execute: bool,
-    max_margin: float,
-    max_positions: int,
     push: bool,
     verbose: bool,
 ) -> None:
@@ -106,20 +90,12 @@ def run(
       # Dry-run (Paper 账户, 默认)
       optrade strategy run -s short_put_with_assignment -S SPY
 
-      # 指定 Live 账户
-      optrade strategy run -s short_put_with_assignment -S SPY -a live
-
       # 实际下单到 IBKR Paper
       optrade strategy run -s short_put_with_assignment -S SPY --execute
-
-      # 多标的 + 风控参数
-      optrade strategy run -s sma_stock -S SPY -S AAPL --max-margin 0.50
     """
     from src.backtest.strategy.registry import BacktestStrategyRegistry
-    from src.backtest.strategy.risk.account_risk import (
-        AccountRiskConfig,
-        AccountRiskGuard,
-    )
+    from src.backtest.strategy.risk.account_risk import AccountRiskGuard
+    from src.business.trading.config.risk_config import RiskConfig
     from src.business.trading.live_executor import LiveStrategyExecutor
     from src.business.trading.pipeline import TradingPipeline
     from src.data.models.account import AccountType
@@ -138,12 +114,18 @@ def run(
     dry_run = not execute
     account_type = AccountType.PAPER if account == "paper" else AccountType.LIVE
 
+    # Load RiskConfig (唯一配置源, 按策略名加载覆盖)
+    risk_config = RiskConfig.load(strategy_name)
+
     click.echo(f"\n{'=' * 60}")
     click.echo(f"  策略: {strategy_name}")
     click.echo(f"  标的: {', '.join(symbols)}")
     click.echo(f"  账户: {account.upper()}")
     click.echo(f"  模式: {'EXECUTE' if execute else 'DRY-RUN'}")
-    click.echo(f"  风控: max_margin={max_margin:.0%}, max_positions={max_positions}")
+    click.echo(
+        f"  风控: max_margin={risk_config.max_margin_utilization:.0%}, "
+        f"max_positions={risk_config.max_positions}"
+    )
     click.echo(f"{'=' * 60}")
 
     # 1. Create strategy instance
@@ -177,19 +159,14 @@ def run(
         click.echo(f"\n错误: 账户聚合器创建失败: {e}", err=True)
         raise SystemExit(1)
 
-    # 4. Create risk guards
+    # 4. Create risk guards (从 RiskConfig 读参数)
     risk_guards = [
-        AccountRiskGuard(
-            AccountRiskConfig(
-                max_margin_utilization=max_margin,
-                max_positions=max_positions,
-            )
-        ),
+        AccountRiskGuard(risk_config),
     ]
 
     # 5. Run executor (always dry_run first to generate signals via data provider)
     try:
-        pipeline = TradingPipeline()
+        pipeline = TradingPipeline(risk_config=risk_config)
 
         executor = LiveStrategyExecutor(
             strategy=strat,

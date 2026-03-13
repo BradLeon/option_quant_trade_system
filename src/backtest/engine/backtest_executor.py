@@ -249,10 +249,9 @@ class BacktestExecutor:
             price_mode=PriceMode(config.price_mode),
         )
 
-        # Account 层: 账户模拟器 (直接持有)
+        # Account 层: 账户模拟器 (直接持有, margin 从 RiskConfig 读)
         self._account_simulator = AccountSimulator(
             initial_capital=config.initial_capital,
-            max_margin_utilization=config.max_margin_utilization,
         )
 
         # Trade 层: 交易模拟器 (使用 IBKR 真实费率)
@@ -274,13 +273,12 @@ class BacktestExecutor:
         self._strategy = BacktestStrategyRegistry.create(strategy_name)
         self._signal_converter = SignalConverter()
 
-        # Initialize RiskGuard chain
-        from src.backtest.strategy.risk.account_risk import AccountRiskGuard, AccountRiskConfig
+        # Initialize RiskGuard chain (从 RiskConfig 按策略名加载)
+        from src.backtest.strategy.risk.account_risk import AccountRiskGuard
+        from src.business.trading.config.risk_config import RiskConfig
+        risk_config = RiskConfig.load(strategy_name)
         self._risk_guards: list = [
-            AccountRiskGuard(AccountRiskConfig(
-                max_positions=config.max_positions,
-                max_margin_utilization=config.max_margin_utilization,
-            )),
+            AccountRiskGuard(risk_config),
         ]
         logger.info(f"Using V2 strategy: {self._strategy.name}")
 
