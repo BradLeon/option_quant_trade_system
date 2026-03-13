@@ -99,11 +99,13 @@ class CurrencyConverter:
                 except Exception as e:
                     logger.warning(f"Failed to fetch {currency} rate: {e}")
 
-            if refreshed:
-                self._last_refresh = datetime.now()
+            # Always update timestamp to prevent retry spam on failure.
+            # Default rates are good enough as fallback.
+            self._last_refresh = datetime.now()
 
         except ImportError:
             logger.warning("yfinance not installed, using default rates")
+            self._last_refresh = datetime.now()
 
         return refreshed
 
