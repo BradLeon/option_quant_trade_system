@@ -85,6 +85,26 @@ class RiskConfig:
     margin_safety_buffer: float = 0.80  # 只使用 80% 可用保证金
 
     # =========================================================================
+    # Signal-Level Limits (信号级限制, 原 AccountRiskConfig)
+    # 用于 AccountRiskGuard 判断是否放行 ENTRY 信号
+    # =========================================================================
+
+    max_positions: int = 20  # 最大持仓数
+    min_cash_reserve_pct: float = 0.05  # 股票入场最低现金比例
+    min_available_margin: float = 10_000  # 期权入场最低可用保证金
+
+    # =========================================================================
+    # Daily Limits (每日交易限额, 原 DailyLimitsConfig)
+    # =========================================================================
+
+    daily_limits_enabled: bool = True
+    daily_max_open_qty_per_underlying: int = 5
+    daily_max_close_qty_per_underlying: int = 5
+    daily_max_roll_qty_per_underlying: int = 5
+    daily_max_value_pct_per_underlying: float = 10.0  # 单标的每日市值上限 (% of NLV)
+    daily_max_total_value_pct: float = 25.0  # 全账户每日总市值上限 (% of NLV)
+
+    # =========================================================================
     # Emergency Thresholds (紧急平仓触发阈值)
     # =========================================================================
 
@@ -203,6 +223,17 @@ class RiskConfig:
                 "margin_rate_index_option": self.margin_rate_index_option,
                 "margin_rate_minimum": self.margin_rate_minimum,
                 "margin_safety_buffer": self.margin_safety_buffer,
+                # Signal-Level
+                "max_positions": self.max_positions,
+                "min_cash_reserve_pct": self.min_cash_reserve_pct,
+                "min_available_margin": self.min_available_margin,
+                # Daily Limits
+                "daily_limits_enabled": self.daily_limits_enabled,
+                "daily_max_open_qty_per_underlying": self.daily_max_open_qty_per_underlying,
+                "daily_max_close_qty_per_underlying": self.daily_max_close_qty_per_underlying,
+                "daily_max_roll_qty_per_underlying": self.daily_max_roll_qty_per_underlying,
+                "daily_max_value_pct_per_underlying": self.daily_max_value_pct_per_underlying,
+                "daily_max_total_value_pct": self.daily_max_total_value_pct,
                 # Emergency
                 "emergency_margin_utilization": self.emergency_margin_utilization,
                 "emergency_cash_ratio": self.emergency_cash_ratio,

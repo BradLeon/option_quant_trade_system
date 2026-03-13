@@ -1,8 +1,13 @@
-"""LEAPS Contract Selector — 统一合约筛选逻辑。
+"""LEAPS Contract Selector — Delta 驱动的统一合约筛选。
 
 回测和实盘使用同一套 Delta + 流动性 + Spread + DTE 多因子评分，
 确保策略行为一致。唯一区别: 实盘需额外调 get_option_quotes_batch()
 获取报价，回测的 get_option_chain() 已包含报价。
+
+Selection logic:
+1. Pre-filter: DTE range + wide strike range (spot * [0.70, 1.10])
+2. Fetch quotes (live only, backtest chain already has prices)
+3. Hard filter: delta range → multi-factor scoring (delta + liquidity + spread + DTE)
 
 Usage:
     from src.strategy.leaps_selector import LeapsContractSelector, LeapsSelectionConfig
@@ -30,20 +35,21 @@ from src.engine.contract.liquidity import (
 
 @dataclass
 class LeapsSelectionConfig:
-    """LEAPS 合约筛选参数。"""
+    """LEAPS 合约筛选参数 — Delta 驱动。"""
 
     # DTE
     target_dte: int = 252
     min_dte: int = 180
     max_dte: int = 400
 
-    # Delta 目标
+    # Delta 目标 (primary selection criterion)
     target_delta: float = 0.70
     min_delta: float = 0.50
     max_delta: float = 0.85
 
-    # Moneyness (仅用于 Step 1 预筛 strike 范围)
-    target_moneyness: float = 0.85
+    # Strike 预筛范围 (相对于 spot 的比例, 仅用于缩小候选集)
+    strike_range_low: float = 0.70   # spot * 0.70
+    strike_range_high: float = 1.10  # spot * 1.10
 
     # 流动性硬过滤 (OI/spread 不足时跳过，不硬拒)
     min_open_interest: int = 100
@@ -55,17 +61,17 @@ class LeapsSelectionConfig:
     w_spread: float = 1.5
     w_dte: float = 0.5
 
-    # 预筛数量
-    max_candidates: int = 30
+    # 预筛数量 (per expiry)
+    max_candidates: int = 60
 
 
 class LeapsContractSelector:
-    """LEAPS 合约选择器 — 回测与实盘统一评分。
+    """LEAPS 合约选择器 — Delta 驱动，回测与实盘统一评分。
 
     三步筛选:
-    1. 预筛: get_option_chain() → DTE 范围 + strike 接近度 → top N
+    1. 预筛: get_option_chain() → DTE 范围 + 宽松 strike 范围
     2. 获取报价: get_option_quotes_batch() (仅实盘需要)
-    3. 硬过滤 + 多因子评分 (统一逻辑)
+    3. 硬过滤 (delta range) + 多因子评分 (delta + liquidity + spread + DTE)
     """
 
     def select(
@@ -82,9 +88,10 @@ class LeapsContractSelector:
         Returns:
             OptionQuote or None
         """
-        target_strike = spot * config.target_moneyness
+        strike_lo = spot * config.strike_range_low
+        strike_hi = spot * config.strike_range_high
 
-        # ── Step 1: Get chain + pre-filter by DTE ──
+        # ── Step 1: Get chain + pre-filter by DTE + strike range ──
         chain = data_provider.get_option_chain(
             underlying=symbol,
             expiry_min_days=config.min_dte,
@@ -100,24 +107,30 @@ class LeapsContractSelector:
         total = len(chain.calls)
         prefiltered = []
         reject_dte = 0
+        reject_strike = 0
         for call in chain.calls:
             contract = call.contract
             dte = (contract.expiry_date - current_date).days
             if dte < config.min_dte or dte > config.max_dte:
                 reject_dte += 1
                 continue
+            if contract.strike_price < strike_lo or contract.strike_price > strike_hi:
+                reject_strike += 1
+                continue
             prefiltered.append(call)
 
-        # Narrow by strike proximity to target
-        prefiltered.sort(key=lambda c: abs(c.contract.strike_price - target_strike))
+        # Cap candidates to avoid fetching too many quotes in live
         shortlisted = prefiltered[:config.max_candidates]
 
         if not shortlisted:
             if log_fn:
                 log_fn(f"contract_select:{symbol}", "fail",
                        total=total, passed=0,
-                       rejected_by={"dte": reject_dte},
-                       filters=f"DTE=[{config.min_dte}-{config.max_dte}] target_K={target_strike:.0f}")
+                       rejected_by={"dte": reject_dte, "strike_range": reject_strike},
+                       filters=(
+                           f"DTE=[{config.min_dte}-{config.max_dte}] "
+                           f"strike=[{strike_lo:.0f}-{strike_hi:.0f}]"
+                       ))
             return None
 
         # ── Step 2: Fetch quotes if needed (live: chain has no prices) ──
@@ -134,7 +147,7 @@ class LeapsContractSelector:
         else:
             quotes = shortlisted
 
-        # ── Step 3: Unified filter + multi-factor scoring ──
+        # ── Step 3: Hard filter (delta) + multi-factor scoring ──
         best = None
         best_score = -float("inf")
         reject = {
@@ -178,7 +191,7 @@ class LeapsContractSelector:
                 reject["wide_spread"] += 1
                 continue
 
-            # ── Multi-factor scoring ──
+            # ── Multi-factor scoring (delta-dominant) ──
             delta_range = config.max_delta - config.min_delta
             delta_score = (
                 1.0 - abs(delta - config.target_delta) / delta_range
@@ -242,6 +255,7 @@ class LeapsContractSelector:
                        total=total, passed=0,
                        rejected_by={
                            "dte": reject_dte,
+                           "strike_range": reject_strike,
                            **{k: v for k, v in reject.items() if v > 0},
                        },
                        filters=(

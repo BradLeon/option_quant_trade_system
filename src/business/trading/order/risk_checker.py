@@ -121,6 +121,10 @@ class RiskChecker:
         max_deviation = self._config.max_price_deviation_pct
 
         if deviation >= max_deviation:
+            logger.warning(
+                f"RiskChecker: price deviation {deviation:.1%} >= "
+                f"{max_deviation:.1%} for {order.symbol}"
+            )
             result.add_check(
                 name="price_deviation",
                 passed=False,
@@ -149,10 +153,21 @@ class RiskChecker:
         """检查预计保证金使用率
 
         保证金估算基于 IBKR Reg T 规则:
-        - 股票期权: 20% of underlying
-        - 指数期权: 15% of underlying
+        - Long options (BUY): premium only, no margin requirement
+        - Short options (SELL): 20% of underlying (stock) / 15% (index)
         参考: https://www.interactivebrokers.com/en/trading/margin-options.php
         """
+        from src.business.trading.models.order import OrderSide
+
+        # Long options only cost premium — no margin impact
+        if order.side == OrderSide.BUY:
+            result.add_check(
+                name="margin_projection",
+                passed=True,
+                message="Long position: premium only, no margin requirement",
+            )
+            return
+
         estimated_margin = 0.0
 
         if order.strike:
@@ -176,6 +191,10 @@ class RiskChecker:
         max_utilization = self._config.max_projected_margin_utilization
 
         if projected_utilization >= max_utilization:
+            logger.warning(
+                f"RiskChecker: margin projection {projected_utilization:.1%} >= "
+                f"{max_utilization:.1%} for {order.symbol}"
+            )
             result.add_check(
                 name="margin_projection",
                 passed=False,
@@ -219,6 +238,10 @@ class RiskChecker:
         max_value_pct = self._config.max_order_value_pct
 
         if value_pct >= max_value_pct:
+            logger.warning(
+                f"RiskChecker: order value {value_pct:.1%} of NLV >= "
+                f"{max_value_pct:.1%} for {order.symbol}"
+            )
             result.add_check(
                 name="order_value",
                 passed=False,

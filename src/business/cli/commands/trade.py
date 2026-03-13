@@ -49,7 +49,6 @@ from typing import Optional
 
 import click
 
-from src.business.trading.config.decision_config import DecisionConfig
 from src.business.trading.config.order_config import OrderConfig
 from src.business.trading.models.decision import AccountState, DecisionType
 from src.business.trading.models.order import OrderStatus
@@ -105,7 +104,6 @@ def status(verbose: bool, as_json: bool) -> None:
         pipeline = TradingPipeline()
 
         # 获取配置
-        decision_config = DecisionConfig.load()
         order_config = OrderConfig.load()
 
         # 基本状态
@@ -113,7 +111,7 @@ def status(verbose: bool, as_json: bool) -> None:
             "module": "trading",
             "mode": "paper_only",
             "execution_mode": order_config.execution_mode,
-            "default_broker": decision_config.default_broker,
+            "default_broker": "ibkr",
             "open_orders": len(pipeline.get_open_orders()),
             "timestamp": datetime.now().isoformat(),
         }

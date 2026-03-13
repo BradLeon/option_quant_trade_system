@@ -52,8 +52,10 @@ class MomentumMixedConfig:
     rebalance_threshold: float = 0.25
     min_rebalance_interval: int = 5
 
-    # LEAPS contract parameters
-    target_moneyness: float = 0.85
+    # LEAPS contract parameters (Delta-driven selection)
+    target_delta: float = 0.70
+    min_delta: float = 0.50
+    max_delta: float = 0.85
     target_dte: int = 252
     min_dte: int = 180
     max_dte: int = 400
@@ -464,7 +466,7 @@ class MomentumMixedStrategy(BacktestStrategy):
         selector = LeapsContractSelector()
         sel_config = LeapsSelectionConfig(
             target_dte=cfg.target_dte, min_dte=cfg.min_dte, max_dte=cfg.max_dte,
-            target_moneyness=cfg.target_moneyness,
+            target_delta=cfg.target_delta, min_delta=cfg.min_delta, max_delta=cfg.max_delta,
         )
         best = selector.select(
             symbol, spot, market.date, data_provider, sel_config, log_fn=self.log,

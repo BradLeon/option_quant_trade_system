@@ -1,26 +1,20 @@
 """
 Trading Pipeline - 交易流水线
 
-编排层，协调决策引擎、订单管理器和交易提供者。
+编排层，协调订单管理器、风控检查和交易提供者。
 
 Usage:
     pipeline = TradingPipeline()
-    decisions = pipeline.process_signals(screen_result, monitor_result)
-    results = pipeline.execute_decisions(decisions)
+    results = pipeline.execute_decisions(decisions, account_state)
 """
 
 import logging
 from datetime import datetime
 from typing import Any
 
-from src.business.monitoring.models import MonitorResult
-from src.business.monitoring.suggestions import PositionSuggestion, SuggestionGenerator
-from src.business.screening.models import ScreeningResult
-from src.business.trading.config.decision_config import DecisionConfig
 from src.business.trading.config.order_config import OrderConfig
 from src.business.trading.config.risk_config import RiskConfig
 from src.business.trading.daily_limits import DailyLimitsConfig, DailyTradeTracker
-from src.business.trading.decision.engine import DecisionEngine
 from src.business.trading.models.decision import AccountState, TradingDecision
 from src.business.trading.models.order import OrderRecord, OrderStatus
 from src.business.trading.order.manager import OrderManager
@@ -33,23 +27,20 @@ logger = logging.getLogger(__name__)
 class TradingPipeline:
     """交易流水线
 
-    协调整个交易流程:
-    1. 接收信号 (Screen/Monitor)
-    2. 生成决策 (DecisionEngine)
-    3. 验证订单 (OrderManager)
+    协调订单验证和执行:
+    1. 接收决策 (来自 V2 strategy 或其他来源)
+    2. 验证订单 (OrderManager + RiskChecker)
+    3. 每日限额检查 (DailyTradeTracker)
     4. 执行交易 (TradingProvider)
 
     Usage:
         pipeline = TradingPipeline()
         with pipeline:
-            decisions = pipeline.process_signals(screen_result, monitor_result, account_state)
-            if auto_execute:
-                results = pipeline.execute_decisions(decisions, account_state)
+            results = pipeline.execute_decisions(decisions, account_state)
     """
 
     def __init__(
         self,
-        decision_config: DecisionConfig | None = None,
         order_config: OrderConfig | None = None,
         risk_config: RiskConfig | None = None,
         daily_limits_config: DailyLimitsConfig | None = None,
@@ -58,18 +49,15 @@ class TradingPipeline:
         """初始化交易流水线
 
         Args:
-            decision_config: 决策配置
             order_config: 订单配置
             risk_config: 风控配置
             daily_limits_config: 每日交易限额配置
             trading_provider: 交易提供者 (可选，后续设置)
         """
-        self._decision_config = decision_config or DecisionConfig.load()
         self._order_config = order_config or OrderConfig.load()
         self._risk_config = risk_config or RiskConfig.load()
         self._daily_limits_config = daily_limits_config or DailyLimitsConfig.load()
 
-        self._decision_engine = DecisionEngine(self._decision_config)
         self._order_manager = OrderManager(
             config=self._order_config,
             risk_config=self._risk_config,
@@ -139,38 +127,6 @@ class TradingPipeline:
         """是否已连接"""
         return self._connected and self._provider is not None
 
-    def process_signals(
-        self,
-        screen_result: ScreeningResult | None,
-        monitor_result: MonitorResult | None,
-        account_state: AccountState,
-        suggestions: list[PositionSuggestion] | None = None,
-    ) -> list[TradingDecision]:
-        """处理信号生成决策
-
-        Args:
-            screen_result: 筛选结果
-            monitor_result: 监控结果
-            account_state: 账户状态
-            suggestions: 调整建议 (可选)
-
-        Returns:
-            解决冲突后的决策列表
-        """
-        # 如果没有提供 suggestions，从 monitor_result 生成
-        if suggestions is None and monitor_result is not None:
-            generator = SuggestionGenerator()
-            suggestions = generator.generate(monitor_result)
-
-        decisions = self._decision_engine.process_batch(
-            screen_result,
-            account_state,
-            suggestions,
-        )
-
-        logger.info(f"Generated {len(decisions)} decisions from signals")
-        return decisions
-
     def execute_decisions(
         self,
         decisions: list[TradingDecision],
@@ -207,9 +163,9 @@ class TradingPipeline:
                         decision, nlv, batch_quantities, batch_values
                     )
                     if skip_reason:
-                        logger.info(
-                            f"Skipping decision {decision.decision_id} "
-                            f"({decision.symbol}): {skip_reason}"
+                        logger.warning(
+                            f"DailyLimits: blocked {decision.symbol} "
+                            f"({decision.decision_type.value}): {skip_reason}"
                         )
                         continue
 
@@ -320,8 +276,8 @@ class TradingPipeline:
 
         # 过滤不可执行的决策
         if not self._is_executable_decision(decision):
-            logger.info(
-                f"Skipping non-executable decision: {decision.decision_id} "
+            logger.warning(
+                f"Pipeline: skipped non-executable decision "
                 f"(symbol={decision.symbol}, type={decision.decision_type.value}, qty={decision.quantity})"
             )
             return None

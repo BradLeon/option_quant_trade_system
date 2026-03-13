@@ -12,8 +12,6 @@ if TYPE_CHECKING:
     from src.business.config.monitoring_config import MonitoringConfig
     from src.business.screening.pipeline import ScreeningPipeline
     from src.business.monitoring.pipeline import MonitoringPipeline
-    from src.business.trading.decision.position_sizer import PositionSizer
-
 logger = logging.getLogger(__name__)
 
 
@@ -42,7 +40,7 @@ class BaseTradeStrategy(ABC):
         # 性能优化：缓存高频调用的管道实例
         self._screening_pipeline_instance: Optional["ScreeningPipeline"] = None
         self._monitoring_pipeline_instance: Optional["MonitoringPipeline"] = None
-        self._position_sizer_instance: Optional["PositionSizer"] = None
+        self._position_sizer_instance: Optional[Any] = None
 
         # evaluate_positions 中保存的持仓快照，供 filter_close_signals 使用
         self._last_positions: List[PositionData] = []
@@ -97,17 +95,12 @@ class BaseTradeStrategy(ABC):
 
         return MonitoringPipeline(config)
 
-    def build_position_sizer(self) -> "PositionSizer":
-        """构建仓位计算器。Override 可返回 PremiumRiskSizer 等买方策略用的 sizer。
-
-        Returns:
-            PositionSizer 或兼容接口的实例
-        """
-        from src.business.trading.decision.position_sizer import PositionSizer
-        from src.business.trading.config.decision_config import DecisionConfig
-
-        decision_config = DecisionConfig.load(strategy_name=self.name)
-        return PositionSizer(config=decision_config)
+    def build_position_sizer(self) -> Any:
+        """构建仓位计算器 — V1 组件已移除，此方法不再可用。"""
+        raise NotImplementedError(
+            "PositionSizer (V1) has been removed. "
+            "Use V2 strategy framework instead."
+        )
 
     # ==========================
     # 策略级 Hook — 细粒度定制

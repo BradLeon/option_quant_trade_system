@@ -207,6 +207,13 @@ def run(
         # provider first to free the IBKR connection, then connect
         # TradingPipeline to execute orders.
         if execute and result.decisions_count > 0:
+            # Show decisions before execution
+            for d in executor.last_decisions:
+                click.echo(
+                    f"  [exec] 待执行: {d.decision_type.value} {d.symbol} "
+                    f"qty={d.quantity} price={d.limit_price}"
+                )
+
             ibkr_provider.disconnect()
             click.echo("  [exec] 数据连接已释放，连接交易通道...")
             try:
@@ -217,6 +224,15 @@ def run(
                     dry_run=False,
                 )
                 result.orders = orders
+
+                # Show gap if some decisions were blocked
+                n_decisions = len(executor.last_decisions)
+                n_orders = len(orders)
+                if n_orders < n_decisions:
+                    click.echo(
+                        f"  [exec] {n_decisions - n_orders} 个决策被风控阻断，"
+                        f"使用 -v 查看详情"
+                    )
                 result.trace.record(
                     "execution", "ok", mode="LIVE",
                     orders=[

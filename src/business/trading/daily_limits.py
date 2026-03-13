@@ -84,23 +84,33 @@ class DailyLimitsConfig:
     def load(cls) -> "DailyLimitsConfig":
         """加载配置
 
-        优先级: 环境变量 > 默认值
+        优先级: 环境变量 > RiskConfig 默认值
         """
+        from src.business.trading.config.risk_config import RiskConfig
+
+        rc = RiskConfig.load()
         return cls(
-            enabled=_env_bool("DAILY_LIMITS_ENABLED", True),
+            enabled=_env_bool("DAILY_LIMITS_ENABLED", rc.daily_limits_enabled),
             max_open_quantity_per_underlying=_env_int(
-                "DAILY_LIMITS_MAX_OPEN_QUANTITY_PER_UNDERLYING", 5
+                "DAILY_LIMITS_MAX_OPEN_QUANTITY_PER_UNDERLYING",
+                rc.daily_max_open_qty_per_underlying,
             ),
             max_close_quantity_per_underlying=_env_int(
-                "DAILY_LIMITS_MAX_CLOSE_QUANTITY_PER_UNDERLYING", 5
+                "DAILY_LIMITS_MAX_CLOSE_QUANTITY_PER_UNDERLYING",
+                rc.daily_max_close_qty_per_underlying,
             ),
             max_roll_quantity_per_underlying=_env_int(
-                "DAILY_LIMITS_MAX_ROLL_QUANTITY_PER_UNDERLYING", 5
+                "DAILY_LIMITS_MAX_ROLL_QUANTITY_PER_UNDERLYING",
+                rc.daily_max_roll_qty_per_underlying,
             ),
             max_value_pct_per_underlying=_env_float(
-                "DAILY_LIMITS_MAX_VALUE_PCT_PER_UNDERLYING", 5.0
+                "DAILY_LIMITS_MAX_VALUE_PCT_PER_UNDERLYING",
+                rc.daily_max_value_pct_per_underlying,
             ),
-            max_total_value_pct=_env_float("DAILY_LIMITS_MAX_TOTAL_VALUE_PCT", 25.0),
+            max_total_value_pct=_env_float(
+                "DAILY_LIMITS_MAX_TOTAL_VALUE_PCT",
+                rc.daily_max_total_value_pct,
+            ),
             include_pending_orders=_env_bool(
                 "DAILY_LIMITS_INCLUDE_PENDING_ORDERS", True
             ),
@@ -522,7 +532,7 @@ class DailyTradeTracker:
             value_pct = (stats["value"] / nlv * 100) if nlv > 0 else 0.0
             summary[underlying] = {
                 "qty_used": int(stats["qty"]),
-                "qty_limit": self._config.max_quantity_per_underlying,
+                "qty_limit": self._config.max_open_quantity_per_underlying,
                 "value_used": stats["value"],
                 "value_limit_pct": self._config.max_value_pct_per_underlying,
                 "value_pct": value_pct,

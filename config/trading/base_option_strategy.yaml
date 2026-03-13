@@ -35,6 +35,19 @@ risk_limits:
   # Kelly Criterion
   kelly_fraction: 0.25              # 1/4 Kelly - 保守策略
 
+  # Signal-Level Limits (AccountRiskGuard)
+  max_positions: 20                 # 最大持仓数
+  min_cash_reserve_pct: 0.05        # 股票入场最低现金比例
+  min_available_margin: 10000       # 期权入场最低可用保证金
+
+  # Daily Limits (DailyTradeTracker)
+  daily_limits_enabled: true
+  daily_max_open_qty_per_underlying: 5
+  daily_max_close_qty_per_underlying: 5
+  daily_max_roll_qty_per_underlying: 5
+  daily_max_value_pct_per_underlying: 10.0  # 10% of NLV
+  daily_max_total_value_pct: 25.0           # 25% of NLV
+
 # ============================================================
 # 回测模式覆盖 (仅在 BACKTEST 模式下生效)
 # ============================================================
