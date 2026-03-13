@@ -154,11 +154,6 @@ classDiagram
         -_config : AccountRiskConfig
         +check(signals, portfolio, market) list~Signal~
     }
-    class VolTargetRiskGuard {
-        -_config : VolTargetRiskConfig
-        +check(signals, portfolio, market) list~Signal~
-    }
-
     %% ━━━ 转换 & 注册 ━━━
     class SignalConverter {
         +convert_to_trade_signals(signals, market, dp) list~TradeSignal~
@@ -245,8 +240,6 @@ classDiagram
     SmaComputer ..|> SignalComputer : implements
     MomentumVolTargetComputer ..|> SignalComputer : implements
     AccountRiskGuard ..|> RiskGuard : implements
-    VolTargetRiskGuard ..|> RiskGuard : implements
-
     %% 继承
     SmaStockStrategy --|> BacktestStrategy
     SmaLeapsStrategy --|> BacktestStrategy
@@ -305,7 +298,6 @@ flowchart TD
 
     subgraph 风控过滤["3️⃣ 风控链过滤"]
         RG_ACC["AccountRiskGuard<br/>持仓数 / 保证金 / 现金"]
-        RG_VOL["VolTargetRiskGuard<br/>VIX → 缩放 ENTRY 数量"]
     end
 
     subgraph 信号转换["4️⃣ 信号转换"]
@@ -684,7 +676,6 @@ bull_put = ComboInstrument(
 | `src/backtest/strategy/signals/sma.py` | SmaComputer (SMA 择时信号) |
 | `src/backtest/strategy/signals/momentum.py` | MomentumVolTargetComputer (动量 + vol target) |
 | `src/backtest/strategy/risk/account_risk.py` | AccountRiskGuard (账户级风控) |
-| `src/backtest/strategy/risk/vol_target_risk.py` | VolTargetRiskGuard (波动率目标风控) |
 | `src/backtest/strategy/signal_converter.py` | Signal → TradeSignal 桥接 |
 | `src/backtest/strategy/versions/sma_stock.py` | SMA + 股票策略 |
 | `src/backtest/strategy/versions/sma_leaps.py` | SMA + LEAPS Call 策略 |

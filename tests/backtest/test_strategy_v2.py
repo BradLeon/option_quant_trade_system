@@ -4,7 +4,7 @@ Tests cover:
 - Data models (Instrument, Signal, MarketSnapshot, PortfolioState)
 - Protocol & base class (BacktestStrategy)
 - Signal computers (SmaComputer, MomentumVolTargetComputer)
-- Risk guards (AccountRiskGuard, VolTargetRiskGuard)
+- Risk guards (AccountRiskGuard)
 - Signal converter
 - Strategy registry
 - Strategy implementations (SmaStock, SmaLeaps, MomentumMixed)
@@ -257,32 +257,6 @@ class TestAccountRiskGuard:
         result = guard.check([exit_sig], portfolio, market)
         assert len(result) == 1
 
-
-class TestVolTargetRiskGuard:
-    def test_scales_down_on_high_vix(self):
-        from src.backtest.strategy.risk.vol_target_risk import VolTargetRiskGuard, VolTargetRiskConfig
-
-        guard = VolTargetRiskGuard(VolTargetRiskConfig(vol_target=15.0))
-        market = MarketSnapshot(date=date(2026, 1, 15), prices={"SPY": 500.0}, vix=30.0)
-        portfolio = PortfolioState(date(2026, 1, 15), 1e6, 1e6, 0)
-
-        entry = Signal(SignalType.ENTRY, Instrument(InstrumentType.STOCK, "SPY"), 100, "buy")
-        result = guard.check([entry], portfolio, market)
-        assert len(result) == 1
-        # vol_scalar = 15/30 = 0.5, so 100 * 0.5 = 50
-        assert result[0].target_quantity == 50
-
-    def test_no_scaling_on_low_vix(self):
-        from src.backtest.strategy.risk.vol_target_risk import VolTargetRiskGuard, VolTargetRiskConfig
-
-        guard = VolTargetRiskGuard(VolTargetRiskConfig(vol_target=15.0))
-        market = MarketSnapshot(date=date(2026, 1, 15), prices={"SPY": 500.0}, vix=12.0)
-        portfolio = PortfolioState(date(2026, 1, 15), 1e6, 1e6, 0)
-
-        entry = Signal(SignalType.ENTRY, Instrument(InstrumentType.STOCK, "SPY"), 100, "buy")
-        result = guard.check([entry], portfolio, market)
-        assert len(result) == 1
-        assert result[0].target_quantity == 100  # No scaling
 
 
 # ============================================================
