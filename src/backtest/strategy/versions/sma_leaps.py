@@ -26,12 +26,9 @@ from src.backtest.strategy.models import (
 )
 from src.backtest.strategy.protocol import BacktestStrategy
 from src.backtest.strategy.signals.sma import SmaComparison, SmaComputer
+from src.strategy.leaps_selector import LeapsContractSelector, LeapsSelectionConfig
 
 logger = logging.getLogger(__name__)
-
-# Contract selection weights
-_W_DTE = 1.0
-_W_STRIKE = 2.0
 
 
 @dataclass
@@ -280,95 +277,14 @@ class SmaLeapsStrategy(BacktestStrategy):
     def _find_best_leaps(
         self, symbol: str, spot: float, current_date: date, data_provider: Any
     ) -> Optional[Any]:
-        """Select best-matching LEAPS Call from option chain."""
+        """Select best-matching LEAPS Call via LeapsContractSelector."""
         cfg = self._config
-        target_strike = spot * cfg.target_moneyness
 
-        chain = data_provider.get_option_chain(
-            underlying=symbol,
-            expiry_min_days=cfg.min_dte,
-            expiry_max_days=cfg.max_dte,
+        selector = LeapsContractSelector()
+        sel_config = LeapsSelectionConfig(
+            target_dte=cfg.target_dte, min_dte=cfg.min_dte, max_dte=cfg.max_dte,
+            target_moneyness=cfg.target_moneyness,
         )
-        if not chain or not chain.calls:
-            self.log(f"option_chain:{symbol}", "fail",
-                     reason="无CALL合约",
-                     dte_range=f"[{cfg.min_dte}-{cfg.max_dte}]")
-            return None
-
-        # Step 1: Pre-filter by DTE (cheap, no market data needed)
-        total = len(chain.calls)
-        prefiltered = []
-        reject_dte = 0
-        for call in chain.calls:
-            contract = call.contract
-            dte = (contract.expiry_date - current_date).days
-            if dte < cfg.min_dte or dte > cfg.max_dte:
-                reject_dte += 1
-                continue
-            prefiltered.append(call)
-
-        # Narrow by strike proximity (keep top 30 closest to target)
-        prefiltered.sort(key=lambda c: abs(c.contract.strike_price - target_strike))
-        shortlisted = prefiltered[:30]
-
-        if not shortlisted:
-            self.log(f"contract_select:{symbol}", "fail",
-                     total=total, passed=0,
-                     rejected_by={"dte": reject_dte},
-                     filters=f"DTE=[{cfg.min_dte}-{cfg.max_dte}] target_K={target_strike:.0f} moneyness={cfg.target_moneyness}")
-            return None
-
-        # Step 2: Fetch actual market data for shortlisted contracts
-        has_quotes_batch = hasattr(data_provider, 'get_option_quotes_batch')
-        if has_quotes_batch:
-            contracts_to_fetch = [c.contract for c in shortlisted]
-            quotes = data_provider.get_option_quotes_batch(
-                contracts_to_fetch, min_volume=0,
-            )
-            self.log(f"option_quotes:{symbol}", "info",
-                     prefiltered=len(prefiltered), shortlisted=len(shortlisted),
-                     quotes_returned=len(quotes))
-        else:
-            quotes = shortlisted
-
-        # Step 3: Select best contract from quotes with prices
-        best_score = -float("inf")
-        best = None
-        reject = {"no_price": 0, "no_delta": 0}
-
-        for call in quotes:
-            contract = call.contract
-            dte = (contract.expiry_date - current_date).days
-
-            mid = call.last_price
-            if call.bid is not None and call.ask is not None and call.ask > 0:
-                mid = (call.bid + call.ask) / 2
-            if mid is None or mid <= 0:
-                reject["no_price"] += 1
-                continue
-
-            delta = call.greeks.delta if call.greeks else None
-            if delta is None or delta <= 0:
-                reject["no_delta"] += 1
-                continue
-
-            dte_dev = abs(dte - cfg.target_dte) / cfg.target_dte if cfg.target_dte > 0 else 0
-            strike_dev = abs(contract.strike_price - target_strike) / target_strike if target_strike > 0 else 0
-            score = -_W_DTE * dte_dev - _W_STRIKE * strike_dev
-
-            if score > best_score:
-                best_score = score
-                best = call
-
-        if not best:
-            self.log(f"contract_select:{symbol}", "fail",
-                     total=total, passed=0,
-                     rejected_by={"dte": reject_dte, **{k: v for k, v in reject.items() if v > 0}},
-                     filters=f"DTE=[{cfg.min_dte}-{cfg.max_dte}] target_K={target_strike:.0f} moneyness={cfg.target_moneyness}")
-        else:
-            self.log(f"option_chain:{symbol}", "pass",
-                     total=total,
-                     rejected_by={"dte": reject_dte, **{k: v for k, v in reject.items() if v > 0}},
-                     target_strike=target_strike)
-
-        return best
+        return selector.select(
+            symbol, spot, current_date, data_provider, sel_config, log_fn=self.log,
+        )

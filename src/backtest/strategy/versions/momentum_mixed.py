@@ -30,12 +30,9 @@ from src.backtest.strategy.signals.momentum import (
     MomentumConfig,
     MomentumVolTargetComputer,
 )
+from src.strategy.leaps_selector import LeapsContractSelector, LeapsSelectionConfig
 
 logger = logging.getLogger(__name__)
-
-# Contract selection weights
-_W_DTE = 1.0
-_W_STRIKE = 2.0
 
 
 @dataclass
@@ -460,91 +457,19 @@ class MomentumMixedStrategy(BacktestStrategy):
         market: MarketSnapshot,
         data_provider: Any,
     ) -> Optional[Signal]:
-        """Find and size a LEAPS Call entry.
-        # TODO 把合约选择的逻辑注释。
-        """
+        """Find and size a LEAPS Call entry via LeapsContractSelector."""
         cfg = self._config
-        target_strike = spot * cfg.target_moneyness
 
-        chain = data_provider.get_option_chain(
-            underlying=symbol,
-            expiry_min_days=cfg.min_dte,
-            expiry_max_days=cfg.max_dte,
+        # ── Contract selection (delegated to LeapsContractSelector) ──
+        selector = LeapsContractSelector()
+        sel_config = LeapsSelectionConfig(
+            target_dte=cfg.target_dte, min_dte=cfg.min_dte, max_dte=cfg.max_dte,
+            target_moneyness=cfg.target_moneyness,
         )
-        if not chain or not chain.calls:
-            self.log(f"option_chain:{symbol}", "fail",
-                     reason="无CALL合约",
-                     dte_range=f"[{cfg.min_dte}-{cfg.max_dte}]")
-            return None
-
-        # Step 1: Pre-filter by DTE and strike (cheap, no market data needed)
-        total = len(chain.calls)
-        prefiltered = []
-        reject_dte = 0
-        for call in chain.calls:
-            contract = call.contract
-            dte = (contract.expiry_date - market.date).days
-            if dte < cfg.min_dte or dte > cfg.max_dte:
-                reject_dte += 1
-                continue
-            prefiltered.append(call)
-
-        # Further narrow by strike proximity (keep top 30 closest to target)
-        prefiltered.sort(key=lambda c: abs(c.contract.strike_price - target_strike))
-        shortlisted = prefiltered[:30]
-
-        if not shortlisted:
-            self.log(f"contract_select:{symbol}", "fail",
-                     total=total, passed=0,
-                     rejected_by={"dte": reject_dte},
-                     filters=f"DTE=[{cfg.min_dte}-{cfg.max_dte}] target_K={target_strike:.0f} target_DTE={cfg.target_dte}")
-            return None
-
-        # Step 2: Fetch actual market data for shortlisted contracts
-        # get_option_chain() returns contracts WITHOUT prices;
-        # get_option_quotes_batch() subscribes to IBKR market data.
-        has_quotes_batch = hasattr(data_provider, 'get_option_quotes_batch')
-        if has_quotes_batch:
-            contracts_to_fetch = [c.contract for c in shortlisted]
-            quotes = data_provider.get_option_quotes_batch(
-                contracts_to_fetch, min_volume=0,
-            )
-            self.log(f"option_quotes:{symbol}", "info",
-                     prefiltered=len(prefiltered), shortlisted=len(shortlisted),
-                     quotes_returned=len(quotes))
-        else:
-            # Backtest path: get_option_chain already has prices
-            quotes = shortlisted
-
-        # Step 3: Select best contract from quotes with prices
-        best = None
-        best_score = -float("inf")
-        reject = {"no_price": 0, "no_delta": 0}
-        for call in quotes:
-            contract = call.contract
-            dte = (contract.expiry_date - market.date).days
-            mid = call.last_price
-            if call.bid is not None and call.ask is not None and call.ask > 0:
-                mid = (call.bid + call.ask) / 2
-            if not mid or mid <= 0:
-                reject["no_price"] += 1
-                continue
-            delta = call.greeks.delta if call.greeks else None
-            if not delta or delta <= 0:
-                reject["no_delta"] += 1
-                continue
-            dte_dev = abs(dte - cfg.target_dte) / cfg.target_dte if cfg.target_dte > 0 else 0
-            strike_dev = abs(contract.strike_price - target_strike) / target_strike if target_strike > 0 else 0
-            score = -_W_DTE * dte_dev - _W_STRIKE * strike_dev
-            if score > best_score:
-                best_score = score
-                best = call
-
+        best = selector.select(
+            symbol, spot, market.date, data_provider, sel_config, log_fn=self.log,
+        )
         if not best:
-            self.log(f"contract_select:{symbol}", "fail",
-                     total=total, passed=0,
-                     rejected_by={"dte": reject_dte, **{k: v for k, v in reject.items() if v > 0}},
-                     filters=f"DTE=[{cfg.min_dte}-{cfg.max_dte}] target_K={target_strike:.0f} target_DTE={cfg.target_dte}")
             return None
 
         contract = best.contract
@@ -558,7 +483,7 @@ class MomentumMixedStrategy(BacktestStrategy):
         if delta <= 0 or mid <= 0:
             return None
 
-        # Size: use pending topup or compute from pct
+        # ── Sizing ──
         if self._pending_leaps_topup > 0:
             contracts = self._pending_leaps_topup
             self._pending_leaps_topup = 0
@@ -569,24 +494,16 @@ class MomentumMixedStrategy(BacktestStrategy):
         if cfg.use_stock_component:
             budget = cfg.max_capital_pct * self._last_nlv
         else:
-            # LeapsOnly mode: constrain by actual cash (not NLV)
             budget = cfg.max_capital_pct * self._last_cash
         if mid * lot_size > 0:
             max_contracts = math.floor(budget / (mid * lot_size))
             contracts = min(contracts, max_contracts)
 
         if contracts <= 0:
-            self.log(f"contract_select:{symbol}", "fail",
+            self.log(f"sizing:{symbol}", "fail",
                      reason="sizing=0",
                      budget=budget, mid=mid, lot_size=lot_size)
             return None
-
-        self.log(f"contract_select:{symbol}", "pass",
-                 total=total, passed=1,
-                 strike=contract.strike_price, dte=(contract.expiry_date - market.date).days,
-                 delta=delta, mid=mid, contracts=contracts,
-                 budget=budget,
-                 filters=f"DTE=[{cfg.min_dte}-{cfg.max_dte}] moneyness={cfg.target_moneyness}")
 
         dte = (contract.expiry_date - market.date).days
         instrument = Instrument(
