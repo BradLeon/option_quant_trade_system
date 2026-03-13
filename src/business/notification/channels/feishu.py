@@ -239,6 +239,7 @@ class FeishuChannel(NotificationChannel):
                 self.config.webhook_url,
                 json=message,
                 timeout=self.config.timeout,
+                proxies={"http": "", "https": ""},  # bypass env proxy
             )
 
             if response.status_code == 200:

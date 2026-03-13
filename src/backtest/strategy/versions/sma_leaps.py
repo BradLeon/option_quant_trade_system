@@ -295,17 +295,50 @@ class SmaLeapsStrategy(BacktestStrategy):
                      dte_range=f"[{cfg.min_dte}-{cfg.max_dte}]")
             return None
 
-        best_score = -float("inf")
-        best = None
+        # Step 1: Pre-filter by DTE (cheap, no market data needed)
         total = len(chain.calls)
-        reject = {"dte": 0, "no_price": 0, "no_delta": 0}
-
+        prefiltered = []
+        reject_dte = 0
         for call in chain.calls:
             contract = call.contract
             dte = (contract.expiry_date - current_date).days
             if dte < cfg.min_dte or dte > cfg.max_dte:
-                reject["dte"] += 1
+                reject_dte += 1
                 continue
+            prefiltered.append(call)
+
+        # Narrow by strike proximity (keep top 30 closest to target)
+        prefiltered.sort(key=lambda c: abs(c.contract.strike_price - target_strike))
+        shortlisted = prefiltered[:30]
+
+        if not shortlisted:
+            self.log(f"contract_select:{symbol}", "fail",
+                     total=total, passed=0,
+                     rejected_by={"dte": reject_dte},
+                     filters=f"DTE=[{cfg.min_dte}-{cfg.max_dte}] target_K={target_strike:.0f} moneyness={cfg.target_moneyness}")
+            return None
+
+        # Step 2: Fetch actual market data for shortlisted contracts
+        has_quotes_batch = hasattr(data_provider, 'get_option_quotes_batch')
+        if has_quotes_batch:
+            contracts_to_fetch = [c.contract for c in shortlisted]
+            quotes = data_provider.get_option_quotes_batch(
+                contracts_to_fetch, min_volume=0,
+            )
+            self.log(f"option_quotes:{symbol}", "info",
+                     prefiltered=len(prefiltered), shortlisted=len(shortlisted),
+                     quotes_returned=len(quotes))
+        else:
+            quotes = shortlisted
+
+        # Step 3: Select best contract from quotes with prices
+        best_score = -float("inf")
+        best = None
+        reject = {"no_price": 0, "no_delta": 0}
+
+        for call in quotes:
+            contract = call.contract
+            dte = (contract.expiry_date - current_date).days
 
             mid = call.last_price
             if call.bid is not None and call.ask is not None and call.ask > 0:
@@ -330,12 +363,12 @@ class SmaLeapsStrategy(BacktestStrategy):
         if not best:
             self.log(f"contract_select:{symbol}", "fail",
                      total=total, passed=0,
-                     rejected_by={k: v for k, v in reject.items() if v > 0},
+                     rejected_by={"dte": reject_dte, **{k: v for k, v in reject.items() if v > 0}},
                      filters=f"DTE=[{cfg.min_dte}-{cfg.max_dte}] target_K={target_strike:.0f} moneyness={cfg.target_moneyness}")
         else:
             self.log(f"option_chain:{symbol}", "pass",
                      total=total,
-                     rejected_by={k: v for k, v in reject.items() if v > 0},
+                     rejected_by={"dte": reject_dte, **{k: v for k, v in reject.items() if v > 0}},
                      target_strike=target_strike)
 
         return best
