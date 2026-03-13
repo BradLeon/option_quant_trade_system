@@ -17,9 +17,9 @@ if [ -f "$HOME/.zshrc" ]; then
 fi
 
 # 确保代理设置（如果 .zshrc 没有设置）
-export HTTP_PROXY="${HTTP_PROXY:-http://127.0.0.1:33210}"
-export HTTPS_PROXY="${HTTPS_PROXY:-http://127.0.0.1:33210}"
-export ALL_PROXY="${ALL_PROXY:-http://127.0.0.1:33210}"
+export HTTP_PROXY="${HTTP_PROXY:-http://127.0.0.1:7897}"
+export HTTPS_PROXY="${HTTPS_PROXY:-http://127.0.0.1:7897}"
+export ALL_PROXY="${ALL_PROXY:-http://127.0.0.1:7897}"
 
 # 确保 uv 在 PATH 中
 export PATH="$HOME/.local/bin:$PATH"

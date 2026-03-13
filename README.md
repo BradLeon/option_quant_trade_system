@@ -59,8 +59,8 @@ FUTU_PORT=11111
 # 无需配置环境变量，默认连接 localhost:25503
 
 # 代理（Yahoo Finance 需要）
-HTTP_PROXY=http://127.0.0.1:33210
-HTTPS_PROXY=http://127.0.0.1:33210
+HTTP_PROXY=http://127.0.0.1:7897
+HTTPS_PROXY=http://127.0.0.1:7897
 
 # 可选
 SUPABASE_URL=your-project-url
@@ -598,8 +598,8 @@ cp ~/IBC/resources/config.ini ~/IBC/config.ini  # 编辑填入账户凭据
 SHELL=/bin/zsh
 PATH=/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin
 PROJECT_DIR=/path/to/option_quant_trade_system
-HTTP_PROXY=http://127.0.0.1:33210
-HTTPS_PROXY=http://127.0.0.1:33210
+HTTP_PROXY=http://127.0.0.1:7897
+HTTPS_PROXY=http://127.0.0.1:7897
 
 # Dashboard 持仓报告: 北京时间 9:30, 16:30, 22:30, 周一到周五
 30 9,16,22 * * 1-5 $PROJECT_DIR/scripts/ensure_tws.sh paper && cd $PROJECT_DIR && uv run optrade dashboard -a paper --push >> logs/dashboard.log 2>&1

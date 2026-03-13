@@ -1212,7 +1212,7 @@ lsof -i:7497
 unset http_proxy https_proxy
 
 # 或设置正确的代理
-export HTTP_PROXY="http://127.0.0.1:33210"
+export HTTP_PROXY="http://127.0.0.1:7897"
 ```
 
 ---
