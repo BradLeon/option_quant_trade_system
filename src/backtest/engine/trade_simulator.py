@@ -397,47 +397,58 @@ class CommissionModel:
 
 
 # AlertType → CloseReasonType 确定性映射
+# Keys are AlertType.value strings (== the enum values).
+# When adding a new AlertType, add its mapping here too.
+from src.strategy.models import AlertType as _AT
+
 ALERT_TO_CLOSE_REASON: dict[str, CloseReasonType] = {
     # 止盈
-    "profit_target": CloseReasonType.PROFIT_TARGET,
-    "dte_profitable": CloseReasonType.PROFIT_TARGET,
+    _AT.PROFIT_TARGET: CloseReasonType.PROFIT_TARGET,
+    _AT.DTE_PROFITABLE: CloseReasonType.PROFIT_TARGET,
     # Delta 止损
-    "delta_change": CloseReasonType.STOP_LOSS_DELTA,
+    _AT.DELTA_CHANGE: CloseReasonType.STOP_LOSS_DELTA,
     # OTM 止损
-    "otm_pct": CloseReasonType.STOP_LOSS_OTM,
-    "moneyness": CloseReasonType.STOP_LOSS_OTM,
+    _AT.OTM_PCT: CloseReasonType.STOP_LOSS_OTM,
+    _AT.MONEYNESS: CloseReasonType.STOP_LOSS_OTM,
     # 通用止损
-    "stop_loss": CloseReasonType.STOP_LOSS,
-    "pnl_target": CloseReasonType.STOP_LOSS,
-    "gamma_risk_pct": CloseReasonType.STOP_LOSS,
-    "gamma_risk": CloseReasonType.STOP_LOSS,
-    "gamma_near_expiry": CloseReasonType.STOP_LOSS,
+    _AT.STOP_LOSS: CloseReasonType.STOP_LOSS,
+    _AT.PNL_TARGET: CloseReasonType.STOP_LOSS,
+    _AT.GAMMA_RISK_PCT: CloseReasonType.STOP_LOSS,
+    _AT.GAMMA_RISK: CloseReasonType.STOP_LOSS,
+    _AT.GAMMA_NEAR_EXPIRY: CloseReasonType.STOP_LOSS,
     # Theta/TGR/ROC 相关退出
-    "position_tgr": CloseReasonType.TIME_EXIT,
-    "tgr_low": CloseReasonType.TIME_EXIT,
-    "expected_roc_low": CloseReasonType.TIME_EXIT,
-    "roc_low": CloseReasonType.TIME_EXIT,
+    _AT.POSITION_TGR: CloseReasonType.TIME_EXIT,
+    _AT.TGR_LOW: CloseReasonType.TIME_EXIT,
+    _AT.EXPECTED_ROC_LOW: CloseReasonType.TIME_EXIT,
+    _AT.ROC_LOW: CloseReasonType.TIME_EXIT,
     # DTE 到期退出
-    "dte_warning": CloseReasonType.TIME_EXIT,
+    _AT.DTE_WARNING: CloseReasonType.TIME_EXIT,
     # 胜率 / IV/HV
-    "win_prob_low": CloseReasonType.MANUAL_CLOSE,
-    "position_iv_hv": CloseReasonType.MANUAL_CLOSE,
-    "iv_hv_change": CloseReasonType.MANUAL_CLOSE,
+    _AT.WIN_PROB_LOW: CloseReasonType.MANUAL_CLOSE,
+    _AT.POSITION_IV_HV: CloseReasonType.MANUAL_CLOSE,
+    _AT.IV_HV_CHANGE: CloseReasonType.MANUAL_CLOSE,
     # Portfolio 级
-    "delta_exposure": CloseReasonType.STOP_LOSS,
-    "gamma_exposure": CloseReasonType.STOP_LOSS,
-    "vega_exposure": CloseReasonType.STOP_LOSS,
-    "theta_exposure": CloseReasonType.STOP_LOSS,
-    "concentration": CloseReasonType.MANUAL_CLOSE,
+    _AT.DELTA_EXPOSURE: CloseReasonType.STOP_LOSS,
+    _AT.GAMMA_EXPOSURE: CloseReasonType.STOP_LOSS,
+    _AT.VEGA_EXPOSURE: CloseReasonType.STOP_LOSS,
+    _AT.THETA_EXPOSURE: CloseReasonType.STOP_LOSS,
+    _AT.CONCENTRATION: CloseReasonType.MANUAL_CLOSE,
     # Capital 级
-    "margin_utilization": CloseReasonType.STOP_LOSS,
-    "cash_ratio": CloseReasonType.STOP_LOSS,
-    "gross_leverage": CloseReasonType.STOP_LOSS,
-    "stress_test_loss": CloseReasonType.STOP_LOSS,
+    _AT.MARGIN_UTILIZATION: CloseReasonType.STOP_LOSS,
+    _AT.CASH_RATIO: CloseReasonType.STOP_LOSS,
+    _AT.GROSS_LEVERAGE: CloseReasonType.STOP_LOSS,
+    _AT.STRESS_TEST_LOSS: CloseReasonType.STOP_LOSS,
     # LEAPS 策略专用
-    "roll_dte": CloseReasonType.ROLL,
-    "sma_exit": CloseReasonType.MANUAL_CLOSE,
-    "leverage_rebalance": CloseReasonType.MANUAL_CLOSE,
+    _AT.ROLL_DTE: CloseReasonType.ROLL,
+    _AT.SMA_EXIT: CloseReasonType.MANUAL_CLOSE,
+    _AT.LEVERAGE_REBALANCE: CloseReasonType.MANUAL_CLOSE,
+    _AT.VEGA_GUARD: CloseReasonType.STOP_LOSS,
+    _AT.VOLTGT_EXIT: CloseReasonType.MANUAL_CLOSE,
+    _AT.REBALANCE: CloseReasonType.MANUAL_CLOSE,
+    # Spread 策略
+    _AT.SPREAD_CLOSE: CloseReasonType.MANUAL_CLOSE,
+    # Short options
+    _AT.SHORT_PUT_EXIT: CloseReasonType.MANUAL_CLOSE,
 }
 
 
@@ -925,6 +936,59 @@ class TradeSimulator:
         )
 
         return execution
+
+    def execute_combo(
+        self,
+        legs: list[dict],
+        trade_date: date,
+        reason: str = "combo_open",
+        action: str = "open",
+    ) -> list[TradeExecution]:
+        """Execute a multi-leg combo order (e.g., vertical spread).
+
+        Each leg is executed individually with its own slippage/commission,
+        but all legs share the same combo reason for tracking.
+
+        Args:
+            legs: List of leg specs, each a dict with keys:
+                - symbol: str
+                - underlying: str
+                - option_type: OptionType
+                - strike: float
+                - expiration: date
+                - quantity: int (signed: negative=sell, positive=buy)
+                - mid_price: float
+                - lot_size: int (optional, defaults to 100)
+            trade_date: Trade date for all legs.
+            reason: Trade reason.
+            action: "open" or "close".
+
+        Returns:
+            List of TradeExecution objects, one per leg.
+        """
+        executions = []
+        for leg in legs:
+            lot_size = leg.get("lot_size", self._lot_size)
+            execution = self.execute_open(
+                symbol=leg["symbol"],
+                underlying=leg["underlying"],
+                option_type=leg["option_type"],
+                strike=leg["strike"],
+                expiration=leg["expiration"],
+                quantity=leg["quantity"],
+                mid_price=leg["mid_price"],
+                trade_date=trade_date,
+                reason=reason,
+                action=action,
+                lot_size=lot_size,
+            )
+            executions.append(execution)
+
+        logger.debug(
+            f"Executed COMBO ({len(legs)} legs): "
+            f"net_amount={sum(e.net_amount for e in executions):.2f}"
+        )
+        return executions
 
     def get_total_slippage(self) -> float:
         """获取总滑点损失"""

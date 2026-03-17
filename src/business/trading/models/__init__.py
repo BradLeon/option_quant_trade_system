@@ -1,13 +1,5 @@
-"""Trading Models - 交易模块数据模型"""
+"""Trading Models"""
 
-from src.business.trading.models.decision import (
-    AccountState,
-    DecisionPriority,
-    DecisionSource,
-    DecisionType,
-    PositionContext,
-    TradingDecision,
-)
 from src.business.trading.models.order import (
     AssetClass,
     OrderFill,
@@ -27,8 +19,18 @@ from src.business.trading.models.trading import (
     TradingResult,
 )
 
+# Backward compat — decision models still importable
+from src.business.trading.models.decision import (  # noqa: F401
+    AccountState,
+    DecisionPriority,
+    DecisionSource,
+    DecisionType,
+    PositionContext,
+    TradingDecision,
+)
+
 __all__ = [
-    # Decision models
+    # Decision models (backward compat)
     "DecisionType",
     "DecisionSource",
     "DecisionPriority",

@@ -326,9 +326,11 @@ class BacktestPipeline:
     def _create_data_provider(self):
         """Create the appropriate data provider.
 
-        If the strategy config has `leaps_config.use_synthetic: true`,
-        wraps DuckDBProvider with SyntheticLeapsProvider to generate
-        B-S synthetic option chains instead of reading from parquet.
+        Priority:
+        1. SyntheticLeapsProvider — when strategy declares requires_synthetic_data
+        2. SyntheticOptionFallbackProvider — when config.use_synthetic_fallback=True
+           (uses real data when available, BSM synthetic when missing)
+        3. Plain DuckDBProvider — default
         """
         from src.backtest.data.duckdb_provider import DuckDBProvider
 
@@ -340,16 +342,37 @@ class BacktestPipeline:
             logger.info("Using SyntheticLeapsProvider for LEAPS backtest")
             return SyntheticLeapsProvider(base_provider)
 
+        if getattr(self.config, "use_synthetic_fallback", False):
+            from src.backtest.data.synthetic_option_provider import SyntheticOptionFallbackProvider
+
+            logger.info("Using SyntheticOptionFallbackProvider (BSM fallback when real data missing)")
+            return SyntheticOptionFallbackProvider(base_provider)
+
         return base_provider
 
     def _is_synthetic_strategy(self) -> bool:
-        """Check if the strategy YAML config has use_synthetic: true."""
+        """Check if the strategy needs SyntheticLeapsProvider.
+
+        Two detection paths:
+        1. V2 strategy: check requires_synthetic_data property on the strategy class
+        2. Legacy strategy: check YAML config for leaps_config.use_synthetic: true
+        """
         import yaml
 
         strategy_version = getattr(self.config, "strategy_version", "")
         if not strategy_version:
             return False
 
+        # Path 1: V2 strategy declares requires_synthetic_data
+        try:
+            from src.strategy.registry import BacktestStrategyRegistry
+            strategy = BacktestStrategyRegistry.create(strategy_version)
+            if getattr(strategy, "requires_synthetic_data", False):
+                return True
+        except (ValueError, Exception):
+            pass
+
+        # Path 2: Legacy YAML config check
         try:
             config_dir = Path(__file__).parent.parent.parent / "config" / "screening"
             config_path = config_dir / f"{strategy_version}.yaml"

@@ -1,22 +1,11 @@
-"""
-Trading Module - 自动化交易模块
+"""Trading Module - V2 交易模块
 
-实现信号到订单的闭环:
-- Decision Engine: 信号接收、账户分析、仓位计算、冲突解决
-- Order Manager: 订单生成、风控验证、执行跟踪、持久化
-- Trading Provider: 统一的券商交易接口 (PAPER TRADING ONLY)
+Signal → RiskGuard chain → SignalOrderBuilder → OrderRequest
+  → OrderValidator → TradingProvider → OrderRecord
 
 ⚠️  CRITICAL: 本模块仅支持 Paper Trading (模拟账户)
 """
 
-from src.business.trading.models.decision import (
-    AccountState,
-    DecisionPriority,
-    DecisionSource,
-    DecisionType,
-    PositionContext,
-    TradingDecision,
-)
 from src.business.trading.models.order import (
     AssetClass,
     OrderFill,
@@ -36,14 +25,17 @@ from src.business.trading.models.trading import (
     TradingResult,
 )
 
+# Backward compat — decision models still importable from here
+from src.business.trading.models.decision import (  # noqa: F401
+    AccountState,
+    DecisionPriority,
+    DecisionSource,
+    DecisionType,
+    PositionContext,
+    TradingDecision,
+)
+
 __all__ = [
-    # Decision models
-    "DecisionType",
-    "DecisionSource",
-    "DecisionPriority",
-    "AccountState",
-    "PositionContext",
-    "TradingDecision",
     # Order models
     "OrderSide",
     "OrderType",
@@ -60,4 +52,11 @@ __all__ = [
     "TradingResult",
     "OrderQueryResult",
     "CancelResult",
+    # Backward compat — decision models
+    "DecisionType",
+    "DecisionSource",
+    "DecisionPriority",
+    "AccountState",
+    "PositionContext",
+    "TradingDecision",
 ]

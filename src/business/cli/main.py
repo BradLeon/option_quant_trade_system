@@ -6,11 +6,9 @@ CLI Main Entry Point - 命令行主入口
 
 import click
 
-from src.business.cli.commands.screen import screen
-from src.business.cli.commands.monitor import monitor
 from src.business.cli.commands.notify import notify
 from src.business.cli.commands.dashboard import dashboard
-from src.business.cli.commands.trade import trade
+from src.business.cli.commands.strategy import strategy
 
 
 @click.group()
@@ -18,17 +16,15 @@ from src.business.cli.commands.trade import trade
 def cli() -> None:
     """期权量化交易系统 - 业务层命令行工具
 
-    提供开仓筛选、持仓监控、通知推送、自动化交易等功能。
+    V2 架构: Signal → RiskGuard → OrderRequest → TradingProvider
     """
     pass
 
 
 # 注册子命令
-cli.add_command(screen)
-cli.add_command(monitor)
 cli.add_command(notify)
 cli.add_command(dashboard)
-cli.add_command(trade)
+cli.add_command(strategy)
 
 
 if __name__ == "__main__":

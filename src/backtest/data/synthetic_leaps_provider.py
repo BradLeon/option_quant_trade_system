@@ -91,8 +91,11 @@ class SyntheticLeapsProvider:
     def get_option_quote(self, symbol: str):
         return self._base.get_option_quote(symbol)
 
-    def get_option_quotes_batch(self, contracts, min_volume=None):
-        return self._base.get_option_quotes_batch(contracts, min_volume)
+    # NOTE: get_option_quotes_batch intentionally NOT delegated.
+    # LeapsContractSelector checks hasattr(dp, 'get_option_quotes_batch')
+    # to decide whether to fetch quotes separately. For synthetic data,
+    # get_option_chain() already returns full quotes (price, greeks, bid/ask),
+    # so the selector should use the chain directly (the `else` branch).
 
     def get_fundamental(self, symbol: str):
         return self._base.get_fundamental(symbol)

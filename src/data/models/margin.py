@@ -134,3 +134,37 @@ def calc_reg_t_margin_short_call(
     option1 = 0.20 * underlying_price - otm_amount
     option2 = 0.10 * underlying_price  # Note: 10% of underlying for calls
     return premium + max(option1, option2)
+
+
+def calc_spread_margin(
+    short_strike: float,
+    long_strike: float,
+    net_premium: float,
+    lot_size: int = 100,
+    quantity: int = 1,
+) -> float:
+    """Calculate margin for a vertical spread (bull put or bear call).
+
+    For defined-risk spreads, margin = max_loss = |strike_diff| × lot_size × qty - net_premium_received.
+    IBKR typically requires: max(strike_diff × lot_size × qty - net_credit, 0).
+
+    Args:
+        short_strike: Strike price of the short leg.
+        long_strike: Strike price of the long leg.
+        net_premium: Net premium received (positive = credit spread).
+        lot_size: Contract multiplier (default 100).
+        quantity: Number of spread contracts (absolute value used).
+
+    Returns:
+        Total margin required for the spread.
+    """
+    strike_diff = abs(short_strike - long_strike)
+    max_loss = strike_diff * lot_size * abs(quantity)
+    # Credit spread: margin = max_loss - premium received
+    # Debit spread: margin = premium paid (no additional margin)
+    if net_premium > 0:
+        # Credit spread
+        return max(max_loss - net_premium * lot_size * abs(quantity), 0.0)
+    else:
+        # Debit spread — no margin beyond what was paid
+        return 0.0
