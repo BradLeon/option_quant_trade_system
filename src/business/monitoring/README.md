@@ -1,5 +1,9 @@
 # 期权监控系统用户手册
 
+> **V2 说明**：此模块属于 V1 架构，当前仅被回测引擎的旧策略路径 (`short_options`) 和 Dashboard 使用。
+> V2 策略将持仓监控逻辑内置于 `compute_exit_signals()` 方法 + `RiskGuard` 风控链中。
+> 参见 `src/strategy/` 和 `src/backtest/strategy/` 了解 V2 策略架构。
+
 本文档介绍期权量化交易系统的监控体系，包括各级别指标、阈值设定、预警机制和建议操作。
 
 ## 目录

@@ -76,14 +76,8 @@ logger = logging.getLogger(__name__)
 @click.option(
     "--strategy-version",
     "-sv",
-    default="short_options_with_expire_itm_stock_trade",
-    help="具体的策略架构版本 (例如: short_options_with_expire_itm_stock_trade, short_options_without_expire_itm_stock_trade) (默认: short_options_with_expire_itm_stock_trade)",
-)
-@click.option(
-    "--max-positions",
-    default=20,
-    type=int,
-    help="最大持仓数 (默认: 20)",
+    default="short_put_with_assignment",
+    help="策略版本 (例如: short_put_with_assignment, short_put_without_assignment, bull_put_spread) (默认: short_put_with_assignment)",
 )
 @click.option(
     "--skip-download",
@@ -112,6 +106,17 @@ logger = logging.getLogger(__name__)
     help="仅检查数据缺口，不运行回测",
 )
 @click.option(
+    "--monthly-withdrawal",
+    default=0.0,
+    type=float,
+    help="每月出金金额 (默认: 0, 不出金)",
+)
+@click.option(
+    "--synthetic-fallback",
+    is_flag=True,
+    help="期权链数据不存在时自动使用 BSM 合成数据（扩展回测窗口）",
+)
+@click.option(
     "--verbose",
     "-v",
     is_flag=True,
@@ -133,12 +138,13 @@ def run(
     capital: int,
     strategy: str,
     strategy_version: str,
-    max_positions: int,
     skip_download: bool,
     skip_market_check: bool,
     no_report: bool,
     report_dir: str,
     check_only: bool,
+    monthly_withdrawal: float,
+    synthetic_fallback: bool,
     verbose: bool,
     benchmark: str,
 ) -> None:
@@ -190,7 +196,7 @@ def run(
     else:  # all
         strategy_types = [StrategyType.SHORT_PUT, StrategyType.COVERED_CALL]
 
-    # 创建配置
+    # 创建配置 (风控参数从 RiskConfig YAML 加载，按 strategy_version 查找覆盖)
     from src.backtest.config.backtest_config import BacktestConfig
 
     config = BacktestConfig(
@@ -201,11 +207,12 @@ def run(
         symbols=list(symbols),
         data_dir=str(data_path),
         initial_capital=capital,
-        max_positions=max_positions,
         strategy_types=strategy_types,
         strategy_version=strategy_version,
         skip_market_check=skip_market_check,
         benchmark_symbol=benchmark.upper(),
+        monthly_withdrawal=monthly_withdrawal,
+        use_synthetic_fallback=synthetic_fallback,
     )
 
     # 创建 Pipeline
@@ -247,6 +254,12 @@ def run(
             click.echo(f"Sharpe Ratio: {metrics.sharpe_ratio:.2f}")
         if metrics.win_rate:
             click.echo(f"Win Rate: {metrics.win_rate:.1%}")
+
+        if monthly_withdrawal > 0 and metrics.total_withdrawals > 0:
+            click.echo(f"Monthly Withdrawal: ${monthly_withdrawal:,.0f}")
+            click.echo(f"Total Withdrawals: ${metrics.total_withdrawals:,.0f}")
+            if metrics.withdrawal_adjusted_return_pct is not None:
+                click.echo(f"Withdrawal-Adjusted Return: {metrics.withdrawal_adjusted_return_pct:.2%}")
 
         if result.benchmark_result:
             br = result.benchmark_result

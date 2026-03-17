@@ -23,6 +23,7 @@ from src.business.notification.channels.feishu import FeishuChannel
 from src.business.notification.formatters.dashboard_formatter import DashboardFormatter
 from src.business.notification.formatters.monitoring_formatter import MonitoringFormatter
 from src.business.notification.formatters.screening_formatter import ScreeningFormatter
+from src.business.notification.formatters.strategy_formatter import StrategyFormatter
 from src.business.notification.formatters.trading_formatter import TradingFormatter
 from src.business.screening.models import ScreeningResult
 from src.business.trading.models.decision import TradingDecision
@@ -61,6 +62,7 @@ class MessageDispatcher:
         self.monitoring_formatter = MonitoringFormatter(templates)
         self.dashboard_formatter = DashboardFormatter(templates)
         self.trading_formatter = TradingFormatter(templates)
+        self.strategy_formatter = StrategyFormatter(templates)
 
         # 消息去重缓存
         self._sent_messages: dict[str, datetime] = {}
@@ -498,6 +500,66 @@ class MessageDispatcher:
             command=command,
             market=market,
             strategy=strategy,
+        )
+
+        # 检查去重
+        if not force and self._is_duplicate(card_data):
+            return SendResult(
+                status=SendStatus.RATE_LIMITED,
+                error="Duplicate message",
+            )
+
+        # 发送消息
+        send_result = self.channel.send_card(card_data)
+
+        if send_result.is_success:
+            self._mark_sent(card_data)
+
+        return send_result
+
+    def send_strategy_result(
+        self,
+        result: Any,
+        strategy_name: str,
+        symbols: list[str],
+        account: str = "paper",
+        dry_run: bool = True,
+        force: bool = False,
+    ) -> SendResult:
+        """发送 V2 策略执行结果
+
+        Args:
+            result: LiveExecutionResult
+            strategy_name: 策略名称
+            symbols: 标的列表
+            account: 账户类型
+            dry_run: 是否为 dry-run 模式
+            force: 是否强制发送（忽略限制）
+
+        Returns:
+            SendResult
+        """
+        # 检查限制
+        if not force:
+            if self._is_silent_period():
+                return SendResult(
+                    status=SendStatus.SILENCED,
+                    error="In silent period",
+                )
+
+            if self._is_rate_limited():
+                return SendResult(
+                    status=SendStatus.RATE_LIMITED,
+                    error="Rate limited",
+                )
+
+        # 格式化消息
+        card_data = self.strategy_formatter.format_strategy_result(
+            result,
+            strategy_name=strategy_name,
+            symbols=symbols,
+            account=account,
+            dry_run=dry_run,
         )
 
         # 检查去重

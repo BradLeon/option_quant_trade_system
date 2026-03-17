@@ -1527,7 +1527,9 @@ class IBKRProvider(DataProvider, AccountProvider):
             contract = Contract()
             contract.symbol = ibkr_symbol
             contract.secType = "IND"
-            contract.exchange = "CBOE" if "VIX" in ibkr_symbol else "SMART"
+            # VIX, TNX, and other CBOE indices need CBOE exchange
+            cboe_indices = {"VIX", "TNX", "TYX", "IRX", "VXN"}
+            contract.exchange = "CBOE" if ibkr_symbol in cboe_indices else "SMART"
             contract.currency = "USD"
 
             self._ensure_connected()

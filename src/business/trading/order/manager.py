@@ -1,12 +1,6 @@
-"""
-Order Manager - 订单管理器
+"""Order Manager — order lifecycle management.
 
-处理订单生命周期:
-- 从决策创建订单
-- 风控验证
-- 提交执行
-- 状态跟踪
-- 持久化存储
+Handles: create → validate → submit → track → persist.
 """
 
 import logging
@@ -15,7 +9,6 @@ from typing import Any
 
 from src.business.trading.config.order_config import OrderConfig
 from src.business.trading.config.risk_config import RiskConfig
-from src.business.trading.models.decision import AccountState, DecisionType, TradingDecision
 from src.business.trading.models.order import (
     OrderRecord,
     OrderRequest,
@@ -23,23 +16,20 @@ from src.business.trading.models.order import (
     RiskCheckResult,
 )
 from src.business.trading.models.trading import TradingResult
-from src.business.trading.order.generator import OrderGenerator
-from src.business.trading.order.risk_checker import RiskChecker
+from src.business.trading.order.order_validator import OrderValidator
 from src.business.trading.order.store import OrderStore
 from src.business.trading.provider.base import TradingProvider
+from src.strategy.models import PortfolioState
 
 logger = logging.getLogger(__name__)
 
 
 class OrderManager:
-    """订单管理器
-
-    处理完整的订单生命周期。
+    """Order lifecycle manager.
 
     Usage:
-        manager = OrderManager(trading_provider)
-        order = manager.create_order(decision)
-        result = manager.validate_order(order)
+        manager = OrderManager()
+        result = manager.validate_order(order, portfolio)
         if result.passed:
             record = manager.submit_order(order)
     """
@@ -50,88 +40,35 @@ class OrderManager:
         config: OrderConfig | None = None,
         risk_config: RiskConfig | None = None,
         order_store: OrderStore | None = None,
-        risk_checker: RiskChecker | None = None,
-        order_generator: OrderGenerator | None = None,
+        order_validator: OrderValidator | None = None,
     ) -> None:
-        """初始化订单管理器
-
-        Args:
-            trading_provider: 交易提供者
-            config: 订单配置
-            risk_config: 风控配置
-            order_store: 订单存储
-            risk_checker: 风控检查器
-            order_generator: 订单生成器
-        """
         self._config = config or OrderConfig.load()
         self._risk_config = risk_config or RiskConfig.load()
 
         self._provider = trading_provider
         self._store = order_store or OrderStore(self._config)
-        self._risk_checker = risk_checker or RiskChecker(self._risk_config)
-        self._generator = order_generator or OrderGenerator(self._config)
+        self._validator = order_validator or OrderValidator(self._risk_config)
 
-        # 通知器 (延迟导入以避免循环依赖)
+        # Lazy-loaded notifier
         self._notifier: Any = None
 
     def set_trading_provider(self, provider: TradingProvider) -> None:
-        """设置交易提供者"""
         self._provider = provider
-
-    def create_order(self, decision: TradingDecision) -> OrderRequest:
-        """从决策创建订单
-
-        对于 ROLL 类型决策，请使用 create_roll_orders()。
-
-        Args:
-            decision: 交易决策 (非 ROLL 类型)
-
-        Returns:
-            OrderRequest: 订单请求
-
-        Raises:
-            ValueError: 如果传入 ROLL 决策
-        """
-        if decision.decision_type == DecisionType.ROLL:
-            raise ValueError(
-                "ROLL decision requires create_roll_orders() to generate two orders. "
-                "Use create_roll_orders() instead."
-            )
-        return self._generator.generate(decision)
-
-    def create_roll_orders(self, decision: TradingDecision) -> list[OrderRequest]:
-        """从 ROLL 决策创建两个订单 (平仓 + 开仓)
-
-        展期操作 = 平仓当前合约 + 开仓新合约
-
-        Args:
-            decision: ROLL 类型的交易决策
-
-        Returns:
-            [close_order, open_order]: 平仓订单在前，开仓订单在后
-
-        Raises:
-            ValueError: 决策类型不是 ROLL 或缺少展期参数
-        """
-        return self._generator.generate_roll(decision)
 
     def validate_order(
         self,
         order: OrderRequest,
-        account_state: AccountState | None = None,
+        portfolio: PortfolioState | None = None,
         current_mid_price: float | None = None,
     ) -> RiskCheckResult:
-        """验证订单
+        """Validate order against risk limits.
 
         Args:
-            order: 订单请求
-            account_state: 账户状态
-            current_mid_price: 当前中间价
-
-        Returns:
-            RiskCheckResult: 验证结果
+            order: Order to validate
+            portfolio: Portfolio state (for margin/value checks)
+            current_mid_price: Current mid price (for deviation check)
         """
-        result = self._risk_checker.check(order, account_state, current_mid_price)
+        result = self._validator.check(order, portfolio, current_mid_price)
 
         if result.passed:
             order.update_status(OrderStatus.APPROVED)
@@ -140,24 +77,18 @@ class OrderManager:
             order.update_status(OrderStatus.VALIDATION_FAILED)
             order.validation_errors = result.failed_checks
             logger.warning(
-                f"Order {order.order_id} failed validation: {result.failed_checks}"
+                f"Order {order.order_id} failed validation: "
+                f"{result.failed_checks}"
             )
 
         return result
 
     def submit_order(self, order: OrderRequest) -> OrderRecord:
-        """提交订单
-
-        Args:
-            order: 已验证的订单请求
-
-        Returns:
-            OrderRecord: 订单记录
+        """Submit a validated order to the broker.
 
         Raises:
-            ValueError: 订单未通过验证或无交易提供者
+            ValueError: If order not APPROVED or no trading provider.
         """
-        # 验证订单状态
         if order.status != OrderStatus.APPROVED:
             raise ValueError(
                 f"Order must be APPROVED before submission, got {order.status}"
@@ -166,43 +97,39 @@ class OrderManager:
         if self._provider is None:
             raise ValueError("Trading provider not set")
 
-        # 创建订单记录
         record = OrderRecord(order=order)
         record.add_status_history(OrderStatus.APPROVED, "Order validated")
 
         try:
-            # 提交到券商
             result: TradingResult = self._provider.submit_order(order)
 
             if result.success:
                 order.update_status(OrderStatus.SUBMITTED)
                 record.broker_order_id = result.broker_order_id
-                record.broker_status = result.broker_status  # 保存 IBKR 状态
+                record.broker_status = result.broker_status
                 record.add_status_history(
                     OrderStatus.SUBMITTED,
-                    f"Submitted to {order.broker}, broker_id={result.broker_order_id}, status={result.broker_status}",
+                    f"Submitted to {order.broker}, "
+                    f"broker_id={result.broker_order_id}, "
+                    f"status={result.broker_status}",
                 )
                 logger.info(
-                    f"Order {order.order_id} submitted: broker_id={result.broker_order_id}, status={result.broker_status}"
+                    f"Order {order.order_id} submitted: "
+                    f"broker_id={result.broker_order_id}"
                 )
-
-                # 发送通知
                 self._notify_order_submitted(record)
-
             else:
                 order.update_status(OrderStatus.REJECTED)
                 record.error_message = result.error_message
-                record.broker_order_id = result.broker_order_id  # 可能有 broker_id 但被拒绝
-                record.broker_status = result.broker_status  # 保存 IBKR 状态
+                record.broker_order_id = result.broker_order_id
+                record.broker_status = result.broker_status
                 record.add_status_history(
                     OrderStatus.REJECTED,
-                    f"Rejected: {result.error_message}, status={result.broker_status}",
+                    f"Rejected: {result.error_message}",
                 )
                 logger.error(
-                    f"Order {order.order_id} rejected: {result.error_message}, status={result.broker_status}"
+                    f"Order {order.order_id} rejected: {result.error_message}"
                 )
-
-                # 发送通知
                 self._notify_order_rejected(record)
 
         except Exception as e:
@@ -210,32 +137,18 @@ class OrderManager:
             record.error_message = str(e)
             record.add_status_history(OrderStatus.ERROR, f"Error: {e}")
             logger.exception(f"Order {order.order_id} error: {e}")
-
-            # 发送通知
             self._notify_order_error(record)
 
-        # 保存订单记录
         self._store.save(record)
-
         return record
 
     def submit_roll_orders(
         self,
         orders: list[OrderRequest],
     ) -> list[OrderRecord]:
-        """提交展期订单 (平仓 + 开仓)
+        """Submit roll orders (close + open) sequentially.
 
-        按顺序提交：先平仓，后开仓。
-        如果平仓失败，不会提交开仓订单。
-
-        Args:
-            orders: [close_order, open_order] - 由 create_roll_orders() 生成
-
-        Returns:
-            list[OrderRecord]: 订单记录列表
-
-        Raises:
-            ValueError: 订单数量不是 2 或订单未通过验证
+        If close fails, open is cancelled.
         """
         if len(orders) != 2:
             raise ValueError(f"Expected 2 orders for roll, got {len(orders)}")
@@ -243,18 +156,17 @@ class OrderManager:
         close_order, open_order = orders
         records = []
 
-        # 1. 提交平仓订单
+        # 1. Submit close
         logger.info(f"Submitting roll close order: {close_order.order_id}")
         close_record = self.submit_order(close_order)
         records.append(close_record)
 
-        # 如果平仓失败，不提交开仓订单
+        # If close failed, cancel open
         if close_order.status != OrderStatus.SUBMITTED:
             logger.warning(
                 f"Roll close order failed ({close_order.status}), "
                 f"skipping open order"
             )
-            # 标记开仓订单为跳过
             open_order.update_status(OrderStatus.CANCELLED)
             open_record = OrderRecord(order=open_order)
             open_record.add_status_history(
@@ -264,28 +176,14 @@ class OrderManager:
             records.append(open_record)
             return records
 
-        # 2. 提交开仓订单
+        # 2. Submit open
         logger.info(f"Submitting roll open order: {open_order.order_id}")
         open_record = self.submit_order(open_order)
         records.append(open_record)
 
-        logger.info(
-            f"Roll orders completed: "
-            f"close={close_record.order.status.value}, "
-            f"open={open_record.order.status.value}"
-        )
-
         return records
 
     def cancel_order(self, order_id: str) -> bool:
-        """取消订单
-
-        Args:
-            order_id: 订单 ID
-
-        Returns:
-            是否成功取消
-        """
         record = self._store.get(order_id)
         if record is None:
             logger.warning(f"Order {order_id} not found")
@@ -300,57 +198,46 @@ class OrderManager:
             return False
 
         if record.broker_order_id is None:
-            # 订单未提交，直接标记取消
             record.order.update_status(OrderStatus.CANCELLED)
-            record.add_status_history(OrderStatus.CANCELLED, "Cancelled before submission")
+            record.add_status_history(
+                OrderStatus.CANCELLED, "Cancelled before submission"
+            )
             record.is_complete = True
             record.completion_time = datetime.now()
             self._store.save(record)
             return True
 
-        # 调用券商取消
         result = self._provider.cancel_order(record.broker_order_id)
 
         if result.success:
             record.order.update_status(OrderStatus.CANCELLED)
-            record.add_status_history(OrderStatus.CANCELLED, "Cancelled at broker")
+            record.add_status_history(
+                OrderStatus.CANCELLED, "Cancelled at broker"
+            )
             record.is_complete = True
             record.completion_time = datetime.now()
             self._store.save(record)
             logger.info(f"Order {order_id} cancelled")
             return True
         else:
-            logger.error(f"Failed to cancel order {order_id}: {result.error_message}")
+            logger.error(
+                f"Failed to cancel order {order_id}: {result.error_message}"
+            )
             return False
 
     def get_order_status(self, order_id: str) -> OrderRecord | None:
-        """获取订单状态
-
-        Args:
-            order_id: 订单 ID
-
-        Returns:
-            订单记录
-        """
         return self._store.get(order_id)
 
     def get_open_orders(self) -> list[OrderRecord]:
-        """获取所有未完成订单"""
         return self._store.get_open_orders()
 
     def get_orders_by_decision(self, decision_id: str) -> list[OrderRecord]:
-        """按决策 ID 获取订单"""
         return self._store.get_by_decision(decision_id)
 
     def get_recent_orders(self, days: int = 7) -> list[OrderRecord]:
-        """获取最近订单"""
         return self._store.get_recent(days)
 
     def sync_order_status(self, order_id: str) -> OrderRecord | None:
-        """同步订单状态
-
-        从券商获取最新状态并更新本地记录。
-        """
         record = self._store.get(order_id)
         if record is None or self._provider is None:
             return None
@@ -358,13 +245,11 @@ class OrderManager:
         if record.broker_order_id is None:
             return record
 
-        # 查询券商状态
         query_result = self._provider.query_order(record.broker_order_id)
 
         if not query_result.found:
             return record
 
-        # 更新状态
         old_status = record.order.status
 
         if query_result.is_filled:
@@ -388,47 +273,42 @@ class OrderManager:
 
         return record
 
+    # ── Notifications ──
+
     def _notify_order_submitted(self, record: OrderRecord) -> None:
-        """发送订单提交通知"""
         if not self._config.notify_on_submit:
             return
         self._send_notification(
-            f"Order Submitted: {record.order.symbol}",
-            record,
+            f"Order Submitted: {record.order.symbol}", record
         )
 
     def _notify_order_filled(self, record: OrderRecord) -> None:
-        """发送订单成交通知"""
         if not self._config.notify_on_fill:
             return
         self._send_notification(
-            f"Order Filled: {record.order.symbol}",
-            record,
+            f"Order Filled: {record.order.symbol}", record
         )
 
     def _notify_order_rejected(self, record: OrderRecord) -> None:
-        """发送订单拒绝通知"""
         if not self._config.notify_on_reject:
             return
         self._send_notification(
-            f"Order Rejected: {record.order.symbol}",
-            record,
+            f"Order Rejected: {record.order.symbol}", record
         )
 
     def _notify_order_error(self, record: OrderRecord) -> None:
-        """发送订单错误通知"""
         self._send_notification(
-            f"Order Error: {record.order.symbol}",
-            record,
+            f"Order Error: {record.order.symbol}", record
         )
 
     def _send_notification(self, title: str, record: OrderRecord) -> None:
-        """发送通知"""
         try:
-            # 延迟导入通知模块
             if self._notifier is None:
                 try:
-                    from src.business.notification.dispatcher import NotificationDispatcher
+                    from src.business.notification.dispatcher import (
+                        NotificationDispatcher,
+                    )
+
                     self._notifier = NotificationDispatcher()
                 except ImportError:
                     logger.debug("Notification module not available")
@@ -436,12 +316,10 @@ class OrderManager:
 
             message = self._build_notification_message(record)
             self._notifier.send_text(title, message)
-
         except Exception as e:
             logger.warning(f"Failed to send notification: {e}")
 
     def _build_notification_message(self, record: OrderRecord) -> str:
-        """构建通知消息"""
         order = record.order
         lines = [
             f"Order ID: {order.order_id}",
@@ -450,17 +328,12 @@ class OrderManager:
             f"Quantity: {order.quantity}",
             f"Status: {order.status.value}",
         ]
-
         if order.limit_price:
             lines.append(f"Limit Price: {order.limit_price:.2f}")
-
         if record.broker_order_id:
             lines.append(f"Broker ID: {record.broker_order_id}")
-
         if record.average_fill_price:
             lines.append(f"Avg Fill: {record.average_fill_price:.2f}")
-
         if record.error_message:
             lines.append(f"Error: {record.error_message}")
-
         return "\n".join(lines)
