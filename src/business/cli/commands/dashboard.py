@@ -14,7 +14,7 @@ import logging
 import os
 import sys
 import time
-from typing import Optional
+from typing import Any, Optional
 
 import click
 
@@ -34,9 +34,9 @@ logger = logging.getLogger(__name__)
     help="账户类型：paper（模拟）或 live（真实）",
 )
 @click.option(
-    "--ibkr-only",
-    is_flag=True,
-    help="仅使用 IBKR 账户",
+    "--ibkr-only/--all-brokers",
+    default=True,
+    help="仅使用 IBKR 账户（默认），--all-brokers 同时连接 Futu",
 )
 @click.option(
     "--futu-only",
@@ -180,13 +180,14 @@ def _get_monitor_result(
         MonitorResult 监控结果
     """
     if account_type:
-        position_list, capital_metrics = _load_from_account(
+        position_list, capital_metrics, market_ctx = _load_from_account(
             account_type, ibkr_only, futu_only
         )
     else:
         # 使用示例数据
         position_list = _get_sample_positions()
         capital_metrics = _get_sample_capital()
+        market_ctx = {"vix": 18.5, "spy_price": 582.30, "risk_free_rate": 0.0422}
 
     # 创建监控管道并运行
     pipeline = MonitoringPipeline()
@@ -195,6 +196,9 @@ def _get_monitor_result(
         capital_metrics=capital_metrics,
     )
 
+    # 注入市场环境数据（供 IM 推送使用）
+    result.market_sentiment = market_ctx
+
     return result
 
 
@@ -202,7 +206,7 @@ def _load_from_account(
     account_type: str,
     ibkr_only: bool,
     futu_only: bool,
-) -> tuple[list[PositionData], CapitalMetrics]:
+) -> tuple[list[PositionData], CapitalMetrics, dict]:
     """从真实账户加载持仓数据
 
     Args:
@@ -211,7 +215,7 @@ def _load_from_account(
         futu_only: 仅使用 Futu
 
     Returns:
-        (持仓列表, 资金指标)
+        (持仓列表, 资金指标, 市场环境)
     """
     from src.data.models.account import AccountType as AccType
     from src.data.providers.broker_manager import BrokerManager
@@ -260,7 +264,10 @@ def _load_from_account(
         # 调用 engine 层计算 CapitalMetrics
         capital_metrics = calc_capital_metrics(portfolio)
 
-        return position_list, capital_metrics
+        # 获取市场环境数据（VIX, SPY, 10Y）
+        market_ctx = _fetch_market_context(unified_provider)
+
+        return position_list, capital_metrics, market_ctx
 
     finally:
         # 清理连接
@@ -497,3 +504,47 @@ def _get_sample_capital() -> CapitalMetrics:
         gross_leverage=1.8,  # 1.8x - GREEN
         stress_test_loss=0.08,  # 8% - GREEN
     )
+
+
+def _fetch_market_context(provider: Any) -> dict:
+    """获取市场环境数据 (VIX, SPY, 10Y)。
+
+    复用 LiveSnapshotBuilder 的 macro data 方式。
+    尽力获取，任何字段失败不影响其他字段。
+    """
+    from datetime import date as _date, timedelta
+
+    ctx: dict[str, Any] = {}
+    today = _date.today()
+    start = today - timedelta(days=7)
+
+    def _get_last_value(indicator: str) -> float | None:
+        try:
+            data = provider.get_macro_data(indicator, start, today)
+            if data:
+                return data[-1].value
+        except Exception:
+            pass
+        return None
+
+    # VIX
+    vix = _get_last_value("^VIX")
+    if vix is not None:
+        ctx["vix"] = float(vix)
+
+    # SPY price
+    try:
+        quotes = provider.get_stock_quotes(["SPY"])
+        if quotes:
+            ctx["spy_price"] = float(quotes[0].close)
+    except Exception:
+        pass
+
+    # 10Y Treasury (risk_free_rate)
+    tnx = _get_last_value("^TNX")
+    if tnx is not None:
+        # Yahoo: ^TNX = yield directly (e.g. 4.25 → 0.0425)
+        # IBKR: TNX = yield × 10 (e.g. 42.5 → 0.0425)
+        ctx["risk_free_rate"] = float(tnx / 1000.0 if tnx > 20 else tnx / 100.0)
+
+    return ctx
