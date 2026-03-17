@@ -18,8 +18,6 @@ risk_limits:
   max_projected_margin_utilization: 0.95  # Long option 基本不影响 margin
 
   # Daily Limits: 再平衡驱动，频率低
-  daily_max_open_qty_per_underlying: 10
-  daily_max_close_qty_per_underlying: 10
   daily_max_value_pct_per_underlying: 50.0  # 50% of NLV (LEAPS 可占大比例)
   daily_max_total_value_pct: 60.0           # 60% of NLV
 

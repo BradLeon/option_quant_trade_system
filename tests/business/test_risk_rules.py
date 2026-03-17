@@ -421,9 +421,6 @@ class TestDailyTradeTracker:
         """Create tracker with mocked store."""
         config = DailyLimitsConfig(
             enabled=True,
-            max_open_quantity_per_underlying=5,
-            max_close_quantity_per_underlying=5,
-            max_roll_quantity_per_underlying=5,
             max_value_pct_per_underlying=10.0,
             max_total_value_pct=25.0,
         )
@@ -476,59 +473,6 @@ class TestDailyTradeTracker:
         tracker = self._make_tracker(enabled=False)
         allowed, reason = tracker.check_limits("SPY", 100, 999_999.0, nlv=100_000, decision_type="open")
         assert allowed > 0
-
-    # -- Rule: max_open_qty_per_underlying --
-
-    def test_open_qty_pass(self):
-        """Open quantity within limit passes."""
-        tracker = self._make_tracker(
-            existing_stats=self._stats(open_qty=3),
-        )
-        allowed, reason = tracker.check_limits("SPY", 2, 1000.0, nlv=100_000, decision_type="open")
-        assert allowed > 0  # 3+2=5 <= 5
-
-    def test_open_qty_block(self):
-        """Open quantity exceeding limit is truncated."""
-        tracker = self._make_tracker(
-            existing_stats=self._stats(open_qty=4),
-        )
-        allowed, reason = tracker.check_limits("SPY", 2, 1000.0, nlv=100_000, decision_type="open")
-        # remaining=5-4=1, allowed=min(2,1)=1 (truncated, not blocked)
-        assert allowed == 1
-
-    def test_close_qty_pass(self):
-        tracker = self._make_tracker(
-            existing_stats=self._stats(close_qty=3),
-        )
-        allowed, _ = tracker.check_limits("SPY", 2, 1000.0, nlv=100_000, decision_type="close")
-        assert allowed > 0
-
-    def test_close_qty_block(self):
-        tracker = self._make_tracker(
-            existing_stats=self._stats(close_qty=5),
-        )
-        allowed, reason = tracker.check_limits("SPY", 1, 1000.0, nlv=100_000, decision_type="close")
-        assert allowed == 0
-        assert "CLOSE" in reason
-
-    # -- Rule: max_roll_qty_per_underlying (roll_count = qty * 2) --
-
-    def test_roll_qty_pass(self):
-        tracker = self._make_tracker(
-            existing_stats=self._stats(roll_qty=2),
-        )
-        # qty=1 → roll_count=2, new_total=2+2=4 <= 5
-        allowed, _ = tracker.check_limits("SPY", 1, 1000.0, nlv=100_000, decision_type="roll")
-        assert allowed > 0
-
-    def test_roll_qty_block(self):
-        tracker = self._make_tracker(
-            existing_stats=self._stats(roll_qty=4),
-        )
-        # qty=1 → remaining=(5-4)//2=0
-        allowed, reason = tracker.check_limits("SPY", 1, 1000.0, nlv=100_000, decision_type="roll")
-        assert allowed == 0
-        assert reason  # has a reason string
 
     # -- Rule: max_value_pct_per_underlying --
 
@@ -596,7 +540,7 @@ class TestRiskConfigPerStrategy:
         assert cfg.max_margin_utilization > 0.70
         assert cfg.min_available_margin == 0
         assert cfg.max_order_value_pct > 0.10  # higher for expensive LEAPS
-        assert cfg.daily_max_open_qty_per_underlying > 5
+        assert cfg.daily_max_value_pct_per_underlying >= 10.0
 
     def test_short_put_strategy_overrides(self):
         """short_put_with_assignment.yaml tightens limits for naked puts."""

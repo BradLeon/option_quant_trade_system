@@ -19,7 +19,6 @@ risk_limits:
   max_projected_margin_utilization: 0.70  # 70% (base: 80%)
 
   # Daily Limits: 策略本身限制每日 1 仓，风控层给小余量
-  daily_max_open_qty_per_underlying: 2
   daily_max_value_pct_per_underlying: 8.0   # 8% of NLV
 
   # Kelly: 保守

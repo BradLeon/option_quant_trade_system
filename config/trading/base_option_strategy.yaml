@@ -21,11 +21,8 @@ risk_limits:
   margin_rate_minimum: 0.10
   margin_safety_buffer: 0.80
 
-  # Daily Limits (DailyTradeTracker)
+  # Daily Limits (DailyTradeTracker) — 按金额占比控制
   daily_limits_enabled: true
-  daily_max_open_qty_per_underlying: 5
-  daily_max_close_qty_per_underlying: 5
-  daily_max_roll_qty_per_underlying: 5
   daily_max_value_pct_per_underlying: 10.0  # 10% of NLV
   daily_max_total_value_pct: 25.0           # 25% of NLV
 

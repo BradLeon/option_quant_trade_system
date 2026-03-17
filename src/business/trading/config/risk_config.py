@@ -64,9 +64,6 @@ class RiskConfig:
     # =========================================================================
 
     daily_limits_enabled: bool = True
-    daily_max_open_qty_per_underlying: int = 100
-    daily_max_close_qty_per_underlying: int = 100
-    daily_max_roll_qty_per_underlying: int = 100
     daily_max_value_pct_per_underlying: float = 10.0  # 单标的每日市值上限 (% of NLV)
     daily_max_total_value_pct: float = 25.0           # 全账户每日总市值上限 (% of NLV)
 

@@ -71,6 +71,11 @@ class DailyLimitsGuard:
         batch_values: dict[str, float] = {}
 
         for signal in signals:
+            # Cash-equivalent signals (e.g. SGOV sweep) bypass daily limits
+            if signal.metadata.get("is_cash_equivalent"):
+                approved.append(signal)
+                continue
+
             underlying = signal.instrument.underlying
             qty = abs(signal.target_quantity)
             price = signal.quote_price or 0.0

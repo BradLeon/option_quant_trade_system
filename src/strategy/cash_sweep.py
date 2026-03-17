@@ -26,7 +26,7 @@ class CashSweepConfig:
     """Cash sweep configuration."""
 
     enabled: bool = False
-    instrument_symbol: str = "SHV"  # iShares Short Treasury Bond ETF
+    instrument_symbol: str = "SGOV"  # iShares 0-3 Month Treasury Bond ETF
     min_cash_buffer_pct: float = 0.05  # 保留 5% NLV 裸现金
     sweep_threshold: float = 10_000  # 闲置 > $10k 才买入
     min_trade_size: int = 10  # 最少交易 10 股

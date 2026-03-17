@@ -241,13 +241,10 @@ Signal 的 `roll_to: Instrument` 字段描述目标合约。`SignalOrderBuilder`
 
 | 限制类型 | 默认值 | 说明 |
 |---------|--------|------|
-| `max_open_quantity_per_underlying` | 5 | 单标的每日开仓合约数 |
-| `max_close_quantity_per_underlying` | 5 | 单标的每日平仓合约数 |
-| `max_roll_quantity_per_underlying` | 5 | 单标的每日展期合约数 |
-| `max_value_pct_per_underlying` | 5% | 单标的交易价值占比 |
-| `max_total_value_pct` | 25% | 全组合每日交易价值占比 |
+| `max_value_pct_per_underlying` | 10% | 单标的每日交易市值占 NLV 比例 |
+| `max_total_value_pct` | 25% | 全账户每日总交易市值占 NLV 比例 |
 
-V2 变化：DailyLimits 从 TradingPipeline 内部（订单级阻断）移至 RiskGuard 链（信号级截断）。
+按金额占比控制（不再按数量限制），对不同价格的标的更公平。现金等价物信号（如 SGOV sweep）豁免此限额。
 
 ## 风控配置
 

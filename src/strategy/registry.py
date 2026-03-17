@@ -157,21 +157,21 @@ def _create_momentum_mixed_v2(**kwargs) -> StrategyProtocol:
 
 
 def _create_leaps_only_cash_sweep(**kwargs) -> StrategyProtocol:
-    """LEAPS-only with active SHV cash sweep (replaces passive interest)."""
+    """LEAPS-only with active SGOV cash sweep (replaces passive interest)."""
     from src.strategy.versions.momentum_mixed import MomentumMixedStrategy, MomentumMixedConfig
     from src.strategy.cash_sweep import CashSweepConfig
     config = MomentumMixedConfig(
         name="spy_leaps_only_cash_sweep",
         use_stock_component=False,
         cash_interest_enabled=False,
-        cash_sweep_config=CashSweepConfig(enabled=True, instrument_symbol="SHV"),
+        cash_sweep_config=CashSweepConfig(enabled=True),
         **kwargs,
     )
     return MomentumMixedStrategy(config)
 
 
 def _create_leaps_v2_cash_sweep(**kwargs) -> StrategyProtocol:
-    """LEAPS V2 with active SHV cash sweep."""
+    """LEAPS V2 with active SGOV cash sweep."""
     from src.strategy.versions.momentum_mixed_v2 import (
         MomentumMixedV2Strategy,
         MomentumMixedV2Config,
@@ -181,7 +181,7 @@ def _create_leaps_v2_cash_sweep(**kwargs) -> StrategyProtocol:
         name="leaps_v2_cash_sweep",
         use_stock_component=False,
         cash_interest_enabled=False,
-        cash_sweep_config=CashSweepConfig(enabled=True, instrument_symbol="SHV"),
+        cash_sweep_config=CashSweepConfig(enabled=True),
         **kwargs,
     )
     return MomentumMixedV2Strategy(config)
@@ -279,7 +279,7 @@ _REGISTRY: dict[str, Any] = {
     "momentum_mixed_v2": _create_momentum_mixed_v2,
     "leaps_v2": _create_momentum_mixed_v2,
 
-    # LEAPS with active cash sweep (SHV ETF)
+    # LEAPS with active cash sweep (SGOV ETF)
     "leaps_cash_sweep": _create_leaps_only_cash_sweep,
     "leaps_v2_cash_sweep": _create_leaps_v2_cash_sweep,
 

@@ -1,8 +1,11 @@
 """
-Daily Trade Limits - 每日交易限额管理
+Daily Trade Limits - 每日交易金额占比限额
 
-追踪每个 underlying 在当日已提交的交易量/金额，
-在新订单提交前检查是否超过限额。
+按市值占比（而非数量）控制每日交易限额：
+- 单标的每日交易市值不超过 NLV 的 X%
+- 全账户每日总交易市值不超过 NLV 的 Y%
+
+现金等价物 (SGOV 等) 由 DailyLimitsGuard 豁免，不受此限额约束。
 
 Usage:
     tracker = DailyTradeTracker(order_store, config)
@@ -12,11 +15,11 @@ Usage:
 import logging
 import os
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from typing import Any
 
 from src.business.trading.order.store import OrderStore
-from src.business.trading.models.order import OrderRecord, OrderStatus
+from src.business.trading.models.order import OrderStatus
 
 logger = logging.getLogger(__name__)
 
@@ -32,17 +35,6 @@ def _env_float(key: str, default: float) -> float:
     return default
 
 
-def _env_int(key: str, default: int) -> int:
-    """从环境变量获取 int"""
-    val = os.getenv(key)
-    if val is not None:
-        try:
-            return int(val)
-        except ValueError:
-            pass
-    return default
-
-
 def _env_bool(key: str, default: bool) -> bool:
     """从环境变量获取 bool"""
     val = os.getenv(key)
@@ -53,28 +45,22 @@ def _env_bool(key: str, default: bool) -> bool:
 
 @dataclass
 class DailyLimitsConfig:
-    """每日交易限额配置
+    """每日交易金额占比限额配置
 
     支持通过环境变量覆盖默认值 (前缀: DAILY_LIMITS_)
 
     示例:
-        export DAILY_LIMITS_MAX_OPEN_QUANTITY_PER_UNDERLYING=5
-        export DAILY_LIMITS_MAX_CLOSE_QUANTITY_PER_UNDERLYING=5
-        export DAILY_LIMITS_MAX_ROLL_QUANTITY_PER_UNDERLYING=5
+        export DAILY_LIMITS_MAX_VALUE_PCT_PER_UNDERLYING=15.0
+        export DAILY_LIMITS_MAX_TOTAL_VALUE_PCT=30.0
     """
 
     # 是否启用每日限额
     enabled: bool = True
 
-    # 按类型的每日数量限额（各 5 张）
-    max_open_quantity_per_underlying: int = 100   # 每日 OPEN 限额
-    max_close_quantity_per_underlying: int = 100  # 每日 CLOSE 限额
-    max_roll_quantity_per_underlying: int = 100   # 每日 ROLL 限额（注：1 ROLL = 2 张）
-
-    # 每个 underlying 每天开仓市值不超过 NLV 的 X%
+    # 每个 underlying 每天交易市值不超过 NLV 的 X%
     max_value_pct_per_underlying: float = 10.0
 
-    # 全账户每天总开仓市值不超过 NLV 的 X%
+    # 全账户每天总交易市值不超过 NLV 的 X%
     max_total_value_pct: float = 25.0
 
     # 是否计入 pending 订单 (true) 还是只计已成交 (false)
@@ -91,18 +77,6 @@ class DailyLimitsConfig:
         rc = RiskConfig.load()
         return cls(
             enabled=_env_bool("DAILY_LIMITS_ENABLED", rc.daily_limits_enabled),
-            max_open_quantity_per_underlying=_env_int(
-                "DAILY_LIMITS_MAX_OPEN_QUANTITY_PER_UNDERLYING",
-                rc.daily_max_open_qty_per_underlying,
-            ),
-            max_close_quantity_per_underlying=_env_int(
-                "DAILY_LIMITS_MAX_CLOSE_QUANTITY_PER_UNDERLYING",
-                rc.daily_max_close_qty_per_underlying,
-            ),
-            max_roll_quantity_per_underlying=_env_int(
-                "DAILY_LIMITS_MAX_ROLL_QUANTITY_PER_UNDERLYING",
-                rc.daily_max_roll_qty_per_underlying,
-            ),
             max_value_pct_per_underlying=_env_float(
                 "DAILY_LIMITS_MAX_VALUE_PCT_PER_UNDERLYING",
                 rc.daily_max_value_pct_per_underlying,
@@ -121,16 +95,7 @@ class DailyLimitsConfig:
         """从字典创建配置"""
         return cls(
             enabled=data.get("enabled", True),
-            max_open_quantity_per_underlying=data.get(
-                "max_open_quantity_per_underlying", 5
-            ),
-            max_close_quantity_per_underlying=data.get(
-                "max_close_quantity_per_underlying", 5
-            ),
-            max_roll_quantity_per_underlying=data.get(
-                "max_roll_quantity_per_underlying", 5
-            ),
-            max_value_pct_per_underlying=data.get("max_value_pct_per_underlying", 5.0),
+            max_value_pct_per_underlying=data.get("max_value_pct_per_underlying", 10.0),
             max_total_value_pct=data.get("max_total_value_pct", 25.0),
             include_pending_orders=data.get("include_pending_orders", True),
         )
@@ -139,9 +104,6 @@ class DailyLimitsConfig:
         """转换为字典"""
         return {
             "enabled": self.enabled,
-            "max_open_quantity_per_underlying": self.max_open_quantity_per_underlying,
-            "max_close_quantity_per_underlying": self.max_close_quantity_per_underlying,
-            "max_roll_quantity_per_underlying": self.max_roll_quantity_per_underlying,
             "max_value_pct_per_underlying": self.max_value_pct_per_underlying,
             "max_total_value_pct": self.max_total_value_pct,
             "include_pending_orders": self.include_pending_orders,
@@ -331,14 +293,16 @@ class DailyTradeTracker:
         nlv: float,
         decision_type: str | None = None,
     ) -> tuple[int, str]:
-        """检查每日限额，返回允许的数量（截断而非阻断）。
+        """检查每日金额占比限额，返回允许的数量（截断而非阻断）。
+
+        仅按市值占比控制：单标的不超过 NLV 的 X%，全账户不超过 NLV 的 Y%。
 
         Args:
             underlying: 标的代码
             quantity: 请求数量（可正可负，内部用 abs()）
             value: 订单市值（可正可负，内部用 abs()）
             nlv: 账户净值
-            decision_type: 决策类型 ("open"/"close"/"roll" 等)
+            decision_type: 决策类型（仅用于日志，不参与限额计算）
 
         Returns:
             (allowed_qty, reason) - 允许的数量（0=完全阻断, <abs(qty)=截断）和原因
@@ -356,32 +320,6 @@ class DailyTradeTracker:
         abs_quantity = abs(quantity)
         abs_value = abs(value)
         allowed_qty = abs_quantity  # 从请求量开始，逐步截断
-
-        # 按类型检查数量限额
-        if decision_type == "open":
-            remaining = self._config.max_open_quantity_per_underlying - daily_stats.open_quantity
-            if remaining <= 0:
-                return 0, (
-                    f"{underlying} 已达当日 OPEN 数量限额: "
-                    f"{daily_stats.open_quantity}/{self._config.max_open_quantity_per_underlying} 张"
-                )
-            allowed_qty = min(allowed_qty, remaining)
-        elif decision_type == "close":
-            remaining = self._config.max_close_quantity_per_underlying - daily_stats.close_quantity
-            if remaining <= 0:
-                return 0, (
-                    f"{underlying} 已达当日 CLOSE 数量限额: "
-                    f"{daily_stats.close_quantity}/{self._config.max_close_quantity_per_underlying} 张"
-                )
-            allowed_qty = min(allowed_qty, remaining)
-        elif decision_type == "roll":
-            remaining = self._config.max_roll_quantity_per_underlying - daily_stats.roll_quantity
-            if remaining <= 0:
-                return 0, (
-                    f"{underlying} 已达当日 ROLL 数量限额: "
-                    f"{daily_stats.roll_quantity}/{self._config.max_roll_quantity_per_underlying} 张"
-                )
-            allowed_qty = min(allowed_qty, remaining // 2)  # ROLL: 1 decision = 2 张
 
         # 检查单标的市值占比限额
         existing_value_pct = (daily_stats.total_value / nlv) * 100
@@ -535,7 +473,6 @@ class DailyTradeTracker:
             value_pct = (stats["value"] / nlv * 100) if nlv > 0 else 0.0
             summary[underlying] = {
                 "qty_used": int(stats["qty"]),
-                "qty_limit": self._config.max_open_quantity_per_underlying,
                 "value_used": stats["value"],
                 "value_limit_pct": self._config.max_value_pct_per_underlying,
                 "value_pct": value_pct,
