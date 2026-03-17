@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.backtest.strategy.models import (
+    AlertType,
     Instrument,
     InstrumentType,
     MarketSnapshot,
@@ -106,7 +107,7 @@ class SmaStockStrategy(BacktestStrategy):
                 reason=f"SMA exit: {'death cross' if self._config.comparison == SmaComparison.SMA_CROSS else 'below SMA'}",
                 position_id=pos.position_id,
                 priority=10,
-                metadata={"alert_type": "sma_exit"},
+                alert_type=AlertType.SMA_EXIT,
             ))
 
         return signals

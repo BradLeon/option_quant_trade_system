@@ -100,16 +100,26 @@ class SignalConverter:
         from src.business.strategy.models import TradeSignal
         from src.backtest.engine.trade_simulator import TradeAction
 
-        alert_type = signal.metadata.get("alert_type")
-        if signal.type == SignalType.ROLL:
-            alert_type = alert_type or "roll_dte"
+        from src.strategy.models import AlertType
+
+        # Prefer typed alert_type field; fall back to metadata for backward compat
+        alert_type = signal.alert_type
+        if alert_type is None:
+            raw = signal.metadata.get("alert_type")
+            if raw:
+                try:
+                    alert_type = AlertType(raw)
+                except ValueError:
+                    logger.warning(f"Unknown alert_type in metadata: {raw!r}")
+        if signal.type == SignalType.ROLL and alert_type is None:
+            alert_type = AlertType.ROLL_DTE
 
         return TradeSignal(
             action=TradeAction.CLOSE,
             symbol=signal.instrument.symbol,
             quantity=signal.target_quantity,  # negative for closing longs
             reason=signal.reason,
-            alert_type=alert_type,
+            alert_type=alert_type.value if alert_type else None,
             position_id=signal.position_id,
             priority="high" if signal.priority > 0 else "normal",
         )

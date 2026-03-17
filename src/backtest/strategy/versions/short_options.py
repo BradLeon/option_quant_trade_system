@@ -21,6 +21,7 @@ from datetime import date, timedelta
 from typing import Any, Optional
 
 from src.backtest.strategy.models import (
+    AlertType,
     Instrument,
     InstrumentType,
     MarketSnapshot,
@@ -181,7 +182,7 @@ class ShortPutStrategy(BacktestStrategy):
                         reason=reason,
                         position_id=pos.position_id,
                         priority=10,
-                        metadata={"alert_type": "short_put_exit"},
+                        alert_type=AlertType.SHORT_PUT_EXIT,
                     )
                 )
             else:

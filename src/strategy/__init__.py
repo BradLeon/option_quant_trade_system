@@ -11,6 +11,7 @@ Usage:
 """
 
 from src.strategy.models import (
+    AlertType,
     ComboInstrument,
     ComboLeg,
     Instrument,
@@ -28,6 +29,7 @@ from src.strategy.risk import RiskGuard
 
 __all__ = [
     # Core models
+    "AlertType",
     "Instrument",
     "InstrumentType",
     "OptionRight",

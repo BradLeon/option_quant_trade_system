@@ -9,26 +9,19 @@
 """
 
 import uuid
-from dataclasses import dataclass, field
-from datetime import date, datetime
-from typing import Any
+from datetime import date
 from unittest.mock import MagicMock
-
-import pytest
 
 from src.backtest.strategy.risk.account_risk import AccountRiskGuard, AccountRiskConfig
 from src.business.trading.config.risk_config import RiskConfig
 from src.business.trading.daily_limits import DailyLimitsConfig, DailyTradeTracker, DailyStats
-from src.business.trading.models.decision import AccountState
 from src.business.trading.models.order import (
     AssetClass,
     OrderRequest,
     OrderSide,
-    OrderStatus,
     OrderType,
-    RiskCheckResult,
 )
-from src.business.trading.order.risk_checker import RiskChecker
+from src.business.trading.order.order_validator import OrderValidator
 from src.strategy.models import (
     Instrument,
     InstrumentType,
@@ -147,25 +140,18 @@ def _make_order(
     )
 
 
-def _make_account_state(
-    total_equity: float = 100_000,
-    used_margin: float = 20_000,
-    cash_balance: float = 50_000,
-) -> AccountState:
-    nlv = total_equity
-    margin_util = used_margin / nlv if nlv > 0 else 0
-    cash_ratio = cash_balance / nlv if nlv > 0 else 0
-    return AccountState(
-        broker="ibkr",
-        account_type="paper",
-        total_equity=nlv,
-        cash_balance=cash_balance,
-        available_margin=nlv - used_margin,
-        used_margin=used_margin,
-        margin_utilization=margin_util,
-        cash_ratio=cash_ratio,
-        gross_leverage=1.0,
-        total_position_count=5,
+def _make_checker_portfolio(
+    nlv: float = 100_000,
+    margin_used: float = 20_000,
+    cash: float = 50_000,
+) -> PortfolioState:
+    """Create PortfolioState for OrderValidator tests."""
+    return PortfolioState(
+        date=date(2026, 3, 13),
+        nlv=nlv,
+        cash=cash,
+        margin_used=margin_used,
+        positions=[],
     )
 
 
@@ -303,9 +289,9 @@ class TestAccountRiskGuard:
 
 
 class TestRiskChecker:
-    """Order-level risk checker tests."""
+    """Order-level risk checker (now OrderValidator) tests."""
 
-    def _checker(self, **overrides) -> RiskChecker:
+    def _checker(self, **overrides) -> OrderValidator:
         cfg = RiskConfig(
             max_projected_margin_utilization=0.80,
             max_price_deviation_pct=0.05,
@@ -314,7 +300,7 @@ class TestRiskChecker:
         )
         for k, v in overrides.items():
             setattr(cfg, k, v)
-        return RiskChecker(cfg)
+        return OrderValidator(cfg)
 
     # -- Rule: account_type must be "paper" --
 
@@ -322,7 +308,7 @@ class TestRiskChecker:
         """Paper account orders pass account_type check."""
         checker = self._checker()
         order = _make_order(account_type="paper")
-        result = checker.check(order, _make_account_state())
+        result = checker.check(order, _make_checker_portfolio())
         account_check = next(c for c in result.checks if c["name"] == "account_type")
         assert account_check["passed"] is True
 
@@ -330,7 +316,7 @@ class TestRiskChecker:
         """Live account orders are BLOCKED — critical safety."""
         checker = self._checker()
         order = _make_order(account_type="live")
-        result = checker.check(order, _make_account_state())
+        result = checker.check(order, _make_checker_portfolio())
         assert result.passed is False
         assert any("account_type" in c["name"] for c in result.checks if not c["passed"])
 
@@ -340,7 +326,7 @@ class TestRiskChecker:
         """Order within price deviation limit passes."""
         checker = self._checker(max_price_deviation_pct=0.05)
         order = _make_order(limit_price=3.50)
-        result = checker.check(order, _make_account_state(), current_mid_price=3.45)
+        result = checker.check(order, _make_checker_portfolio(), current_mid_price=3.45)
         price_check = [c for c in result.checks if c["name"] == "price_deviation"]
         assert len(price_check) == 1
         assert price_check[0]["passed"] is True
@@ -350,7 +336,7 @@ class TestRiskChecker:
         checker = self._checker(max_price_deviation_pct=0.05)
         order = _make_order(limit_price=3.50)
         # mid=3.00 → deviation = |3.50-3.00|/3.00 = 16.7% > 5%
-        result = checker.check(order, _make_account_state(), current_mid_price=3.00)
+        result = checker.check(order, _make_checker_portfolio(), current_mid_price=3.00)
         assert result.passed is False
         assert any("price_deviation" in fc for fc in result.failed_checks)
 
@@ -362,8 +348,8 @@ class TestRiskChecker:
         order = _make_order(side=OrderSide.SELL, quantity=1, strike=480.0)
         # margin = 480 * 100 * 1 * 0.20 = $9,600
         # current_margin = 20k, projected = 29.6k, NLV = 100k → 29.6% < 80%
-        acct = _make_account_state(total_equity=100_000, used_margin=20_000)
-        result = checker.check(order, acct)
+        portfolio = _make_checker_portfolio(nlv=100_000, margin_used=20_000)
+        result = checker.check(order, portfolio)
         margin_check = next(c for c in result.checks if c["name"] == "margin_projection")
         assert margin_check["passed"] is True
 
@@ -373,8 +359,8 @@ class TestRiskChecker:
         order = _make_order(side=OrderSide.SELL, quantity=10, strike=480.0)
         # margin = 480 * 100 * 10 * 0.20 = $96,000
         # current = 20k, projected = 116k, NLV = 100k → 116% > 80%
-        acct = _make_account_state(total_equity=100_000, used_margin=20_000)
-        result = checker.check(order, acct)
+        portfolio = _make_checker_portfolio(nlv=100_000, margin_used=20_000)
+        result = checker.check(order, portfolio)
         assert result.passed is False
         assert any("margin_projection" in fc for fc in result.failed_checks)
 
@@ -382,8 +368,8 @@ class TestRiskChecker:
         """Long option (BUY) skips margin check — premium only."""
         checker = self._checker(max_projected_margin_utilization=0.01)  # absurdly low
         order = _make_order(side=OrderSide.BUY, quantity=1, strike=480.0)
-        acct = _make_account_state(total_equity=100_000, used_margin=95_000)
-        result = checker.check(order, acct)
+        portfolio = _make_checker_portfolio(nlv=100_000, margin_used=95_000)
+        result = checker.check(order, portfolio)
         margin_check = next(c for c in result.checks if c["name"] == "margin_projection")
         assert margin_check["passed"] is True  # Long option always passes margin
 
@@ -394,7 +380,7 @@ class TestRiskChecker:
         checker = self._checker(max_order_value_pct=0.10)
         # value = 3.50 * 1 * 100 = $350, NLV = 100k → 0.35% < 10%
         order = _make_order(limit_price=3.50, quantity=1)
-        result = checker.check(order, _make_account_state(total_equity=100_000))
+        result = checker.check(order, _make_checker_portfolio(nlv=100_000))
         value_check = next(c for c in result.checks if c["name"] == "order_value")
         assert value_check["passed"] is True
 
@@ -403,19 +389,19 @@ class TestRiskChecker:
         checker = self._checker(max_order_value_pct=0.10)
         # value = 3.50 * 50 * 100 = $17,500, NLV = 100k → 17.5% > 10%
         order = _make_order(limit_price=3.50, quantity=50)
-        result = checker.check(order, _make_account_state(total_equity=100_000))
+        result = checker.check(order, _make_checker_portfolio(nlv=100_000))
         assert result.passed is False
         assert any("order_value" in fc for fc in result.failed_checks)
 
-    # -- Rule: no account_state → fail --
+    # -- Rule: no portfolio → fail --
 
     def test_no_account_state_block(self):
-        """Missing account state blocks margin/value checks."""
+        """Missing portfolio state blocks margin/value checks."""
         checker = self._checker()
         order = _make_order()
-        result = checker.check(order, account_state=None)
+        result = checker.check(order, None)
         assert result.passed is False
-        assert any("account_state_required" in fc for fc in result.failed_checks)
+        assert any("portfolio_state_required" in fc for fc in result.failed_checks)
 
 
 # ============================================================
@@ -489,7 +475,7 @@ class TestDailyTradeTracker:
         """When disabled, all limits are skipped."""
         tracker = self._make_tracker(enabled=False)
         allowed, reason = tracker.check_limits("SPY", 100, 999_999.0, nlv=100_000, decision_type="open")
-        assert allowed is True
+        assert allowed > 0
 
     # -- Rule: max_open_qty_per_underlying --
 
@@ -499,32 +485,30 @@ class TestDailyTradeTracker:
             existing_stats=self._stats(open_qty=3),
         )
         allowed, reason = tracker.check_limits("SPY", 2, 1000.0, nlv=100_000, decision_type="open")
-        assert allowed is True  # 3+2=5 <= 5
+        assert allowed > 0  # 3+2=5 <= 5
 
     def test_open_qty_block(self):
-        """Open quantity exceeding limit is blocked."""
+        """Open quantity exceeding limit is truncated."""
         tracker = self._make_tracker(
             existing_stats=self._stats(open_qty=4),
         )
         allowed, reason = tracker.check_limits("SPY", 2, 1000.0, nlv=100_000, decision_type="open")
-        assert allowed is False  # 4+2=6 > 5
-        assert "OPEN" in reason
-
-    # -- Rule: max_close_qty_per_underlying --
+        # remaining=5-4=1, allowed=min(2,1)=1 (truncated, not blocked)
+        assert allowed == 1
 
     def test_close_qty_pass(self):
         tracker = self._make_tracker(
             existing_stats=self._stats(close_qty=3),
         )
         allowed, _ = tracker.check_limits("SPY", 2, 1000.0, nlv=100_000, decision_type="close")
-        assert allowed is True
+        assert allowed > 0
 
     def test_close_qty_block(self):
         tracker = self._make_tracker(
             existing_stats=self._stats(close_qty=5),
         )
         allowed, reason = tracker.check_limits("SPY", 1, 1000.0, nlv=100_000, decision_type="close")
-        assert allowed is False
+        assert allowed == 0
         assert "CLOSE" in reason
 
     # -- Rule: max_roll_qty_per_underlying (roll_count = qty * 2) --
@@ -535,16 +519,16 @@ class TestDailyTradeTracker:
         )
         # qty=1 → roll_count=2, new_total=2+2=4 <= 5
         allowed, _ = tracker.check_limits("SPY", 1, 1000.0, nlv=100_000, decision_type="roll")
-        assert allowed is True
+        assert allowed > 0
 
     def test_roll_qty_block(self):
         tracker = self._make_tracker(
             existing_stats=self._stats(roll_qty=4),
         )
-        # qty=1 → roll_count=2, new_total=4+2=6 > 5
+        # qty=1 → remaining=(5-4)//2=0
         allowed, reason = tracker.check_limits("SPY", 1, 1000.0, nlv=100_000, decision_type="roll")
-        assert allowed is False
-        assert "ROLL" in reason
+        assert allowed == 0
+        assert reason  # has a reason string
 
     # -- Rule: max_value_pct_per_underlying --
 
@@ -555,7 +539,7 @@ class TestDailyTradeTracker:
         )
         # new_value=4000 → total=9000 → 9% <= 10%
         allowed, _ = tracker.check_limits("SPY", 1, 4_000.0, nlv=100_000, decision_type="open")
-        assert allowed is True
+        assert allowed > 0
 
     def test_per_underlying_value_block(self):
         """Per-underlying daily value exceeding limit."""
@@ -564,8 +548,8 @@ class TestDailyTradeTracker:
         )
         # new_value=3000 → total=11000 → 11% > 10%
         allowed, reason = tracker.check_limits("SPY", 1, 3_000.0, nlv=100_000, decision_type="open")
-        assert allowed is False
-        assert "市值限额" in reason
+        assert allowed == 0
+        assert reason  # blocked with a reason
 
     # -- Rule: max_total_value_pct (cross-underlying) --
 
@@ -577,7 +561,7 @@ class TestDailyTradeTracker:
         )
         # new=4000 → total=24000/100k=24% <= 25%
         allowed, _ = tracker.check_limits("SPY", 1, 4_000.0, nlv=100_000, decision_type="open")
-        assert allowed is True
+        assert allowed > 0
 
     def test_total_daily_value_block(self):
         """Cross-underlying total daily value exceeding limit."""
@@ -587,8 +571,8 @@ class TestDailyTradeTracker:
         )
         # new=3000 → (23000+3000)/100k=26% > 25%
         allowed, reason = tracker.check_limits("SPY", 1, 3_000.0, nlv=100_000, decision_type="open")
-        assert allowed is False
-        assert "总市值限额" in reason
+        assert allowed == 0
+        assert reason  # blocked with a reason
 
 
 # ============================================================

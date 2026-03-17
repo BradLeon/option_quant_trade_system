@@ -120,6 +120,7 @@ from datetime import date, timedelta
 from typing import Any, Optional
 
 from src.backtest.strategy.models import (
+    AlertType,
     Instrument,
     InstrumentType,
     MarketSnapshot,
@@ -303,7 +304,7 @@ class MomentumMixedStrategy(BacktestStrategy, CashSweepMixin):
                     target_quantity=-pos.quantity,
                     reason=f"Exit: target=0 (score={score}) vix={vix:.1f}",
                     position_id=pos.position_id, priority=10,
-                    metadata={"alert_type": "voltgt_exit"},
+                    alert_type=AlertType.VOLTGT_EXIT,
                 ))
             for pos in stock_pos:
                 signals.append(Signal(
@@ -311,7 +312,7 @@ class MomentumMixedStrategy(BacktestStrategy, CashSweepMixin):
                     target_quantity=-pos.quantity,
                     reason=f"Exit: target=0 (score={score}) vix={vix:.1f}",
                     position_id=pos.position_id, priority=10,
-                    metadata={"alert_type": "voltgt_exit"},
+                    alert_type=AlertType.VOLTGT_EXIT,
                 ))
             self.log("exit_scan:voltgt_exit", "pass",
                      action="全部退出", count=len(signals),
@@ -327,7 +328,7 @@ class MomentumMixedStrategy(BacktestStrategy, CashSweepMixin):
                     target_quantity=-pos.quantity,
                     reason=f"LEAPS roll: DTE={pos.dte} <= {cfg.roll_dte_threshold}",
                     position_id=pos.position_id, priority=5,
-                    metadata={"alert_type": "roll_dte"},
+                    alert_type=AlertType.ROLL_DTE,
                 ))
 
         # DTE <= 5 safety net
@@ -340,7 +341,7 @@ class MomentumMixedStrategy(BacktestStrategy, CashSweepMixin):
                         target_quantity=-pos.quantity,
                         reason=f"Safety net: DTE={pos.dte} <= 5",
                         position_id=pos.position_id, priority=10,
-                        metadata={"alert_type": "roll_dte"},
+                        alert_type=AlertType.ROLL_DTE,
                     ))
 
         if signals:
@@ -562,7 +563,7 @@ class MomentumMixedStrategy(BacktestStrategy, CashSweepMixin):
                         target_quantity=-sell_qty,
                         reason=f"LEAPS reduce: {total_current}→{target_contracts}",
                         position_id=pos.position_id, priority=3,
-                        metadata={"alert_type": "rebalance"},
+                        alert_type=AlertType.REBALANCE,
                     ))
             elif diff >= 1:
                 self._pending_leaps_topup = diff
@@ -595,7 +596,7 @@ class MomentumMixedStrategy(BacktestStrategy, CashSweepMixin):
                                 target_quantity=-shares_to_sell,
                                 reason=f"Stock reduce: sell {shares_to_sell} shares",
                                 position_id=pos.position_id, priority=3,
-                                metadata={"alert_type": "rebalance"},
+                                alert_type=AlertType.REBALANCE,
                             ))
                 elif stock_delta > 0:
                     self._pending_stock_topup_pct = stock_delta

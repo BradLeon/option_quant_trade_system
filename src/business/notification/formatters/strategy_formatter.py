@@ -85,8 +85,8 @@ class StrategyFormatter:
         elements.append(FeishuCardBuilder.create_text_element(
             f"🔄 **管线**: 信号 **{result.signals_generated}** → "
             f"风控后 **{result.signals_after_risk}** → "
-            f"决策 **{result.decisions_count}** → "
-            f"订单 **{len(result.orders)}**"
+            f"订单 **{result.orders_planned}** → "
+            f"成交 **{len(result.orders)}**"
         ))
 
         # ── 订单详情 ──

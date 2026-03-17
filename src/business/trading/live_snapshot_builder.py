@@ -24,7 +24,6 @@ from src.strategy.models import (
     PortfolioState,
     PositionView,
 )
-from src.business.trading.account_bridge import portfolio_to_account_state
 
 logger = logging.getLogger(__name__)
 
@@ -110,14 +109,28 @@ class LiveSnapshotBuilder:
                     f"Failed to convert position {ap.symbol}: {e}"
                 )
 
-        # Get account-level metrics via existing bridge
-        account_state = portfolio_to_account_state(portfolio)
+        # Extract account-level metrics directly from ConsolidatedPortfolio
+        nlv = portfolio.total_value_usd
+
+        cash_balance = 0.0
+        for cash in portfolio.cash_balances:
+            if cash.currency == "USD":
+                cash_balance += cash.balance
+            else:
+                rate = portfolio.exchange_rates.get(cash.currency, 1.0)
+                cash_balance += cash.balance * rate
+
+        used_margin = 0.0
+        broker = "ibkr"
+        if broker in portfolio.by_broker:
+            summary = portfolio.by_broker[broker]
+            used_margin = summary.margin_used or 0.0
 
         return PortfolioState(
             date=date.today(),
-            nlv=account_state.total_equity,
-            cash=account_state.cash_balance,
-            margin_used=account_state.used_margin,
+            nlv=nlv,
+            cash=cash_balance,
+            margin_used=used_margin,
             positions=positions,
         )
 

@@ -20,6 +20,7 @@ from datetime import date, timedelta
 from typing import Any, Optional
 
 from src.backtest.strategy.models import (
+    AlertType,
     ComboInstrument,
     ComboLeg,
     Instrument,
@@ -142,7 +143,7 @@ class BullPutSpreadStrategy(BacktestStrategy):
                     reason=reason,
                     position_id=pos.position_id,
                     priority=10,
-                    metadata={"alert_type": "spread_close"},
+                    alert_type=AlertType.SPREAD_CLOSE,
                 ))
 
                 # Also close the matching long leg
@@ -156,7 +157,7 @@ class BullPutSpreadStrategy(BacktestStrategy):
                             reason=f"Close long leg: {reason}",
                             position_id=long_pos.position_id,
                             priority=10,
-                            metadata={"alert_type": "spread_close"},
+                            alert_type=AlertType.SPREAD_CLOSE,
                         ))
                         break
 

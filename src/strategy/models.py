@@ -100,6 +100,71 @@ class SignalType(str, Enum):
     ROLL = "roll"
 
 
+class AlertType(str, Enum):
+    """Structured alert type for exit/roll/rebalance signals.
+
+    Used by TradeSimulator to map signals to CloseReasonType.
+    Each strategy sets this on exit signals to enable accurate PnL attribution.
+    """
+
+    # 止盈
+    PROFIT_TARGET = "profit_target"
+    DTE_PROFITABLE = "dte_profitable"
+
+    # Delta / OTM 止损
+    DELTA_CHANGE = "delta_change"
+    OTM_PCT = "otm_pct"
+    MONEYNESS = "moneyness"
+
+    # 通用止损
+    STOP_LOSS = "stop_loss"
+    PNL_TARGET = "pnl_target"
+    GAMMA_RISK = "gamma_risk"
+    GAMMA_RISK_PCT = "gamma_risk_pct"
+    GAMMA_NEAR_EXPIRY = "gamma_near_expiry"
+
+    # Theta / TGR / ROC 时间退出
+    POSITION_TGR = "position_tgr"
+    TGR_LOW = "tgr_low"
+    EXPECTED_ROC_LOW = "expected_roc_low"
+    ROC_LOW = "roc_low"
+
+    # DTE 到期
+    DTE_WARNING = "dte_warning"
+
+    # 胜率 / IV-HV
+    WIN_PROB_LOW = "win_prob_low"
+    POSITION_IV_HV = "position_iv_hv"
+    IV_HV_CHANGE = "iv_hv_change"
+
+    # Portfolio 级风控
+    DELTA_EXPOSURE = "delta_exposure"
+    GAMMA_EXPOSURE = "gamma_exposure"
+    VEGA_EXPOSURE = "vega_exposure"
+    THETA_EXPOSURE = "theta_exposure"
+    CONCENTRATION = "concentration"
+
+    # Capital 级风控
+    MARGIN_UTILIZATION = "margin_utilization"
+    CASH_RATIO = "cash_ratio"
+    GROSS_LEVERAGE = "gross_leverage"
+    STRESS_TEST_LOSS = "stress_test_loss"
+
+    # LEAPS 策略
+    ROLL_DTE = "roll_dte"
+    SMA_EXIT = "sma_exit"
+    LEVERAGE_REBALANCE = "leverage_rebalance"
+    VEGA_GUARD = "vega_guard"
+    VOLTGT_EXIT = "voltgt_exit"
+    REBALANCE = "rebalance"
+
+    # Spread 策略
+    SPREAD_CLOSE = "spread_close"
+
+    # Short options
+    SHORT_PUT_EXIT = "short_put_exit"
+
+
 @dataclass
 class Signal:
     """Strategy output: describes *what* to trade, not *how*.
@@ -121,6 +186,9 @@ class Signal:
 
     # Priority: higher = executed first; EXIT > ROLL > REBALANCE > ENTRY
     priority: int = 0
+
+    # Structured alert type (for CloseReasonType mapping in TradeSimulator)
+    alert_type: Optional[AlertType] = None
 
     # Strategy-specific metadata (e.g. signal scores, debug info)
     metadata: dict = field(default_factory=dict)
@@ -236,3 +304,13 @@ class PortfolioState:
     @property
     def cash_equivalent_value(self) -> float:
         return sum(p.market_value for p in self.get_cash_equivalent_positions())
+
+    @property
+    def margin_utilization(self) -> float:
+        """Margin used / NLV. Used by RiskGuard and OrderValidator."""
+        return self.margin_used / self.nlv if self.nlv > 0 else 0.0
+
+    @property
+    def cash_ratio(self) -> float:
+        """Cash / NLV. Used by RiskGuard and OrderValidator."""
+        return self.cash / self.nlv if self.nlv > 0 else 0.0

@@ -1,16 +1,9 @@
-"""
-CLI Strategy Command — Run V2 strategies in live trading mode.
-
-Enables seamless deployment of backtest strategies to live paper trading:
-- Same strategy code, zero modification
-- Data from IBKR/Yahoo instead of DuckDB
-- Execution via TradingPipeline → IBKR Paper
-- Structured execution trace displayed step-by-step
+"""CLI Strategy Command — Run V2 strategies in live trading mode.
 
 Usage:
     optrade strategy list
     optrade strategy run -s short_put_with_assignment -S SPY
-    optrade strategy run -s sma_stock -S SPY -a live --execute
+    optrade strategy run -s sma_stock -S SPY --execute --push
 """
 
 import logging
@@ -98,6 +91,7 @@ def run(
     from src.business.trading.config.risk_config import RiskConfig
     from src.business.trading.live_executor import LiveStrategyExecutor
     from src.business.trading.pipeline import TradingPipeline
+    from src.business.trading.risk.daily_limits_guard import DailyLimitsGuard
     from src.data.models.account import AccountType
     from src.data.providers.account_aggregator import AccountAggregator
 
@@ -111,10 +105,9 @@ def run(
         logging.basicConfig(level=logging.WARNING)
 
     symbols = list(symbol)
-    dry_run = not execute
     account_type = AccountType.PAPER if account == "paper" else AccountType.LIVE
 
-    # Load RiskConfig (唯一配置源, 按策略名加载覆盖)
+    # Load RiskConfig
     risk_config = RiskConfig.load(strategy_name)
 
     click.echo(f"\n{'=' * 60}")
@@ -128,7 +121,7 @@ def run(
     )
     click.echo(f"{'=' * 60}")
 
-    # 1. Create strategy instance
+    # 1. Create strategy
     try:
         strat = BacktestStrategyRegistry.create(strategy_name)
     except Exception as e:
@@ -139,14 +132,17 @@ def run(
 
     click.echo(f"\n  [init] 策略已创建: {strat.name}")
 
-    # 2. Create data provider
+    # 2. Connect IBKR for data
     try:
         from src.data.providers.ibkr_provider import IBKRProvider
 
         ibkr_provider = IBKRProvider(account_type=account_type)
         ibkr_provider.connect()
         data_provider = ibkr_provider
-        click.echo(f"  [init] IBKR 已连接 ({account.upper()}, port {ibkr_provider._port})")
+        click.echo(
+            f"  [init] IBKR 已连接 ({account.upper()}, "
+            f"port {ibkr_provider._port})"
+        )
     except Exception as e:
         click.echo(f"\n错误: IBKR 连接失败: {e}", err=True)
         click.echo("请确认 TWS/Gateway 已启动且端口配置正确", err=True)
@@ -159,61 +155,66 @@ def run(
         click.echo(f"\n错误: 账户聚合器创建失败: {e}", err=True)
         raise SystemExit(1)
 
-    # 4. Create risk guards (从 RiskConfig 读参数)
+    # 4. Create pipeline + risk guards
+    pipeline = TradingPipeline(risk_config=risk_config)
+
     risk_guards = [
         AccountRiskGuard(risk_config),
+        DailyLimitsGuard(
+            order_store=pipeline.order_store,
+        ),
     ]
 
-    # 5. Run executor (always dry_run first to generate signals via data provider)
+    # 5. Create executor
+    executor = LiveStrategyExecutor(
+        strategy=strat,
+        data_provider=data_provider,
+        account_aggregator=aggregator,
+        trading_pipeline=pipeline,
+        symbols=symbols,
+        risk_guards=risk_guards,
+    )
+
     try:
-        pipeline = TradingPipeline(risk_config=risk_config)
+        # Phase A: Plan (uses IBKRProvider for data)
+        result, plan = executor.plan()
 
-        executor = LiveStrategyExecutor(
-            strategy=strat,
-            data_provider=data_provider,
-            account_aggregator=aggregator,
-            trading_pipeline=pipeline,
-            symbols=symbols,
-            risk_guards=risk_guards,
-        )
-
-        # Phase A: Generate signals (uses IBKRProvider for data)
-        result = executor.run_once(dry_run=True)
-
-        # Phase B: If --execute and there are decisions, disconnect data
-        # provider first to free the IBKR connection, then connect
-        # TradingPipeline to execute orders.
-        if execute and result.decisions_count > 0:
-            # Show decisions before execution
-            for d in executor.last_decisions:
+        # Phase B: Execute if requested
+        if execute and (plan.orders or plan.roll_pairs):
+            # Show planned orders
+            for order in plan.orders:
                 click.echo(
-                    f"  [exec] 待执行: {d.decision_type.value} {d.symbol} "
-                    f"qty={d.quantity} price={d.limit_price}"
+                    f"  [exec] 待执行: {order.decision_type} "
+                    f"{order.side.value} {order.quantity} {order.symbol} "
+                    f"price={order.limit_price}"
+                )
+            for close_ord, open_ord in plan.roll_pairs:
+                click.echo(
+                    f"  [exec] ROLL: close {close_ord.symbol} "
+                    f"→ open {open_ord.symbol}"
                 )
 
+            # Disconnect data, connect trading
             ibkr_provider.disconnect()
             click.echo("  [exec] 数据连接已释放，连接交易通道...")
+
             try:
                 pipeline.connect()
-                orders = pipeline.execute_decisions(
-                    executor.last_decisions,
-                    executor.last_account_state,
-                    dry_run=False,
-                )
+                orders = executor.execute(plan)
                 result.orders = orders
 
-                # Show gap if some decisions were blocked
-                n_decisions = len(executor.last_decisions)
                 n_orders = len(orders)
-                if n_orders < n_decisions:
+                n_planned = len(plan.orders) + len(plan.roll_pairs) * 2
+                if n_orders < n_planned:
                     click.echo(
-                        f"  [exec] {n_decisions - n_orders} 个决策被风控阻断，"
-                        f"使用 -v 查看详情"
+                        f"  [exec] {n_planned - n_orders} 个订单被风控阻断"
                     )
+
                 result.trace.record(
                     "execution", "ok", mode="LIVE",
                     orders=[
-                        f"{o.order.side.value} {o.order.quantity} {o.order.symbol} → {o.order.status.value}"
+                        f"{o.order.side.value} {o.order.quantity} "
+                        f"{o.order.symbol} → {o.order.status.value}"
                         for o in orders
                     ],
                 )
@@ -223,17 +224,17 @@ def run(
             finally:
                 pipeline.disconnect()
 
-        # Render structured execution trace
+        # Render trace
         click.echo(result.trace.format_text())
 
         # Summary
-        mode = "DRY-RUN" if dry_run else "EXECUTE"
+        mode = "DRY-RUN" if not execute else "EXECUTE"
         click.echo(f"\n{'─' * 60}")
         click.echo(
             f"  [{mode}] 信号: {result.signals_generated} → "
             f"风控后: {result.signals_after_risk} → "
-            f"决策: {result.decisions_count} → "
-            f"订单: {len(result.orders)}"
+            f"订单: {result.orders_planned} → "
+            f"成交: {len(result.orders)}"
         )
         click.echo(f"{'─' * 60}")
 
@@ -251,7 +252,7 @@ def run(
                 strategy_name=strategy_name,
                 symbols=symbols,
                 account=account,
-                dry_run=dry_run,
+                dry_run=not execute,
             )
 
     except Exception as e:
@@ -276,7 +277,7 @@ def _push_strategy_result(
     try:
         from src.business.notification.dispatcher import MessageDispatcher
 
-        click.echo("📤 推送到飞书...")
+        click.echo("推送到飞书...")
         dispatcher = MessageDispatcher()
         send_result = dispatcher.send_strategy_result(
             result,
@@ -287,8 +288,8 @@ def _push_strategy_result(
             force=True,
         )
         if send_result.is_success:
-            click.echo("✅ 推送成功")
+            click.echo("推送成功")
         else:
-            click.echo(f"⚠️ 推送失败: {send_result.error}")
+            click.echo(f"推送失败: {send_result.error}")
     except Exception as e:
-        click.echo(f"⚠️ 推送异常: {e}")
+        click.echo(f"推送异常: {e}")

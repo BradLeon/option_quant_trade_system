@@ -15,6 +15,7 @@ from datetime import date
 from typing import Any, Optional
 
 from src.backtest.strategy.models import (
+    AlertType,
     Instrument,
     InstrumentType,
     MarketSnapshot,
@@ -119,7 +120,7 @@ class SmaLeapsStrategy(BacktestStrategy):
                     reason="SMA exit: below SMA, moving to cash",
                     position_id=pos.position_id,
                     priority=10,
-                    metadata={"alert_type": "sma_exit"},
+                    alert_type=AlertType.SMA_EXIT,
                 ))
             return signals
 
@@ -142,7 +143,7 @@ class SmaLeapsStrategy(BacktestStrategy):
                     reason=f"LEAPS roll: DTE={pos.dte} <= {cfg.roll_dte_threshold}",
                     position_id=pos.position_id,
                     priority=5,
-                    metadata={"alert_type": "roll_dte"},
+                    alert_type=AlertType.ROLL_DTE,
                 ))
             else:
                 self.log(f"exit_scan:dte_check", "skip",
@@ -163,7 +164,7 @@ class SmaLeapsStrategy(BacktestStrategy):
                         reason=f"Safety net: DTE={pos.dte} <= 5",
                         position_id=pos.position_id,
                         priority=10,
-                        metadata={"alert_type": "roll_dte"},
+                        alert_type=AlertType.ROLL_DTE,
                     ))
 
         return signals
