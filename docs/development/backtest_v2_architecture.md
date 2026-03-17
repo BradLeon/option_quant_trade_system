@@ -591,7 +591,7 @@ class MomentumMixedStrategy(BacktestStrategy):
 ## 7. 策略注册表
 
 ```python
-from src.backtest.strategy import BacktestStrategyRegistry
+from src.strategy.registry import StrategyRegistry
 
 # 创建策略
 strategy = BacktestStrategyRegistry.create("sma_stock")

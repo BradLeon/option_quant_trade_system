@@ -68,9 +68,9 @@ from src.backtest.engine.trade_simulator import (
 from src.data.models.account import AssetType
 from src.business.monitoring.models import PositionData
 from src.business.screening.models import ContractOpportunity
-from src.business.strategy.models import MarketContext, TradeSignal
-from src.backtest.strategy.registry import BacktestStrategyRegistry
-from src.backtest.strategy.signal_converter import SignalConverter
+from src.backtest.engine.models import MarketContext, TradeSignal
+from src.strategy.registry import BacktestStrategyRegistry
+from src.backtest.engine.signal_converter import SignalConverter
 from src.data.models.option import OptionType
 from src.engine.models.enums import StrategyType
 
@@ -274,7 +274,7 @@ class BacktestExecutor:
         self._signal_converter = SignalConverter()
 
         # Initialize RiskGuard chain (从 RiskConfig 按策略名加载)
-        from src.backtest.strategy.risk.account_risk import AccountRiskGuard
+        from src.strategy.risk_guards.account_risk import AccountRiskGuard
         from src.business.trading.config.risk_config import RiskConfig
         risk_config = RiskConfig.load(strategy_name)
         self._risk_guards: list = [
@@ -489,7 +489,7 @@ class BacktestExecutor:
 
     def _build_market_snapshot(self, current_date: date, market_context: MarketContext) -> "V2MarketSnapshot":
         """Build a V2 MarketSnapshot from the legacy MarketContext."""
-        from src.backtest.strategy.models import MarketSnapshot as V2MarketSnapshot
+        from src.strategy.models import MarketSnapshot as V2MarketSnapshot
 
         # TNX risk-free rate
         risk_free_rate = None
@@ -509,7 +509,7 @@ class BacktestExecutor:
 
     def _build_portfolio_state(self, current_date: date) -> "V2PortfolioState":
         """Build a V2 PortfolioState from current account state."""
-        from src.backtest.strategy.models import (
+        from src.strategy.models import (
             PortfolioState as V2PortfolioState,
             PositionView,
             Instrument,

@@ -151,8 +151,22 @@ class Strategy:
         """Check if current day is a decision day (every N trading days)."""
         return self._trading_day_count % frequency == 0
 
+    @property
+    def requires_synthetic_data(self) -> bool:
+        """Whether this strategy needs SyntheticLeapsProvider for historical LEAPS data.
+
+        Override to return True in strategies that use get_option_chain()
+        for LEAPS options (DTE > 180 days). Without synthetic data,
+        backtests before ThetaData coverage (2023-06) will have no option data.
+        """
+        return False
+
     def _rebalance_cooldown_ok(
         self, last_rebalance_day: int, min_interval: int
     ) -> bool:
         """Check if enough trading days have passed since last rebalance."""
         return (self._trading_day_count - last_rebalance_day) >= min_interval
+
+
+# Backward-compat alias — BacktestStrategy was merged into Strategy
+BacktestStrategy = Strategy

@@ -24,8 +24,10 @@ from src.strategy.models import (
     SignalType,
 )
 from src.strategy.execution_log import ExecutionLog
-from src.strategy.protocol import Strategy, StrategyProtocol
+from src.strategy.protocol import BacktestStrategy, Strategy, StrategyProtocol
+from src.strategy.registry import BacktestStrategyRegistry, StrategyRegistry
 from src.strategy.risk import RiskGuard
+from src.strategy.risk_guards.account_risk import AccountRiskConfig, AccountRiskGuard
 
 __all__ = [
     # Core models
@@ -43,8 +45,14 @@ __all__ = [
     # Protocol & base
     "StrategyProtocol",
     "Strategy",
+    "BacktestStrategy",
+    # Registry
+    "StrategyRegistry",
+    "BacktestStrategyRegistry",
     # Execution log
     "ExecutionLog",
     # Risk
     "RiskGuard",
+    "AccountRiskGuard",
+    "AccountRiskConfig",
 ]

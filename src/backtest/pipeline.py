@@ -365,7 +365,7 @@ class BacktestPipeline:
 
         # Path 1: V2 strategy declares requires_synthetic_data
         try:
-            from src.backtest.strategy.registry import BacktestStrategyRegistry
+            from src.strategy.registry import BacktestStrategyRegistry
             strategy = BacktestStrategyRegistry.create(strategy_version)
             if getattr(strategy, "requires_synthetic_data", False):
                 return True

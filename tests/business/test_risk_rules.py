@@ -12,7 +12,7 @@ import uuid
 from datetime import date
 from unittest.mock import MagicMock
 
-from src.backtest.strategy.risk.account_risk import AccountRiskGuard, AccountRiskConfig
+from src.strategy.risk_guards.account_risk import AccountRiskGuard, AccountRiskConfig
 from src.business.trading.config.risk_config import RiskConfig
 from src.business.trading.daily_limits import DailyLimitsConfig, DailyTradeTracker, DailyStats
 from src.business.trading.models.order import (

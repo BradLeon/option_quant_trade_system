@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.backtest.strategy.models import (
+from src.strategy.models import (
     Instrument,
     InstrumentType,
     MarketSnapshot,
@@ -26,8 +26,8 @@ from src.backtest.strategy.models import (
     Signal,
     SignalType,
 )
-from src.backtest.strategy.protocol import BacktestStrategy, StrategyProtocol
-from src.backtest.strategy.registry import BacktestStrategyRegistry
+from src.strategy.protocol import BacktestStrategy, StrategyProtocol
+from src.strategy.registry import BacktestStrategyRegistry
 
 
 # ============================================================
@@ -226,7 +226,7 @@ class TestBacktestStrategy:
 
 class TestAccountRiskGuard:
     def test_blocks_entry_at_max_positions(self):
-        from src.backtest.strategy.risk.account_risk import AccountRiskGuard, AccountRiskConfig
+        from src.strategy.risk_guards.account_risk import AccountRiskGuard, AccountRiskConfig
 
         guard = AccountRiskGuard(AccountRiskConfig(max_positions=2))
         market = MarketSnapshot(date=date(2026, 1, 15), prices={"SPY": 500.0})
@@ -247,7 +247,7 @@ class TestAccountRiskGuard:
         assert result[0].type == SignalType.EXIT
 
     def test_allows_exit_always(self):
-        from src.backtest.strategy.risk.account_risk import AccountRiskGuard, AccountRiskConfig
+        from src.strategy.risk_guards.account_risk import AccountRiskGuard, AccountRiskConfig
 
         guard = AccountRiskGuard(AccountRiskConfig(max_positions=0))
         market = MarketSnapshot(date=date(2026, 1, 15), prices={})
@@ -329,7 +329,7 @@ class TestSmaStockStrategy:
 
     def test_entry_when_sma_bullish(self):
         """Strategy should generate entry signal when SMA is bullish."""
-        from src.backtest.strategy.versions.sma_stock import SmaStockStrategy, SmaStockConfig
+        from src.strategy.versions.sma_stock import SmaStockStrategy, SmaStockConfig
 
         config = SmaStockConfig(decision_frequency=1)
         strategy = SmaStockStrategy(config)
@@ -349,7 +349,7 @@ class TestSmaStockStrategy:
 
     def test_exit_when_sma_bearish(self):
         """Strategy should generate exit signal when SMA turns bearish."""
-        from src.backtest.strategy.versions.sma_stock import SmaStockStrategy, SmaStockConfig
+        from src.strategy.versions.sma_stock import SmaStockStrategy, SmaStockConfig
 
         config = SmaStockConfig(decision_frequency=1)
         strategy = SmaStockStrategy(config)
@@ -376,7 +376,7 @@ class TestSmaStockStrategy:
 
     def test_no_entry_when_holding(self):
         """Strategy should not enter when already holding positions."""
-        from src.backtest.strategy.versions.sma_stock import SmaStockStrategy, SmaStockConfig
+        from src.strategy.versions.sma_stock import SmaStockStrategy, SmaStockConfig
 
         config = SmaStockConfig(decision_frequency=1)
         strategy = SmaStockStrategy(config)
@@ -401,7 +401,7 @@ class TestSmaStockStrategy:
 
     def test_decision_frequency(self):
         """Strategy should only trade on decision days."""
-        from src.backtest.strategy.versions.sma_stock import SmaStockStrategy, SmaStockConfig
+        from src.strategy.versions.sma_stock import SmaStockStrategy, SmaStockConfig
 
         config = SmaStockConfig(decision_frequency=5)
         strategy = SmaStockStrategy(config)
@@ -435,7 +435,7 @@ class TestSmaStockStrategy:
 
 class TestSignalConverter:
     def test_stock_entry_conversion(self):
-        from src.backtest.strategy.signal_converter import SignalConverter
+        from src.backtest.engine.signal_converter import SignalConverter
 
         converter = SignalConverter()
         market = MarketSnapshot(date=date(2026, 1, 15), prices={"SPY": 500.0})
@@ -458,7 +458,7 @@ class TestSignalConverter:
         assert ts.quote.contract.lot_size == 1
 
     def test_exit_conversion(self):
-        from src.backtest.strategy.signal_converter import SignalConverter
+        from src.backtest.engine.signal_converter import SignalConverter
 
         converter = SignalConverter()
         market = MarketSnapshot(date=date(2026, 1, 15), prices={"SPY": 500.0})
@@ -500,7 +500,7 @@ class TestShortPutStrategy:
 
     def test_exit_profit_target(self):
         """Should take profit when PnL >= threshold and DTE > min."""
-        from src.backtest.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
+        from src.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
 
         config = ShortPutConfig(take_profit_pnl=0.50, take_profit_min_dte=10)
         strategy = ShortPutStrategy(config)
@@ -525,7 +525,7 @@ class TestShortPutStrategy:
 
     def test_exit_delta_too_high(self):
         """Should exit when |delta| exceeds threshold."""
-        from src.backtest.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
+        from src.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
 
         config = ShortPutConfig(max_delta_exit=0.65)
         strategy = ShortPutStrategy(config)
@@ -549,7 +549,7 @@ class TestShortPutStrategy:
 
     def test_no_exit_for_long_positions(self):
         """Should not generate exit for long option positions."""
-        from src.backtest.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
+        from src.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
 
         strategy = ShortPutStrategy(ShortPutConfig())
 
@@ -571,7 +571,7 @@ class TestShortPutStrategy:
 
     def test_no_dte_critical_force_close(self):
         """V1 has no DTE-based force close — low DTE alone should NOT trigger exit."""
-        from src.backtest.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
+        from src.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
 
         strategy = ShortPutStrategy(ShortPutConfig(allow_assignment=True))
 
@@ -596,7 +596,7 @@ class TestShortPutStrategy:
 
     def test_win_prob_disabled_for_assignment(self):
         """Win probability exit should be disabled for allow_assignment=True."""
-        from src.backtest.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
+        from src.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
 
         config = ShortPutConfig(
             allow_assignment=True,
@@ -626,7 +626,7 @@ class TestShortPutStrategy:
 
     def test_win_prob_enabled_for_no_assignment(self):
         """Win probability exit should be enabled for allow_assignment=False."""
-        from src.backtest.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
+        from src.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
 
         config = ShortPutConfig(
             allow_assignment=False,
@@ -654,7 +654,7 @@ class TestShortPutStrategy:
 
     def test_no_entry_without_sma_bullish(self):
         """Should not enter when SMA is bearish."""
-        from src.backtest.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
+        from src.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
 
         strategy = ShortPutStrategy(ShortPutConfig(decision_frequency=1))
 
@@ -670,14 +670,14 @@ class TestShortPutStrategy:
 
     def test_protocol_compliance(self):
         """ShortPutStrategy satisfies StrategyProtocol."""
-        from src.backtest.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
+        from src.strategy.versions.short_options import ShortPutStrategy, ShortPutConfig
 
         strategy = ShortPutStrategy(ShortPutConfig())
         assert isinstance(strategy, StrategyProtocol)
 
     def test_backward_compat_aliases(self):
         """Old class names ShortOptionsStrategy/Config still importable."""
-        from src.backtest.strategy.versions.short_options import ShortOptionsStrategy, ShortOptionsConfig
+        from src.strategy.versions.short_options import ShortOptionsStrategy, ShortOptionsConfig
 
         assert ShortOptionsStrategy is not None
         assert ShortOptionsConfig is not None

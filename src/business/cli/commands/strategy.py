@@ -22,7 +22,7 @@ def strategy() -> None:
 @strategy.command("list")
 def list_strategies() -> None:
     """列出所有可用的 V2 策略"""
-    from src.backtest.strategy.registry import BacktestStrategyRegistry
+    from src.strategy.registry import BacktestStrategyRegistry
 
     strategies = BacktestStrategyRegistry.get_available_strategies()
     click.echo(f"\n可用策略 ({len(strategies)} 个):")
@@ -86,8 +86,8 @@ def run(
       # 实际下单到 IBKR Paper
       optrade strategy run -s short_put_with_assignment -S SPY --execute
     """
-    from src.backtest.strategy.registry import BacktestStrategyRegistry
-    from src.backtest.strategy.risk.account_risk import AccountRiskGuard
+    from src.strategy.registry import BacktestStrategyRegistry
+    from src.strategy.risk_guards.account_risk import AccountRiskGuard
     from src.business.trading.config.risk_config import RiskConfig
     from src.business.trading.live_executor import LiveStrategyExecutor
     from src.business.trading.pipeline import TradingPipeline
