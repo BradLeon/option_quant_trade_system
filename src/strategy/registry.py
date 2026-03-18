@@ -210,6 +210,16 @@ def _create_leaps_v2_no_sweep(**kwargs) -> StrategyProtocol:
     return MomentumMixedV2Strategy(config)
 
 
+def _create_leaps_short_put_v3(**kwargs) -> StrategyProtocol:
+    """LEAPS V3: momentum LEAPS + short put spread overlay on idle cash."""
+    from src.strategy.versions.leaps_short_put_v3 import (
+        LeapsShortPutV3Strategy,
+        LeapsShortPutV3Config,
+    )
+    config = LeapsShortPutV3Config(name="leaps_short_put_v3", **kwargs)
+    return LeapsShortPutV3Strategy(config)
+
+
 def _create_bull_put_spread(**kwargs) -> StrategyProtocol:
     from src.strategy.versions.spread import BullPutSpreadStrategy, BullPutSpreadConfig
     config = BullPutSpreadConfig(**kwargs)
@@ -306,6 +316,10 @@ _REGISTRY: dict[str, Any] = {
     "leaps_cash_sweep": _create_leaps_only_cash_sweep,
     "leaps_v2_cash_sweep": _create_leaps_v2_cash_sweep,
     "leaps_v2_no_sweep": _create_leaps_v2_no_sweep,
+
+    # LEAPS V3 (LEAPS + short put overlay)
+    "leaps_short_put_v3": _create_leaps_short_put_v3,
+    "leaps_v3": _create_leaps_short_put_v3,
 
     # Multi-leg combo strategies
     "bull_put_spread": _create_bull_put_spread,
