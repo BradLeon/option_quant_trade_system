@@ -89,7 +89,10 @@ class MomentumVolTargetComputer:
             "sma20": 0.0, "sma50": 0.0, "sma200": 0.0, "symbol": "",
         }
 
-        symbols = list(market.prices.keys())
+        # Use the primary trading symbol — exclude cash-equivalent ETFs
+        # (SHV/SGOV/BIL/SCHO) which may be present from Cash Sweep.
+        from src.strategy.cash_sweep import CASH_EQUIVALENT_SYMBOLS
+        symbols = [s for s in market.prices.keys() if s not in CASH_EQUIVALENT_SYMBOLS]
         if not symbols:
             return empty
 

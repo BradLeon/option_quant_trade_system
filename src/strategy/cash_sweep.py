@@ -30,6 +30,8 @@ class CashSweepConfig:
     min_cash_buffer_pct: float = 0.05  # 保留 5% NLV 裸现金
     sweep_threshold: float = 10_000  # 闲置 > $10k 才买入
     min_trade_size: int = 10  # 最少交易 10 股
+    cooldown_days: int = 5  # 买入后至少持有 N 天才允许卖出（避免频繁周转）
+    require_strategy_position: bool = True  # 仅当策略有持仓时才 sweep（target=0 时不买入）
 
 
 class CashSweepMixin:
@@ -43,6 +45,7 @@ class CashSweepMixin:
     """
 
     _cash_sweep_config: CashSweepConfig
+    _cash_sweep_last_buy_day: int = 0  # 上次买入的交易日序号（用于冷却期）
 
     def compute_cash_sweep_exits(
         self,
@@ -99,11 +102,15 @@ class CashSweepMixin:
         market: MarketSnapshot,
         portfolio: PortfolioState,
         cash_reserved: float = 0,
+        has_strategy_position: bool = True,
+        trading_day: int = 0,
     ) -> list[Signal]:
         """买入现金 ETF 投资闲置现金。
 
         Args:
             cash_reserved: 已预留给其他入场信号的现金（不参与 sweep）。
+            has_strategy_position: 策略是否有非现金持仓（target>0）。
+            trading_day: 当前交易日序号（用于冷却期计算）。
 
         触发条件: idle_cash = cash - NLV*buffer_pct - cash_reserved > sweep_threshold。
         """
@@ -116,6 +123,10 @@ class CashSweepMixin:
 
         cfg = self._cash_sweep_config
         if not cfg.enabled:
+            return []
+
+        # 策略无持仓时（momentum target=0）不买入 SGOV，避免 exit→buy SGOV→sell SGOV→entry 循环
+        if cfg.require_strategy_position and not has_strategy_position:
             return []
 
         etf_price = market.get_price_or_zero(cfg.instrument_symbol)
@@ -131,6 +142,9 @@ class CashSweepMixin:
         shares = math.floor(idle_cash / etf_price)
         if shares < cfg.min_trade_size:
             return []
+
+        # 记录买入日（用于冷却期）
+        self._cash_sweep_last_buy_day = trading_day
 
         instrument = Instrument(
             type=InstrumentType.STOCK,

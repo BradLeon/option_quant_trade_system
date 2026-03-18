@@ -202,27 +202,40 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
             if price > 0:
                 cash_needed += abs(s.target_quantity) * price * s.instrument.lot_size
 
-        # Cash sweep exits (sell ETF to free up cash)
+        # Cash sweep exits (sell ETF to free up cash) — must come BEFORE entries
+        # so executor sells SHV first, then uses freed cash for LEAPS
         sweep_exits = self.compute_cash_sweep_exits(market, portfolio, cash_needed)
         if sweep_exits:
             self.log("cash_sweep:exit", "pass", count=len(sweep_exits),
                      cash_needed=cash_needed)
-            signals.extend(sweep_exits)
 
         # Cash sweep entries (buy ETF with idle cash, after reserving for strategy entries)
+        # Only sweep when strategy has active positions (target > 0),
+        # otherwise cash will be needed for next entry and we'd just churn
+        has_strategy_pos = any(
+            p for p in portfolio.positions
+            if not (p.instrument.is_stock and p.instrument.underlying in
+                    ("SGOV", "SHV", "BIL", "SCHO"))
+        )
         sweep_entries = self.compute_cash_sweep_entries(
-            market, portfolio, cash_reserved=cash_needed
+            market, portfolio, cash_reserved=cash_needed,
+            has_strategy_position=has_strategy_pos,
+            trading_day=getattr(self, '_day_count', 0),
         )
         if sweep_entries:
             self.log("cash_sweep:entry", "pass", count=len(sweep_entries),
                      cash_reserved=cash_needed)
-            signals.extend(sweep_entries)
 
-        return signals
+        # Reorder: exits first → sweep exits → strategy entries → sweep entries
+        exit_signals = [s for s in signals if s.type == SignalType.EXIT]
+        non_exit_signals = [s for s in signals if s.type != SignalType.EXIT]
+        return exit_signals + sweep_exits + non_exit_signals + sweep_entries
 
     def on_day_start(self, market: MarketSnapshot, portfolio: PortfolioState) -> None:
         self._last_nlv = portfolio.nlv
         self._last_cash = portfolio.cash
+        # Track cash equivalent value separately for budget calculations
+        self._last_cash_equiv_value = portfolio.cash_equivalent_value
         self._pending_rebalance = False
         self._pending_leaps_topup = 0
         self._pending_stock_topup_pct = 0.0
@@ -243,7 +256,9 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
         self, market: MarketSnapshot, portfolio: PortfolioState, data_provider: Any
     ) -> list[Signal]:
         cfg = self._config
-        stock_pos = portfolio.get_stock_positions()
+        # Exclude cash-equivalent ETFs (SHV/SGOV) from strategy position lists
+        stock_pos = [p for p in portfolio.get_stock_positions()
+                     if not p.is_cash_equivalent]
         leaps_pos = [p for p in portfolio.get_option_positions()
                      if p.instrument.right == OptionRight.CALL and p.quantity > 0]
 
@@ -407,8 +422,9 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
         result = self._momentum.compute(market, data_provider)
         target_pct = result["target_pct"]
 
-        # Determine if entry needed
-        stock_pos = portfolio.get_stock_positions()
+        # Determine if entry needed (exclude cash-equivalent ETFs from position checks)
+        stock_pos = [p for p in portfolio.get_stock_positions()
+                     if not p.is_cash_equivalent]
         leaps_pos = [p for p in portfolio.get_option_positions()
                      if p.instrument.right == OptionRight.CALL and p.quantity > 0]
 
@@ -432,7 +448,8 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
             return []
 
         signals: list[Signal] = []
-        symbols = list(market.prices.keys())
+        from src.strategy.cash_sweep import CASH_EQUIVALENT_SYMBOLS
+        symbols = [s for s in market.prices.keys() if s not in CASH_EQUIVALENT_SYMBOLS]
 
         # Compute stock/leaps target allocation
         if self._pending_stock_topup_pct > 0:
@@ -658,11 +675,12 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
         else:
             contracts = math.floor(leaps_pct * self._last_nlv / (delta * lot_size * spot))
 
-        # Cash constraint
+        # Cash constraint (include cash-equivalent ETF as available liquidity)
         if cfg.use_stock_component:
             budget = cfg.max_capital_pct * self._last_nlv
         else:
-            budget = cfg.max_capital_pct * self._last_cash
+            available = self._last_cash + getattr(self, '_last_cash_equiv_value', 0.0)
+            budget = cfg.max_capital_pct * available
         if mid * lot_size > 0:
             max_contracts = math.floor(budget / (mid * lot_size))
             contracts = min(contracts, max_contracts)

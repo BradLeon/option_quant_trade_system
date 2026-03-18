@@ -164,14 +164,19 @@ def _create_leaps_only_cash_sweep(**kwargs) -> StrategyProtocol:
         name="spy_leaps_only_cash_sweep",
         use_stock_component=False,
         cash_interest_enabled=False,
-        cash_sweep_config=CashSweepConfig(enabled=True),
+        cash_sweep_config=CashSweepConfig(enabled=True, instrument_symbol="SHV"),
         **kwargs,
     )
     return MomentumMixedStrategy(config)
 
 
 def _create_leaps_v2_cash_sweep(**kwargs) -> StrategyProtocol:
-    """LEAPS V2 with active SGOV cash sweep."""
+    """LEAPS V2 with active cash sweep.
+
+    Backtest uses SHV (full history since 2007, ~$110 price range).
+    Live trading uses SGOV (better liquidity, ~$100 price range).
+    The instrument can be overridden via kwargs.
+    """
     from src.strategy.versions.momentum_mixed_v2 import (
         MomentumMixedV2Strategy,
         MomentumMixedV2Config,
@@ -181,7 +186,25 @@ def _create_leaps_v2_cash_sweep(**kwargs) -> StrategyProtocol:
         name="leaps_v2_cash_sweep",
         use_stock_component=False,
         cash_interest_enabled=False,
-        cash_sweep_config=CashSweepConfig(enabled=True),
+        cash_sweep_config=CashSweepConfig(
+            enabled=True,
+            instrument_symbol="SHV",  # Backtest: SHV (full history); live: override to SGOV
+        ),
+        **kwargs,
+    )
+    return MomentumMixedV2Strategy(config)
+
+
+def _create_leaps_v2_no_sweep(**kwargs) -> StrategyProtocol:
+    """LEAPS V2 baseline: no cash sweep, no passive interest. Cash sits idle."""
+    from src.strategy.versions.momentum_mixed_v2 import (
+        MomentumMixedV2Strategy,
+        MomentumMixedV2Config,
+    )
+    config = MomentumMixedV2Config(
+        name="leaps_v2_no_sweep",
+        use_stock_component=False,
+        cash_interest_enabled=False,
         **kwargs,
     )
     return MomentumMixedV2Strategy(config)
@@ -282,6 +305,7 @@ _REGISTRY: dict[str, Any] = {
     # LEAPS with active cash sweep (SGOV ETF)
     "leaps_cash_sweep": _create_leaps_only_cash_sweep,
     "leaps_v2_cash_sweep": _create_leaps_v2_cash_sweep,
+    "leaps_v2_no_sweep": _create_leaps_v2_no_sweep,
 
     # Multi-leg combo strategies
     "bull_put_spread": _create_bull_put_spread,
