@@ -87,6 +87,7 @@ class MomentumVolTargetComputer:
             "target_pct": 0.0, "momentum_score": 0, "raw_target": 0.0,
             "vol_scalar": 0.0, "vix": 0.0, "close": 0.0,
             "sma20": 0.0, "sma50": 0.0, "sma200": 0.0, "symbol": "",
+            "data_available": False,
         }
 
         # Use the primary trading symbol — exclude cash-equivalent ETFs
@@ -102,9 +103,10 @@ class MomentumVolTargetComputer:
         prices = self._fetch_prices(symbol, market.date, data_provider)
         max_sma = max(cfg.sma_periods)
         if prices is None or len(prices) < max_sma:
-            logger.debug(
+            logger.warning(
                 f"Momentum: insufficient data for {symbol} "
-                f"({len(prices) if prices else 0} < {max_sma})"
+                f"({len(prices) if prices else 0} < {max_sma}), "
+                f"returning HOLD (data_available=False)"
             )
             return {**empty, "symbol": symbol}
 
@@ -148,6 +150,7 @@ class MomentumVolTargetComputer:
                 "target_pct": 0.0, "momentum_score": score, "raw_target": 0.0,
                 "vol_scalar": 0.0, "vix": 0.0, "close": close,
                 "sma20": sma20, "sma50": sma50, "sma200": sma200, "symbol": symbol,
+                "data_available": True,
             }
 
         # === Vol Target risk adjustment ===
@@ -172,6 +175,7 @@ class MomentumVolTargetComputer:
             "sma50": sma50,
             "sma200": sma200,
             "symbol": symbol,
+            "data_available": True,
         }
 
     def _fetch_prices(

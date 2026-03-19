@@ -269,6 +269,7 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
         result = self._momentum.compute(market, data_provider)
         self._last_signal_detail = result
         target_pct = result["target_pct"]
+        data_available = result.get("data_available", True)
 
         current_pct = self._compute_current_exposure(stock_pos, leaps_pos, market)
         self._last_signal_detail["current_pct"] = current_pct
@@ -277,10 +278,20 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
                  target_pct=target_pct, current_pct=current_pct,
                  momentum_score=result.get("momentum_score", 0),
                  vix=result.get("vix", 0),
+                 data_available=data_available,
                  positions=([f"Stock: {p.instrument.underlying} qty={p.quantity}" for p in stock_pos]
                             + [f"LEAPS: {p.instrument.symbol} qty={p.quantity} DTE={p.dte} delta={p.delta or 0:.2f}" for p in leaps_pos]))
 
         signals: list[Signal] = []
+
+        # SAFETY: If momentum data is unavailable (price history fetch failed),
+        # HOLD positions instead of closing them. A data failure should never
+        # trigger full liquidation.
+        if not data_available:
+            self.log("exit_scan:data_unavailable", "warn",
+                     action="HOLD — 数据不可用，保持现有持仓",
+                     momentum_score=result.get("momentum_score", 0))
+            return []
 
         # a) target == 0 → exit all (LEAPS first, then stock)
         if target_pct == 0.0:
@@ -421,6 +432,12 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
         cfg = self._config
         result = self._momentum.compute(market, data_provider)
         target_pct = result["target_pct"]
+        data_available = result.get("data_available", True)
+
+        if not data_available:
+            self.log("entry_signal:data_unavailable", "warn",
+                     action="SKIP — 数据不可用，不开新仓")
+            return []
 
         # Determine if entry needed (exclude cash-equivalent ETFs from position checks)
         stock_pos = [p for p in portfolio.get_stock_positions()
