@@ -210,6 +210,61 @@ def _create_leaps_v2_no_sweep(**kwargs) -> StrategyProtocol:
     return MomentumMixedV2Strategy(config)
 
 
+def _create_leaps_vixterm(**kwargs) -> StrategyProtocol:
+    """LEAPS + VIX term structure timing + SHV cash sweep."""
+    from src.strategy.versions.leaps_vixterm import (
+        LeapsVIXTermStrategy,
+        LeapsVIXTermConfig,
+    )
+    config = LeapsVIXTermConfig(name="leaps_vixterm", **kwargs)
+    return LeapsVIXTermStrategy(config)
+
+
+def _create_leaps_vixterm_no_rate(**kwargs) -> StrategyProtocol:
+    """LEAPS VIXTerm without rate momentum (A/B: isolate VIXTerm effect)."""
+    from src.strategy.versions.leaps_vixterm import (
+        LeapsVIXTermStrategy,
+        LeapsVIXTermConfig,
+        RateMomentumConfig,
+    )
+    config = LeapsVIXTermConfig(
+        name="leaps_vixterm_no_rate",
+        rate_momentum=RateMomentumConfig(enabled=False),
+        **kwargs,
+    )
+    return LeapsVIXTermStrategy(config)
+
+
+def _create_leaps_vixterm_rate_only(**kwargs) -> StrategyProtocol:
+    """LEAPS with rate momentum only, no VIXTerm (A/B: isolate rate effect)."""
+    from src.strategy.versions.leaps_vixterm import (
+        LeapsVIXTermStrategy,
+        LeapsVIXTermConfig,
+        VIXTermConfig,
+    )
+    # Set VIXTerm thresholds impossibly high → effectively disabled
+    config = LeapsVIXTermConfig(
+        name="leaps_vixterm_rate_only",
+        vixterm=VIXTermConfig(
+            severe_backwardation=99.0,
+            mild_backwardation=99.0,
+            near_flat=99.0,
+        ),
+        **kwargs,
+    )
+    return LeapsVIXTermStrategy(config)
+
+
+def _create_leaps_smartrisk(**kwargs) -> StrategyProtocol:
+    """LEAPS + SmartRisk 3-tier: panic + bear limiter + vol target."""
+    from src.strategy.versions.leaps_smartrisk import (
+        LeapsSmartRiskStrategy,
+        LeapsSmartRiskConfig,
+    )
+    config = LeapsSmartRiskConfig(name="leaps_smartrisk", **kwargs)
+    return LeapsSmartRiskStrategy(config)
+
+
 def _create_leaps_short_put_v3(**kwargs) -> StrategyProtocol:
     """LEAPS V3: momentum LEAPS + short put spread overlay on idle cash."""
     from src.strategy.versions.leaps_short_put_v3 import (
@@ -217,6 +272,25 @@ def _create_leaps_short_put_v3(**kwargs) -> StrategyProtocol:
         LeapsShortPutV3Config,
     )
     config = LeapsShortPutV3Config(name="leaps_short_put_v3", **kwargs)
+    return LeapsShortPutV3Strategy(config)
+
+
+def _create_leaps_v3_naked(**kwargs) -> StrategyProtocol:
+    """LEAPS V3 naked: single-leg short put overlay (no spread protection)."""
+    from src.strategy.versions.leaps_short_put_v3 import (
+        LeapsShortPutV3Strategy,
+        LeapsShortPutV3Config,
+    )
+    from src.strategy.overlay.short_put_overlay import ShortPutOverlayConfig
+    config = LeapsShortPutV3Config(
+        name="leaps_v3_naked",
+        overlay=ShortPutOverlayConfig(
+            use_spread=False,
+            max_spreads=5,         # Fewer contracts (higher margin per contract)
+            max_margin_pct=0.40,   # More conservative (no defined risk)
+        ),
+        **kwargs,
+    )
     return LeapsShortPutV3Strategy(config)
 
 
@@ -317,9 +391,18 @@ _REGISTRY: dict[str, Any] = {
     "leaps_v2_cash_sweep": _create_leaps_v2_cash_sweep,
     "leaps_v2_no_sweep": _create_leaps_v2_no_sweep,
 
+    # LEAPS VIXTerm (VIX term structure timing + SHV sweep)
+    "leaps_vixterm": _create_leaps_vixterm,
+    "leaps_vixterm_no_rate": _create_leaps_vixterm_no_rate,
+    "leaps_vixterm_rate_only": _create_leaps_vixterm_rate_only,
+
+    # LEAPS SmartRisk (3-tier: panic + bear + vol target)
+    "leaps_smartrisk": _create_leaps_smartrisk,
+
     # LEAPS V3 (LEAPS + short put overlay)
     "leaps_short_put_v3": _create_leaps_short_put_v3,
     "leaps_v3": _create_leaps_short_put_v3,
+    "leaps_v3_naked": _create_leaps_v3_naked,
 
     # Multi-leg combo strategies
     "bull_put_spread": _create_bull_put_spread,
