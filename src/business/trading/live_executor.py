@@ -188,12 +188,16 @@ class LiveStrategyExecutor:
             signals = guard.check(signals, port_state, market)
             after = len(signals)
             guard_name = type(guard).__name__
+            filtered_reasons = getattr(guard, "last_filtered", [])
+            extra: dict[str, Any] = dict(
+                before=before, after=after, filtered=before - after,
+            )
+            if filtered_reasons:
+                extra["positions"] = filtered_reasons  # render as indented lines
             trace.record(
                 f"risk_guards:{guard_name}",
                 "pass" if after == before else "info",
-                before=before,
-                after=after,
-                filtered=before - after,
+                **extra,
             )
 
         filtered_count = len(signals)

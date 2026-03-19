@@ -32,6 +32,7 @@ class CashSweepConfig:
     min_trade_size: int = 10  # 最少交易 10 股
     cooldown_days: int = 5  # 买入后至少持有 N 天才允许卖出（避免频繁周转）
     require_strategy_position: bool = True  # 仅当策略有持仓时才 sweep（target=0 时不买入）
+    max_value_pct: float = 0.10  # 单次 sweep 买入不超过 NLV 的 10%
 
 
 class CashSweepMixin:
@@ -140,6 +141,10 @@ class CashSweepMixin:
             return []
 
         shares = math.floor(idle_cash / etf_price)
+        # Cap: 单次买入 ≤ NLV × max_value_pct
+        if portfolio.nlv > 0 and cfg.max_value_pct > 0:
+            max_shares = math.floor(portfolio.nlv * cfg.max_value_pct / etf_price)
+            shares = min(shares, max_shares)
         if shares < cfg.min_trade_size:
             return []
 

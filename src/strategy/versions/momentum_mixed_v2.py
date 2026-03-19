@@ -275,10 +275,7 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
         self._last_signal_detail["current_pct"] = current_pct
 
         self.log("exit_scan:momentum", "info",
-                 target_pct=target_pct, current_pct=current_pct,
-                 momentum_score=result.get("momentum_score", 0),
-                 vix=result.get("vix", 0),
-                 data_available=data_available,
+                 **{k: v for k, v in result.items() if k != "symbol"},
                  positions=([f"Stock: {p.instrument.underlying} qty={p.quantity}" for p in stock_pos]
                             + [f"LEAPS: {p.instrument.symbol} qty={p.quantity} DTE={p.dte} delta={p.delta or 0:.2f}" for p in leaps_pos]))
 
@@ -459,8 +456,8 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
 
         if not need_entry or target_pct <= 0:
             self.log("entry_signal:check", "skip",
-                     target_pct=target_pct,
                      need_entry=need_entry,
+                     **{k: v for k, v in result.items() if k != "symbol"},
                      reason=entry_reason or (f"target_pct={target_pct:.2f}<=0" if target_pct <= 0 else "无入场条件"))
             return []
 
@@ -539,7 +536,7 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
                 "^TNX", current_date - timedelta(days=7), current_date
             )
             if tnx_data:
-                val = tnx_data[-1].close / 1000.0
+                val = tnx_data[-1].value / 1000.0
                 self._tnx_cache[current_date] = val
                 return val
         except Exception:

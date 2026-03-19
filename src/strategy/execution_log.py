@@ -11,6 +11,7 @@ is not affected. The CLI renders the trace for human consumption.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 
@@ -21,6 +22,7 @@ class LogEntry:
     step: str  # e.g. "sma_filter", "option_chain:AAPL"
     status: str  # "pass", "fail", "skip", "error", "info"
     detail: dict[str, Any] = field(default_factory=dict)
+    timestamp: datetime = field(default_factory=datetime.now)
 
     def __str__(self) -> str:
         parts = [f"[{self.step}]", self.status.upper()]
@@ -83,8 +85,9 @@ class ExecutionLog:
             if group != current_group:
                 step_num += 1
                 current_group = group
+                ts = entry.timestamp.strftime("%H:%M:%S")
                 lines.append("")
-                lines.append(f"  Step {step_num}: {_step_title(entry.step)}")
+                lines.append(f"  [{ts}] Step {step_num}: {_step_title(entry.step)}")
                 lines.append(f"  {'─' * 56}")
 
             # Format status icon
@@ -107,6 +110,9 @@ class ExecutionLog:
                 if k == "positions" and isinstance(v, list):
                     for pos_desc in v:
                         extra_lines.append(f"       {pos_desc}")
+                    continue
+                if k == "score_detail" and isinstance(v, str) and v:
+                    extra_lines.append(f"       {v}")
                     continue
                 if isinstance(v, float):
                     # Smart decimal formatting based on magnitude
