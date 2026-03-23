@@ -14,6 +14,7 @@ from src.strategy.execution_log import ExecutionLog
 from src.strategy.models import (
     MarketSnapshot,
     PortfolioState,
+    PositionView,
     Signal,
 )
 
@@ -62,6 +63,7 @@ class Strategy:
     def __init__(self) -> None:
         self._trading_day_count: int = 0
         self._last_signal_detail: dict = {}
+        self._last_logged_detail_id: int = 0
         self._execution_log: ExecutionLog = ExecutionLog()
 
     @property
@@ -83,14 +85,24 @@ class Strategy:
         portfolio: PortfolioState,
         data_provider: Any,
     ) -> list[Signal]:
-        """Template method: day_start → exits → entries."""
+        """Template method: portfolio_log → day_start → exits → entries."""
         self._execution_log.clear()
         self._trading_day_count += 1
+        self._last_logged_detail_id = 0
+
+        # ① Auto-log portfolio state
+        self._auto_log_portfolio(market, portfolio)
+
         self.on_day_start(market, portfolio)
 
         signals: list[Signal] = []
 
+        # ② Exit signals
         exit_signals = self.compute_exit_signals(market, portfolio, data_provider)
+
+        # ③ Auto-log signal context after exit computation
+        self._auto_log_signal_context("exit_context")
+
         self.log(
             "exit_signals", "ok",
             count=len(exit_signals),
@@ -98,7 +110,12 @@ class Strategy:
         )
         signals.extend(exit_signals)
 
+        # ④ Entry signals
         entry_signals = self.compute_entry_signals(market, portfolio, data_provider)
+
+        # ⑤ Auto-log signal context after entry computation
+        self._auto_log_signal_context("entry_context")
+
         self.log(
             "entry_signals", "ok",
             count=len(entry_signals),
@@ -144,6 +161,65 @@ class Strategy:
         Default: returns signal detail from last computation.
         """
         return dict(self._last_signal_detail)
+
+    # -- Auto-logging methods --------------------------------------------------
+
+    def _auto_log_portfolio(
+        self, market: MarketSnapshot, portfolio: PortfolioState
+    ) -> None:
+        """Auto-log portfolio state with formatted position list."""
+        positions_desc: list[str] = []
+
+        # Group: options first, then stocks, then cash equivalents
+        option_pos = portfolio.get_option_positions()
+        stock_pos = [p for p in portfolio.get_stock_positions() if not p.is_cash_equivalent]
+        cash_equiv = portfolio.get_cash_equivalent_positions()
+
+        for pos in option_pos:
+            positions_desc.append(self._format_position(pos, market))
+        for pos in stock_pos:
+            positions_desc.append(self._format_position(pos, market))
+        for pos in cash_equiv:
+            positions_desc.append(self._format_position(pos, market))
+
+        self.log(
+            "portfolio", "ok",
+            nlv=portfolio.nlv,
+            cash=portfolio.cash,
+            margin_used=portfolio.margin_used,
+            positions=positions_desc,
+        )
+
+    def _auto_log_signal_context(self, phase: str) -> None:
+        """Auto-log signal detail dict if set by strategy.
+
+        Strategies set self._last_signal_detail in compute_exit_signals()
+        or compute_entry_signals(). This method renders it as a log entry.
+        Uses _last_logged_detail_id to avoid double-logging the same dict.
+        Does NOT clear _last_signal_detail — on_day_end() still needs it.
+        """
+        detail = self._last_signal_detail
+        if not detail:
+            return
+
+        detail_id = id(detail)
+        if detail_id == self._last_logged_detail_id:
+            return  # Already logged this exact dict
+        self._last_logged_detail_id = detail_id
+
+        self.log(phase, "info", context=dict(detail))
+
+    @staticmethod
+    def _format_position(pos: PositionView, market: MarketSnapshot) -> str:
+        """Format a single position for display."""
+        parts = [f"{pos.instrument.symbol} qty={pos.quantity}"]
+        if pos.dte is not None:
+            parts.append(f"DTE={pos.dte}")
+        if pos.delta is not None:
+            parts.append(f"delta={pos.delta:.2f}")
+        if pos.unrealized_pnl != 0:
+            parts.append(f"pnl=${pos.unrealized_pnl:,.0f}")
+        return " ".join(parts)
 
     # -- Utilities for subclasses ----------------------------------------------
 

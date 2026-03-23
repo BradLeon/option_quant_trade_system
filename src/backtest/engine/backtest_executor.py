@@ -270,7 +270,8 @@ class BacktestExecutor:
 
         # 初始化 Strategy — 统一使用 V2 注册表
         strategy_name = self._config.strategy_version
-        self._strategy = BacktestStrategyRegistry.create(strategy_name)
+        strategy_kwargs = getattr(self._config, "strategy_kwargs", {}) or {}
+        self._strategy = BacktestStrategyRegistry.create(strategy_name, **strategy_kwargs)
         self._signal_converter = SignalConverter()
 
         # Initialize RiskGuard chain (从 RiskConfig 按策略名加载)

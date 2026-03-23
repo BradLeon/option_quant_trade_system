@@ -40,6 +40,11 @@ class MomentumConfig:
     momentum_lookback_long: int = 60
     position_map: dict[int, float] = field(default_factory=lambda: dict(DEFAULT_POSITION_MAP))
 
+    # Hysteresis: minimum score to open new positions (anti-whipsaw)
+    # Exit still triggers at score ≤ 1 (target=0), but entry requires score ≥ entry_min_score.
+    # When holding with score in [2, entry_min_score), positions are held as-is.
+    entry_min_score: int = 3
+
     vol_target: float = 15.0
     vol_scalar_max: float = 2.0
     max_exposure: float = 3.0
@@ -167,13 +172,16 @@ class MomentumVolTargetComputer:
         )
 
         raw_target = cfg.position_map.get(score, 0.0)
+        # Hysteresis: score ≥ entry_min_score to open new positions
+        entry_allowed = score >= cfg.entry_min_score
+
         if raw_target == 0.0:
             vix = self._get_vix(market, data_provider)
             return {
                 "target_pct": 0.0, "momentum_score": score, "score_detail": score_detail,
                 "raw_target": 0.0, "vol_scalar": 0.0, "vix": vix, "close": close,
                 "sma20": sma20, "sma50": sma50, "sma200": sma200, "symbol": symbol,
-                "data_available": True,
+                "data_available": True, "entry_allowed": False,
             }
 
         # === Vol Target risk adjustment ===
@@ -185,6 +193,7 @@ class MomentumVolTargetComputer:
         logger.debug(
             f"Momentum signal: {symbol} score={score} raw={raw_target:.1f} "
             f"vix={vix:.1f} vol_scalar={vol_scalar:.2f} → target={target_pct:.2f}"
+            f" entry_allowed={entry_allowed}"
         )
 
         return {
@@ -200,6 +209,7 @@ class MomentumVolTargetComputer:
             "sma200": sma200,
             "symbol": symbol,
             "data_available": True,
+            "entry_allowed": entry_allowed,
         }
 
     def _fetch_prices(

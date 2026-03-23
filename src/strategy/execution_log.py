@@ -111,8 +111,9 @@ class ExecutionLog:
                     for pos_desc in v:
                         extra_lines.append(f"       {pos_desc}")
                     continue
-                if k == "score_detail" and isinstance(v, str) and v:
-                    extra_lines.append(f"       {v}")
+                if isinstance(v, dict):
+                    for dk, dv in v.items():
+                        extra_lines.append(f"       {dk}={_fmt_value(dv)}")
                     continue
                 if isinstance(v, float):
                     # Smart decimal formatting based on magnitude
@@ -122,8 +123,6 @@ class ExecutionLog:
                         detail_parts.append(f"{k}={v:.2f}")
                     else:
                         detail_parts.append(f"{k}={v:.4f}")
-                elif isinstance(v, dict):
-                    continue
                 else:
                     detail_parts.append(f"{k}={v}")
             detail_str = ", ".join(detail_parts)
@@ -140,6 +139,20 @@ class ExecutionLog:
                 lines.append(extra)
 
         return "\n".join(lines)
+
+
+def _fmt_value(v: Any) -> str:
+    """Format a single value for display."""
+    if isinstance(v, float):
+        if abs(v) >= 100:
+            return f"{v:,.2f}"
+        elif abs(v) >= 1:
+            return f"{v:.2f}"
+        else:
+            return f"{v:.4f}"
+    if isinstance(v, list):
+        return ", ".join(str(x) for x in v)
+    return str(v)
 
 
 def _status_icon(status: str) -> str:
@@ -160,14 +173,17 @@ def _step_title(step: str) -> str:
         "market_snapshot": "构建市场快照",
         "portfolio_state": "构建组合状态",
         "strategy_call": "策略信号生成",
+        "portfolio": "组合状态",
         "day_start": "策略初始化",
         "exit_scan": "退出信号扫描",
+        "exit_context": "退出信号上下文",
         "exit_signals": "退出信号汇总",
         "trend_filter": "趋势过滤",
         "technical_filter": "技术指标过滤",
         "option_chain": "期权链获取",
         "contract_select": "合约筛选",
         "entry_signal": "入场信号",
+        "entry_context": "入场信号上下文",
         "entry_signals": "入场信号汇总",
         "risk_guards": "风控过滤",
         "signal_convert": "信号转换",

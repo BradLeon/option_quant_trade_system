@@ -244,13 +244,7 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
         if market.vix and market.vix > 0:
             self._vix_history.append(market.vix)
 
-        stock_pos = portfolio.get_stock_positions()
-        leaps_pos = [p for p in portfolio.get_option_positions()
-                     if p.instrument.right == OptionRight.CALL and p.quantity > 0]
-        self.log("day_start", "info",
-                 nlv=portfolio.nlv, cash=portfolio.cash,
-                 stock_positions=len(stock_pos), leaps_positions=len(leaps_pos),
-                 mode="stock+LEAPS" if self._config.use_stock_component else "LEAPS-only")
+        # day_start log handled by base class _auto_log_portfolio
 
     def compute_exit_signals(
         self, market: MarketSnapshot, portfolio: PortfolioState, data_provider: Any
@@ -274,10 +268,7 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
         current_pct = self._compute_current_exposure(stock_pos, leaps_pos, market)
         self._last_signal_detail["current_pct"] = current_pct
 
-        self.log("exit_scan:momentum", "info",
-                 **{k: v for k, v in result.items() if k != "symbol"},
-                 positions=([f"Stock: {p.instrument.underlying} qty={p.quantity}" for p in stock_pos]
-                            + [f"LEAPS: {p.instrument.symbol} qty={p.quantity} DTE={p.dte} delta={p.delta or 0:.2f}" for p in leaps_pos]))
+        # exit_scan:momentum context logged by base class _auto_log_signal_context
 
         signals: list[Signal] = []
 
@@ -442,23 +433,27 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
         leaps_pos = [p for p in portfolio.get_option_positions()
                      if p.instrument.right == OptionRight.CALL and p.quantity > 0]
 
+        entry_allowed = result.get("entry_allowed", True)
         need_entry = False
         entry_reason = ""
         if self._pending_rebalance or self._pending_stock_topup_pct > 0:
+            # Roll / rebalance topup — always allowed regardless of entry_allowed
             need_entry = True
             entry_reason = f"pending_rebalance={self._pending_rebalance} pending_stock_topup={self._pending_stock_topup_pct:.2f}"
         elif target_pct > 0 and not stock_pos and not leaps_pos:
-            if self._is_decision_day(cfg.decision_frequency):
+            if not entry_allowed:
+                score = result.get("momentum_score", 0)
+                min_score = cfg.momentum.entry_min_score
+                entry_reason = f"hysteresis: score={score} < entry_min_score={min_score}"
+            elif self._is_decision_day(cfg.decision_frequency):
                 need_entry = True
                 entry_reason = f"无持仓+决策日 (freq={cfg.decision_frequency})"
             else:
                 entry_reason = f"无持仓但非决策日 (day={self._trading_day_count} freq={cfg.decision_frequency})"
 
         if not need_entry or target_pct <= 0:
-            self.log("entry_signal:check", "skip",
-                     need_entry=need_entry,
-                     **{k: v for k, v in result.items() if k != "symbol"},
-                     reason=entry_reason or (f"target_pct={target_pct:.2f}<=0" if target_pct <= 0 else "无入场条件"))
+            # Signal context logged by base class _auto_log_signal_context
+            self._last_signal_detail = result
             return []
 
         signals: list[Signal] = []
