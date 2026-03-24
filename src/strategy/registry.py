@@ -359,6 +359,13 @@ def _create_short_put_without(**kwargs) -> StrategyProtocol:
     ))
 
 
+def _create_leverage_rotation(**kwargs) -> StrategyProtocol:
+    """Leverage Rotation Strategy (论文 LRS): SMA200 二元信号 + LEAPS + SHV sweep."""
+    from src.strategy.versions.leverage_rotation import LeverageRotationStrategy, LeverageRotationConfig
+    config = LeverageRotationConfig(**kwargs)
+    return LeverageRotationStrategy(config)
+
+
 # Registry: name → factory function
 _REGISTRY: dict[str, Any] = {
     # New V2 strategies (parameterized)
@@ -410,6 +417,10 @@ _REGISTRY: dict[str, Any] = {
     "bull_put_spread_tight": _create_bull_put_spread_tight,
     "bull_put_spread_wide": _create_bull_put_spread_wide,
     "bull_put_spread_conservative": _create_bull_put_spread_conservative,
+
+    # Leverage Rotation Strategy (论文 LRS: SMA200 binary + LEAPS + SHV)
+    "leverage_rotation": _create_leverage_rotation,
+    "lrs": _create_leverage_rotation,
 
     # Short put (native V2)
     "short_put_with_assignment": _create_short_put_with,

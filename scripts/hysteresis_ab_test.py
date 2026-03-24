@@ -18,6 +18,7 @@ SYMBOL = "QQQ"
 START = date(2016, 6, 1)
 END = date(2026, 3, 1)
 CAPITAL = 1_000_000
+DATA_DIR = "/Volumes/ORICO/option_quant"  # 使用真实期权数据
 STRATEGY = "leaps_v2_cash_sweep"
 
 configs = {
@@ -38,6 +39,7 @@ for label, momentum_cfg in configs.items():
         end_date=END,
         symbols=[SYMBOL],
         initial_capital=CAPITAL,
+        data_dir=DATA_DIR,
         strategy_version=STRATEGY,
         strategy_kwargs={"momentum": momentum_cfg},
     )
