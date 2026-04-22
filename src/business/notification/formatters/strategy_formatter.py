@@ -104,8 +104,40 @@ class StrategyFormatter:
                 side = order.side.value.upper() if order.side else "N/A"
                 price_str = f"${order.limit_price:.2f}" if order.limit_price else "MKT"
                 symbol_str = order.underlying or order.symbol or "?"
+                decision_tag = (
+                    f" [{order.decision_type.upper()}]" if order.decision_type else ""
+                )
 
-                line = f"{icon} #{i} {side} {order.quantity} {symbol_str} @ {price_str}"
+                if order.is_option:
+                    opt_type = (
+                        order.option_type.capitalize() if order.option_type else "-"
+                    )
+                    strike_str = (
+                        f"${order.strike:g}" if order.strike is not None else "-"
+                    )
+                    expiry_str = _format_expiry(order.expiry)
+                    notional = 0.0
+                    if order.limit_price is not None:
+                        notional = (
+                            order.limit_price
+                            * order.quantity
+                            * (order.contract_multiplier or 100)
+                        )
+                    contract_desc = (
+                        f"{symbol_str} {opt_type} {strike_str} {expiry_str}"
+                    )
+                    line = (
+                        f"{icon} #{i}{decision_tag} {side} {order.quantity} "
+                        f"{contract_desc} @ {price_str}"
+                    )
+                    if notional:
+                        line += f" (名义 ${notional:,.0f})"
+                else:
+                    line = (
+                        f"{icon} #{i}{decision_tag} {side} {order.quantity} "
+                        f"{symbol_str} @ {price_str}"
+                    )
+
                 if record.broker_order_id:
                     line += f" | IBKR#{record.broker_order_id}"
                 line += f" | {record.broker_status or order.status.value}"
@@ -235,6 +267,16 @@ class StrategyFormatter:
             content += f"| {underlying} | {opt_type} | {strike} | {expiry} | {dte} | {qty} | {cost} | {price} | {pnl_val} | {status} |\n"
 
         return FeishuCardBuilder.create_text_element(content)
+
+
+def _format_expiry(expiry: str | None) -> str:
+    """Normalize expiry (YYYYMMDD 或 YYYY-MM-DD) 为 YYYY-MM-DD。"""
+    if not expiry:
+        return "-"
+    s = expiry.strip()
+    if len(s) == 8 and s.isdigit():
+        return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
+    return s
 
 
 def _pillar_status(
