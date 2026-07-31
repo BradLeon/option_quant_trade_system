@@ -119,14 +119,15 @@ class CurrencyConverter:
         Returns:
             Exchange rate (1 source = X target).
         """
-        # Ensure rates are fresh
-        self._ensure_fresh_rates()
-
         currency = currency.upper()
         to_currency = to_currency.upper()
 
+        # Short-circuit: same currency needs no rate lookup or refresh
         if currency == to_currency:
             return 1.0
+
+        # Only refresh rates when actual cross-currency conversion is needed
+        self._ensure_fresh_rates()
 
         # Get rate to USD first
         from_rate = self._rates.get(currency, self.DEFAULT_RATES.get(currency, 1.0))
@@ -164,16 +165,28 @@ class CurrencyConverter:
     def get_all_rates(self) -> dict[str, float]:
         """Get all current exchange rates (to USD).
 
+        Returns cached rates without triggering a refresh.
+        Rates are refreshed lazily when get_rate() is called
+        for an actual cross-currency conversion.
+
         Returns:
             Dictionary of currency codes to USD rates.
         """
-        self._ensure_fresh_rates()
         return dict(self._rates)
 
     def _ensure_fresh_rates(self) -> None:
-        """Ensure rates are fresh, refresh if stale."""
+        """Ensure rates are fresh, refresh if stale.
+
+        Note: This is only called for actual cross-currency conversions
+        (same-currency is short-circuited in get_rate()). Rates are NOT
+        auto-refreshed on first use — callers who need live rates should
+        call refresh_rates() explicitly. This avoids 5 Yahoo Finance API
+        calls for portfolios that only have trivial foreign currency amounts.
+        """
         if self._last_refresh is None:
-            self.refresh_rates()
+            # Don't auto-refresh on first use — DEFAULT_RATES are good enough
+            # for trivial amounts. Callers like AccountAggregator explicitly
+            # call refresh_rates() when significant foreign holdings exist.
             return
 
         if datetime.now() - self._last_refresh > self._cache_ttl:

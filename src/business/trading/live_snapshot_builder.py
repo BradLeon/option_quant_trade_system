@@ -71,6 +71,11 @@ class LiveSnapshotBuilder:
 
         # Fetch VIX
         vix = self._get_vix()
+        if vix is None:
+            logger.warning(
+                "VIX data unavailable — strategy momentum signals may be "
+                "unreliable. Strategies should HOLD, not liquidate."
+            )
 
         # Fetch risk-free rate (10Y Treasury yield)
         risk_free_rate = self._get_risk_free_rate()

@@ -54,6 +54,13 @@ DEFAULT_MACRO_INDICATORS = [
     "SPY",       # S&P 500 ETF
     "QQQ",       # NASDAQ-100 ETF
     "TLT",       # 20+ Year Treasury Bond ETF
+    # All-Weather ETFs
+    "GLD",       # Gold ETF
+    "DBC",       # Commodities ETF
+    "TIP",       # TIPS ETF
+    "HYG",       # High Yield Bond ETF
+    "EEM",       # Emerging Markets ETF
+    "SHV",       # Short Treasury ETF (cash proxy)
 ]
 
 
@@ -310,6 +317,115 @@ class MacroDownloader:
         except Exception as e:
             logger.error(f"Failed to get date range: {e}")
             return None
+
+    def download_as_stock_daily(
+        self,
+        symbols: list[str],
+        start_date: date,
+        end_date: date,
+        on_progress: Callable[[str, int, int], None] | None = None,
+    ) -> dict[str, int]:
+        """Download ETF/stock OHLCV data via yfinance and save to stock_daily.parquet.
+
+        Writes into the same stock_daily.parquet that DuckDBProvider reads,
+        merging with any existing data (append + dedup).
+
+        Args:
+            symbols: List of tickers (e.g. ["GLD", "DBC", "SHV"])
+            start_date: Start date
+            end_date: End date
+            on_progress: Progress callback (symbol, current, total)
+
+        Returns:
+            {symbol: record_count}
+        """
+        import time
+
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        try:
+            import yfinance as yf
+        except ImportError:
+            logger.error("yfinance not installed — run: pip install yfinance")
+            return {}
+
+        results: dict[str, int] = {}
+        rows: list[dict] = []
+        total = len(symbols)
+
+        for i, symbol in enumerate(symbols):
+            if on_progress:
+                on_progress(symbol, i + 1, total)
+            if i > 0:
+                time.sleep(self._rate_limit)
+
+            try:
+                logger.info(f"Downloading stock daily for {symbol}...")
+                ticker = yf.Ticker(symbol)
+                hist = ticker.history(
+                    start=start_date.strftime("%Y-%m-%d"),
+                    end=(end_date + timedelta(days=1)).strftime("%Y-%m-%d"),
+                    interval="1d",
+                )
+                if hist.empty:
+                    logger.warning(f"No stock daily data for {symbol}")
+                    results[symbol] = 0
+                    continue
+
+                count = 0
+                for timestamp, row in hist.iterrows():
+                    rows.append({
+                        "symbol": symbol,
+                        "date": timestamp.date(),
+                        "open": float(row["Open"]),
+                        "high": float(row["High"]),
+                        "low": float(row["Low"]),
+                        "close": float(row["Close"]),
+                        "volume": int(row["Volume"]) if row["Volume"] else 0,
+                    })
+                    count += 1
+                results[symbol] = count
+                logger.info(f"Downloaded {count} stock daily records for {symbol}")
+
+            except Exception as e:
+                logger.error(f"Failed to download stock daily for {symbol}: {e}")
+                results[symbol] = 0
+
+        if not rows:
+            return results
+
+        # Build PyArrow table
+        new_table = pa.Table.from_pydict({
+            "symbol": [r["symbol"] for r in rows],
+            "date": [r["date"] for r in rows],
+            "open": [r["open"] for r in rows],
+            "high": [r["high"] for r in rows],
+            "low": [r["low"] for r in rows],
+            "close": [r["close"] for r in rows],
+            "volume": [r["volume"] for r in rows],
+        })
+
+        # Merge with existing stock_daily.parquet
+        parquet_path = self._data_dir / "stock_daily.parquet"
+        if parquet_path.exists():
+            existing = pq.read_table(parquet_path)
+            # Align columns
+            keep_cols = [c for c in existing.column_names if c in new_table.column_names]
+            existing = existing.select(keep_cols)
+            combined = pa.concat_tables([existing, new_table])
+            combined_df = combined.to_pandas()
+            combined_df = combined_df.drop_duplicates(
+                subset=["symbol", "date"], keep="last"
+            )
+            combined_df = combined_df.sort_values(["symbol", "date"])
+            new_table = pa.Table.from_pandas(combined_df, preserve_index=False)
+
+        pq.write_table(new_table, parquet_path)
+        logger.info(f"Saved {len(rows)} stock daily records to {parquet_path}")
+
+        self._update_catalog()
+        return results
 
     def get_record_count(self, indicator: str | None = None) -> int:
         """获取记录数

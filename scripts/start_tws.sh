@@ -14,8 +14,8 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-# TWS 主版本号 (从 ~/Applications/Trader Workstation 获取)
-TWS_MAJOR_VRSN=10.38
+# TWS 主版本号 (必须是离线安装版，不能用自动更新版)
+TWS_MAJOR_VRSN=10.37
 
 # 解析账户类型参数
 ACCOUNT_TYPE="${1:-paper}"
@@ -85,9 +85,9 @@ else
 	>&2 exit 1
 fi
 
-# 检查是否已有 TWS 实例运行 (任何配置)
-if [[ -n $(/usr/bin/pgrep -f "java.*IBC") ]]; then
-	>&2 echo -e "Error: TWS/IBC process is already running"
+# 检查是否已有 TWS 实例运行 (IBC 启动 = java.*IBC, 手动启动 = JavaApplicationStub)
+if /usr/bin/pgrep -f "java.*(IBC|tws|jts)" >/dev/null 2>&1 || /usr/bin/pgrep -f "JavaApplicationStub" >/dev/null 2>&1; then
+	>&2 echo -e "Error: TWS process is already running"
 	>&2 echo -e "Use ${SCRIPT_DIR}/ensure_tws.sh ${ACCOUNT_TYPE} to switch accounts"
 	>&2 exit 1
 fi

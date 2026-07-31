@@ -129,6 +129,11 @@ class BacktestConfig:
     screening_overrides: dict[str, Any] = field(default_factory=dict)
     monitoring_overrides: dict[str, Any] = field(default_factory=dict)
 
+    # ========== 策略参数覆盖 ==========
+    # 传递给 StrategyRegistry.create() 的 kwargs
+    # 例如: {"momentum": MomentumConfig(entry_min_score=4)}
+    strategy_kwargs: dict[str, Any] = field(default_factory=dict)
+
     def __post_init__(self) -> None:
         """初始化后验证"""
         # 确保 symbols 是列表

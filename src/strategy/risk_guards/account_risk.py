@@ -60,6 +60,7 @@ class AccountRiskGuard:
 
     def __init__(self, config: AccountRiskConfig | Any | None = None) -> None:
         self._config = _extract_config(config)
+        self.last_filtered: list[str] = []  # 上次 check() 被过滤的原因列表
 
     def check(
         self,
@@ -69,6 +70,7 @@ class AccountRiskGuard:
     ) -> list[Signal]:
         approved: list[Signal] = []
         entry_count = 0
+        self.last_filtered = []
 
         for signal in signals:
             # Always allow exits and rolls
@@ -87,21 +89,24 @@ class AccountRiskGuard:
                 1 for p in portfolio.positions if not p.is_cash_equivalent
             ) + entry_count
             if current_count >= self._config.max_positions:
-                logger.warning(
-                    f"AccountRisk: blocked {signal.instrument.symbol} — "
+                reason = (
+                    f"{signal.instrument.symbol}: "
                     f"max positions ({self._config.max_positions}) reached"
                 )
+                logger.warning(f"AccountRisk: blocked {reason}")
+                self.last_filtered.append(reason)
                 continue
 
             # Check margin utilization
             if portfolio.nlv > 0:
                 margin_util = portfolio.margin_used / portfolio.nlv
                 if margin_util >= self._config.max_margin_utilization:
-                    logger.warning(
-                        f"AccountRisk: blocked {signal.instrument.symbol} — "
-                        f"margin utilization {margin_util:.1%} >= "
-                        f"{self._config.max_margin_utilization:.1%}"
+                    reason = (
+                        f"{signal.instrument.symbol}: "
+                        f"margin {margin_util:.1%} >= {self._config.max_margin_utilization:.1%}"
                     )
+                    logger.warning(f"AccountRisk: blocked {reason}")
+                    self.last_filtered.append(reason)
                     continue
 
             # Asset-type aware capital check
@@ -113,21 +118,25 @@ class AccountRiskGuard:
                         - portfolio.margin_used
                     )
                     if available < self._config.min_available_margin:
-                        logger.warning(
-                            f"AccountRisk: blocked {signal.instrument.symbol} — "
+                        reason = (
+                            f"{signal.instrument.symbol}: "
                             f"available margin ${available:,.0f} < "
                             f"min ${self._config.min_available_margin:,.0f}"
                         )
+                        logger.warning(f"AccountRisk: blocked {reason}")
+                        self.last_filtered.append(reason)
                         continue
                 else:
                     # Stock entries: raw cash only (no leverage)
                     cash_pct = portfolio.cash / portfolio.nlv
                     if cash_pct < self._config.min_cash_reserve_pct:
-                        logger.warning(
-                            f"AccountRisk: blocked {signal.instrument.symbol} — "
+                        reason = (
+                            f"{signal.instrument.symbol}: "
                             f"cash {cash_pct:.1%} < min reserve "
                             f"{self._config.min_cash_reserve_pct:.1%}"
                         )
+                        logger.warning(f"AccountRisk: blocked {reason}")
+                        self.last_filtered.append(reason)
                         continue
 
             approved.append(signal)

@@ -1477,44 +1477,6 @@ class BacktestDashboard:
         # 零线
         fig.add_hline(y=0, line_dash="dot", line_color="gray", opacity=0.5)
 
-        # 添加注释显示关键指标
-        annotations = []
-
-        # 总收益对比
-        annotations.append(dict(
-            text=f"Strategy: {br.strategy_total_return:.1%}",
-            xref="paper",
-            yref="paper",
-            x=0.02,
-            y=0.98,
-            showarrow=False,
-            font=dict(size=11, color=self.COLORS["primary"]),
-            bgcolor="rgba(255,255,255,0.8)",
-        ))
-        annotations.append(dict(
-            text=f"Benchmark: {br.benchmark_total_return:.1%}",
-            xref="paper",
-            yref="paper",
-            x=0.02,
-            y=0.93,
-            showarrow=False,
-            font=dict(size=11, color=self.COLORS["secondary"]),
-            bgcolor="rgba(255,255,255,0.8)",
-        ))
-
-        # Alpha 和 Beta
-        if br.alpha is not None and br.beta is not None:
-            annotations.append(dict(
-                text=f"Alpha: {br.alpha:.4f} | Beta: {br.beta:.2f}",
-                xref="paper",
-                yref="paper",
-                x=0.02,
-                y=0.88,
-                showarrow=False,
-                font=dict(size=10, color="gray"),
-                bgcolor="rgba(255,255,255,0.8)",
-            ))
-
         fig.update_layout(
             title=dict(
                 text=f"Strategy vs {br.benchmark_name}",
@@ -1525,9 +1487,8 @@ class BacktestDashboard:
             yaxis_title="Cumulative Return (%)",
             hovermode="x unified",
             showlegend=True,
-            legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99),
+            legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
             template="plotly_white",
-            annotations=annotations,
         )
 
         return fig

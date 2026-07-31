@@ -233,44 +233,49 @@ class MomentumMixedStrategy(BacktestStrategy, CashSweepMixin):
             if price > 0:
                 cash_needed += abs(s.target_quantity) * price * s.instrument.lot_size
 
-        # Cash sweep exits (sell ETF to free up cash)
+        # Cash sweep exits (sell ETF to free up cash) — must come BEFORE entries
         sweep_exits = self.compute_cash_sweep_exits(market, portfolio, cash_needed)
         if sweep_exits:
             self.log("cash_sweep:exit", "pass", count=len(sweep_exits),
                      cash_needed=cash_needed)
-            signals.extend(sweep_exits)
 
         # Cash sweep entries (buy ETF with idle cash, after reserving for strategy entries)
+        has_strategy_pos = any(
+            p for p in portfolio.positions
+            if not (p.instrument.is_stock and p.instrument.underlying in
+                    ("SGOV", "SHV", "BIL", "SCHO"))
+        )
         sweep_entries = self.compute_cash_sweep_entries(
-            market, portfolio, cash_reserved=cash_needed
+            market, portfolio, cash_reserved=cash_needed,
+            has_strategy_position=has_strategy_pos,
+            trading_day=getattr(self, '_day_count', 0),
         )
         if sweep_entries:
             self.log("cash_sweep:entry", "pass", count=len(sweep_entries),
                      cash_reserved=cash_needed)
-            signals.extend(sweep_entries)
 
-        return signals
+        # Reorder: exits first → sweep exits → strategy entries → sweep entries
+        exit_signals = [s for s in signals if s.type == SignalType.EXIT]
+        non_exit_signals = [s for s in signals if s.type != SignalType.EXIT]
+        return exit_signals + sweep_exits + non_exit_signals + sweep_entries
 
     def on_day_start(self, market: MarketSnapshot, portfolio: PortfolioState) -> None:
         self._last_nlv = portfolio.nlv
         self._last_cash = portfolio.cash
+        self._last_cash_equiv_value = portfolio.cash_equivalent_value
         self._pending_rebalance = False
         self._pending_leaps_topup = 0
         self._pending_stock_topup_pct = 0.0
 
-        stock_pos = portfolio.get_stock_positions()
-        leaps_pos = [p for p in portfolio.get_option_positions()
-                     if p.instrument.right == OptionRight.CALL and p.quantity > 0]
-        self.log("day_start", "info",
-                 nlv=portfolio.nlv, cash=portfolio.cash,
-                 stock_positions=len(stock_pos), leaps_positions=len(leaps_pos),
-                 mode="stock+LEAPS" if self._config.use_stock_component else "LEAPS-only")
+        # day_start log handled by base class _auto_log_portfolio
 
     def compute_exit_signals(
         self, market: MarketSnapshot, portfolio: PortfolioState, data_provider: Any
     ) -> list[Signal]:
         cfg = self._config
-        stock_pos = portfolio.get_stock_positions()
+        # Exclude cash-equivalent ETFs (SHV/SGOV) from strategy position lists
+        stock_pos = [p for p in portfolio.get_stock_positions()
+                     if not p.is_cash_equivalent]
         leaps_pos = [p for p in portfolio.get_option_positions()
                      if p.instrument.right == OptionRight.CALL and p.quantity > 0]
 
@@ -281,18 +286,22 @@ class MomentumMixedStrategy(BacktestStrategy, CashSweepMixin):
         result = self._momentum.compute(market, data_provider)
         self._last_signal_detail = result
         target_pct = result["target_pct"]
+        data_available = result.get("data_available", True)
 
         current_pct = self._compute_current_exposure(stock_pos, leaps_pos, market)
         self._last_signal_detail["current_pct"] = current_pct
 
-        self.log("exit_scan:momentum", "info",
-                 target_pct=target_pct, current_pct=current_pct,
-                 momentum_score=result.get("momentum_score", 0),
-                 vix=result.get("vix", 0),
-                 positions=([f"Stock: {p.instrument.underlying} qty={p.quantity}" for p in stock_pos]
-                            + [f"LEAPS: {p.instrument.symbol} qty={p.quantity} DTE={p.dte} delta={p.delta or 0:.2f}" for p in leaps_pos]))
+        # exit_scan:momentum context logged by base class _auto_log_signal_context
 
         signals: list[Signal] = []
+
+        # SAFETY: If momentum data is unavailable (price history fetch failed),
+        # HOLD positions instead of closing them.
+        if not data_available:
+            self.log("exit_scan:data_unavailable", "warn",
+                     action="HOLD — 数据不可用，保持现有持仓",
+                     momentum_score=result.get("momentum_score", 0))
+            return []
 
         # a) target == 0 → exit all (LEAPS first, then stock)
         if target_pct == 0.0:
@@ -393,33 +402,45 @@ class MomentumMixedStrategy(BacktestStrategy, CashSweepMixin):
         cfg = self._config
         result = self._momentum.compute(market, data_provider)
         target_pct = result["target_pct"]
+        data_available = result.get("data_available", True)
 
-        # Determine if entry needed
-        stock_pos = portfolio.get_stock_positions()
+        if not data_available:
+            self.log("entry_signal:data_unavailable", "warn",
+                     action="SKIP — 数据不可用，不开新仓")
+            return []
+
+        # Determine if entry needed (exclude cash-equivalent ETFs from position checks)
+        stock_pos = [p for p in portfolio.get_stock_positions()
+                     if not p.is_cash_equivalent]
         leaps_pos = [p for p in portfolio.get_option_positions()
                      if p.instrument.right == OptionRight.CALL and p.quantity > 0]
 
+        entry_allowed = result.get("entry_allowed", True)
         need_entry = False
         entry_reason = ""
         if self._pending_rebalance or self._pending_stock_topup_pct > 0:
+            # Roll / rebalance topup — always allowed regardless of entry_allowed
             need_entry = True
             entry_reason = f"pending_rebalance={self._pending_rebalance} pending_stock_topup={self._pending_stock_topup_pct:.2f}"
         elif target_pct > 0 and not stock_pos and not leaps_pos:
-            if self._is_decision_day(cfg.decision_frequency):
+            if not entry_allowed:
+                score = result.get("momentum_score", 0)
+                min_score = cfg.momentum.entry_min_score
+                entry_reason = f"hysteresis: score={score} < entry_min_score={min_score}"
+            elif self._is_decision_day(cfg.decision_frequency):
                 need_entry = True
                 entry_reason = f"无持仓+决策日 (freq={cfg.decision_frequency})"
             else:
                 entry_reason = f"无持仓但非决策日 (day={self._trading_day_count} freq={cfg.decision_frequency})"
 
         if not need_entry or target_pct <= 0:
-            self.log("entry_signal:check", "skip",
-                     target_pct=target_pct,
-                     need_entry=need_entry,
-                     reason=entry_reason or (f"target_pct={target_pct:.2f}<=0" if target_pct <= 0 else "无入场条件"))
+            # Signal context logged by base class _auto_log_signal_context
+            self._last_signal_detail = result
             return []
 
         signals: list[Signal] = []
-        symbols = list(market.prices.keys())
+        from src.strategy.cash_sweep import CASH_EQUIVALENT_SYMBOLS
+        symbols = [s for s in market.prices.keys() if s not in CASH_EQUIVALENT_SYMBOLS]
 
         # Compute stock/leaps target allocation
         if self._pending_stock_topup_pct > 0:
@@ -492,7 +513,7 @@ class MomentumMixedStrategy(BacktestStrategy, CashSweepMixin):
                 "^TNX", current_date - timedelta(days=7), current_date
             )
             if tnx_data:
-                val = tnx_data[-1].close / 1000.0
+                val = tnx_data[-1].value / 1000.0
                 self._tnx_cache[current_date] = val
                 return val
         except Exception:
@@ -645,11 +666,12 @@ class MomentumMixedStrategy(BacktestStrategy, CashSweepMixin):
         else:
             contracts = math.floor(leaps_pct * self._last_nlv / (delta * lot_size * spot))
 
-        # Cash constraint
+        # Cash constraint (include cash-equivalent ETF as available liquidity)
         if cfg.use_stock_component:
             budget = cfg.max_capital_pct * self._last_nlv
         else:
-            budget = cfg.max_capital_pct * self._last_cash
+            available = self._last_cash + getattr(self, '_last_cash_equiv_value', 0.0)
+            budget = cfg.max_capital_pct * available
         if mid * lot_size > 0:
             max_contracts = math.floor(budget / (mid * lot_size))
             contracts = min(contracts, max_contracts)

@@ -87,9 +87,6 @@ class AccountAggregator:
         Returns:
             ConsolidatedPortfolio with all positions and summaries.
         """
-        if refresh_rates:
-            self._converter.refresh_rates()
-
         positions: list[AccountPosition] = []
         cash_balances: list[AccountCash] = []
         by_broker: dict[str, AccountSummary] = {}
@@ -150,6 +147,25 @@ class AccountAggregator:
         # Futu doesn't provide Greeks without extra subscription, so we use IBKR
         if fetch_greeks and futu_option_positions and self._ibkr and self._ibkr.is_available:
             self._fetch_greeks_for_futu_options(futu_option_positions)
+
+        # Exchange rate refresh is handled lazily by CurrencyConverter._ensure_fresh_rates()
+        # which only triggers when get_rate() is called for an actual cross-currency pair.
+        # Same-currency operations (USD→USD) short-circuit without any API calls.
+        #
+        # We only force-refresh when there are meaningful foreign-currency holdings.
+        # IBKR often returns tiny residual amounts in other currencies (e.g., HKD -$0.01
+        # from past conversions), which are not worth 5 Yahoo Finance API calls.
+        if refresh_rates:
+            _TRIVIAL = 1.0  # Ignore foreign currency amounts below $1 equivalent
+            has_foreign_positions = any(
+                p.currency != base_currency for p in positions
+            )
+            has_foreign_cash = any(
+                c.currency != base_currency and abs(c.balance) >= _TRIVIAL
+                for c in cash_balances
+            )
+            if has_foreign_positions or has_foreign_cash:
+                self._converter.refresh_rates()
 
         # Merge positions and convert to base currency
         merged_positions = self._merge_positions(positions, base_currency)

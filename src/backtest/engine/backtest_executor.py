@@ -270,7 +270,8 @@ class BacktestExecutor:
 
         # 初始化 Strategy — 统一使用 V2 注册表
         strategy_name = self._config.strategy_version
-        self._strategy = BacktestStrategyRegistry.create(strategy_name)
+        strategy_kwargs = getattr(self._config, "strategy_kwargs", {}) or {}
+        self._strategy = BacktestStrategyRegistry.create(strategy_name, **strategy_kwargs)
         self._signal_converter = SignalConverter()
 
         # Initialize RiskGuard chain (从 RiskConfig 按策略名加载)
@@ -293,7 +294,55 @@ class BacktestExecutor:
         self._attribution_collector = attribution_collector
         self._last_monitoring_position_data: list[PositionData] = []
 
+        # 股息数据 (ex_date → {symbol: amount_per_share})
+        self._dividend_schedule: dict[date, dict[str, float]] = {}
+        self._cumulative_dividends: float = 0.0
+        self._load_dividend_data()
 
+    def _load_dividend_data(self) -> None:
+        """Load dividend data from parquet (if available)."""
+        div_path = Path(self._config.data_dir) / "dividends.parquet"
+        if not div_path.exists():
+            return
+        try:
+            import duckdb
+            conn = duckdb.connect()
+            rows = conn.execute(
+                f"SELECT symbol, ex_date, amount FROM read_parquet('{div_path}')"
+            ).fetchall()
+            for symbol, ex_date, amount in rows:
+                if ex_date not in self._dividend_schedule:
+                    self._dividend_schedule[ex_date] = {}
+                self._dividend_schedule[ex_date][symbol] = amount
+            logger.info(f"Loaded dividend data: {len(rows)} records for "
+                        f"{len(set(r[0] for r in rows))} symbols")
+        except Exception as e:
+            logger.warning(f"Failed to load dividend data: {e}")
+
+    def _process_dividends(self, current_date: date) -> float:
+        """Process dividend payments for stock positions on ex-date.
+
+        Returns total dividend amount credited.
+        """
+        divs_today = self._dividend_schedule.get(current_date)
+        if not divs_today:
+            return 0.0
+
+        total = 0.0
+        for pos in self._account_simulator.positions.values():
+            if not pos.is_stock or pos.quantity <= 0:
+                continue
+            div_per_share = divs_today.get(pos.symbol, 0.0)
+            if div_per_share > 0:
+                amount = pos.quantity * div_per_share
+                total += amount
+
+        if total > 0:
+            self._account_simulator.accrue_interest(total)
+            self._cumulative_dividends += total
+            logger.info(f"Dividend: ${total:,.2f} on {current_date} "
+                        f"(cumulative: ${self._cumulative_dividends:,.2f})")
+        return total
 
 
     def run(self) -> BacktestResult:
@@ -447,6 +496,9 @@ class BacktestExecutor:
             )
             if daily_interest > 0:
                 self._account_simulator.accrue_interest(daily_interest)
+
+        # 6.55 处理股息发放 (ex-date 当日)
+        self._process_dividends(current_date)
 
         # 6.6 处理每月出金 (每月第一个交易日)
         withdrawal_amount = 0.0

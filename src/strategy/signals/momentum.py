@@ -40,6 +40,11 @@ class MomentumConfig:
     momentum_lookback_long: int = 60
     position_map: dict[int, float] = field(default_factory=lambda: dict(DEFAULT_POSITION_MAP))
 
+    # Hysteresis: minimum score to open new positions (anti-whipsaw)
+    # Exit still triggers at score ≤ 1 (target=0), but entry requires score ≥ entry_min_score.
+    # When holding with score in [2, entry_min_score), positions are held as-is.
+    entry_min_score: int = 3
+
     vol_target: float = 15.0
     vol_scalar_max: float = 2.0
     max_exposure: float = 3.0
@@ -65,6 +70,7 @@ class MomentumVolTargetComputer:
             {
                 "target_pct": float,           # Risk-adjusted target exposure (0 to max_exposure)
                 "momentum_score": int,          # Raw 7-point score (0..7)
+                "score_detail": str,            # Per-check breakdown e.g. "C>SMA20✓ C>SMA50✗ ..."
                 "raw_target": float,            # Position map value before vol adjustment
                 "vol_scalar": float,            # Vol target multiplier
                 "vix": float,                   # Current VIX value
@@ -87,9 +93,13 @@ class MomentumVolTargetComputer:
             "target_pct": 0.0, "momentum_score": 0, "raw_target": 0.0,
             "vol_scalar": 0.0, "vix": 0.0, "close": 0.0,
             "sma20": 0.0, "sma50": 0.0, "sma200": 0.0, "symbol": "",
+            "data_available": False,
         }
 
-        symbols = list(market.prices.keys())
+        # Use the primary trading symbol — exclude cash-equivalent ETFs
+        # (SHV/SGOV/BIL/SCHO) which may be present from Cash Sweep.
+        from src.strategy.cash_sweep import CASH_EQUIVALENT_SYMBOLS
+        symbols = [s for s in market.prices.keys() if s not in CASH_EQUIVALENT_SYMBOLS]
         if not symbols:
             return empty
 
@@ -99,9 +109,10 @@ class MomentumVolTargetComputer:
         prices = self._fetch_prices(symbol, market.date, data_provider)
         max_sma = max(cfg.sma_periods)
         if prices is None or len(prices) < max_sma:
-            logger.debug(
+            logger.warning(
                 f"Momentum: insufficient data for {symbol} "
-                f"({len(prices) if prices else 0} < {max_sma})"
+                f"({len(prices) if prices else 0} < {max_sma}), "
+                f"returning HOLD (data_available=False)"
             )
             return {**empty, "symbol": symbol}
 
@@ -124,27 +135,53 @@ class MomentumVolTargetComputer:
 
         # === 7-point momentum score ===
         score = 0
-        if close > sma20:
-            score += 1
-        if close > sma50:
-            score += 1
-        if close > sma200:
-            score += 1
-        if sma20 > sma50:
-            score += 1
-        if sma50 > sma200:
-            score += 1
-        if len(prices) > cfg.momentum_lookback_short and close > prices[-1 - cfg.momentum_lookback_short]:
-            score += 1
-        if len(prices) > cfg.momentum_lookback_long and close > prices[-1 - cfg.momentum_lookback_long]:
-            score += 1
+        checks: list[tuple[str, bool]] = []
+
+        c1 = close > sma20
+        checks.append(("C>SMA20", c1))
+        score += int(c1)
+
+        c2 = close > sma50
+        checks.append(("C>SMA50", c2))
+        score += int(c2)
+
+        c3 = close > sma200
+        checks.append(("C>SMA200", c3))
+        score += int(c3)
+
+        c4 = sma20 > sma50
+        checks.append(("SMA20>50", c4))
+        score += int(c4)
+
+        c5 = sma50 > sma200
+        checks.append(("SMA50>200", c5))
+        score += int(c5)
+
+        has_short = len(prices) > cfg.momentum_lookback_short
+        c6 = has_short and close > prices[-1 - cfg.momentum_lookback_short]
+        checks.append((f"MOM{cfg.momentum_lookback_short}d", c6))
+        score += int(c6)
+
+        has_long = len(prices) > cfg.momentum_lookback_long
+        c7 = has_long and close > prices[-1 - cfg.momentum_lookback_long]
+        checks.append((f"MOM{cfg.momentum_lookback_long}d", c7))
+        score += int(c7)
+
+        score_detail = " ".join(
+            f"{name}{'✓' if ok else '✗'}" for name, ok in checks
+        )
 
         raw_target = cfg.position_map.get(score, 0.0)
+        # Hysteresis: score ≥ entry_min_score to open new positions
+        entry_allowed = score >= cfg.entry_min_score
+
         if raw_target == 0.0:
+            vix = self._get_vix(market, data_provider)
             return {
-                "target_pct": 0.0, "momentum_score": score, "raw_target": 0.0,
-                "vol_scalar": 0.0, "vix": 0.0, "close": close,
+                "target_pct": 0.0, "momentum_score": score, "score_detail": score_detail,
+                "raw_target": 0.0, "vol_scalar": 0.0, "vix": vix, "close": close,
                 "sma20": sma20, "sma50": sma50, "sma200": sma200, "symbol": symbol,
+                "data_available": True, "entry_allowed": False,
             }
 
         # === Vol Target risk adjustment ===
@@ -156,11 +193,13 @@ class MomentumVolTargetComputer:
         logger.debug(
             f"Momentum signal: {symbol} score={score} raw={raw_target:.1f} "
             f"vix={vix:.1f} vol_scalar={vol_scalar:.2f} → target={target_pct:.2f}"
+            f" entry_allowed={entry_allowed}"
         )
 
         return {
             "target_pct": target_pct,
             "momentum_score": score,
+            "score_detail": score_detail,
             "raw_target": raw_target,
             "vol_scalar": vol_scalar,
             "vix": vix,
@@ -169,6 +208,8 @@ class MomentumVolTargetComputer:
             "sma50": sma50,
             "sma200": sma200,
             "symbol": symbol,
+            "data_available": True,
+            "entry_allowed": entry_allowed,
         }
 
     def _fetch_prices(
@@ -200,7 +241,7 @@ class MomentumVolTargetComputer:
             lookback = market.date - timedelta(days=10)
             vix_data = data_provider.get_macro_data("^VIX", lookback, market.date)
             if vix_data and len(vix_data) > 0:
-                return vix_data[-1].close
+                return vix_data[-1].value
         except Exception:
             pass
         return 20.0

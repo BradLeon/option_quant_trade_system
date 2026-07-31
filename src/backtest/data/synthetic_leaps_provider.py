@@ -156,13 +156,16 @@ class SyntheticLeapsProvider:
             return full_chain
 
         filtered_calls = full_chain.calls
+        filtered_puts = full_chain.puts
         filtered_expiries = full_chain.expiry_dates
 
         if expiry_start is not None:
             filtered_calls = [c for c in filtered_calls if c.contract.expiry_date >= expiry_start]
+            filtered_puts = [p for p in filtered_puts if p.contract.expiry_date >= expiry_start]
             filtered_expiries = [e for e in filtered_expiries if e >= expiry_start]
         if expiry_end is not None:
             filtered_calls = [c for c in filtered_calls if c.contract.expiry_date <= expiry_end]
+            filtered_puts = [p for p in filtered_puts if p.contract.expiry_date <= expiry_end]
             filtered_expiries = [e for e in filtered_expiries if e <= expiry_end]
 
         return OptionChain(
@@ -170,7 +173,7 @@ class SyntheticLeapsProvider:
             timestamp=full_chain.timestamp,
             expiry_dates=filtered_expiries,
             calls=filtered_calls,
-            puts=[],
+            puts=filtered_puts,
             source=full_chain.source,
         )
 
@@ -185,8 +188,12 @@ class SyntheticLeapsProvider:
         vix = self._get_vix(as_of_date)
         risk_free_rate = self._get_risk_free_rate(as_of_date)
 
-        # Generate wide range: 30 to 600 days out (covers all possible queries)
-        expiry_start = as_of_date + timedelta(days=30)
+        # Generate wide range: 1 to 600 days out
+        # Must start from DTE=1 (not 30) so that held positions with DTE < 30
+        # (e.g. short put spreads approaching expiry) can be priced correctly.
+        # Without this, _get_option_price() falls back to intrinsic/0.01 for
+        # OTM puts, causing massive PnL overestimation and premature exits.
+        expiry_start = as_of_date + timedelta(days=1)
         expiry_end = as_of_date + timedelta(days=600)
 
         return self._generate_synthetic_chain(
@@ -209,7 +216,7 @@ class SyntheticLeapsProvider:
         expiry_start: date,
         expiry_end: date,
     ) -> OptionChain:
-        """Generate synthetic LEAPS call option chain."""
+        """Generate synthetic option chain with calls and puts."""
         # Generate expiry dates (monthly 3rd Friday)
         expiries = self._generate_monthly_expiries(as_of_date, expiry_start, expiry_end)
 
@@ -217,6 +224,7 @@ class SyntheticLeapsProvider:
         strikes = self._generate_strike_grid(spot)
 
         calls: list[OptionQuote] = []
+        puts: list[OptionQuote] = []
         expiry_dates: list[date] = []
         timestamp = datetime.combine(as_of_date, datetime.min.time())
 
@@ -233,7 +241,8 @@ class SyntheticLeapsProvider:
                 moneyness = strike / spot
                 iv = self._estimate_iv(vix, dte, moneyness)
 
-                params = BSParams(
+                # --- Call ---
+                call_params = BSParams(
                     spot_price=spot_adj,
                     strike_price=strike,
                     risk_free_rate=risk_free_rate,
@@ -242,56 +251,33 @@ class SyntheticLeapsProvider:
                     is_call=True,
                 )
 
-                price = calc_bs_price(params)
-                if price is None or price <= 0:
-                    continue
+                call_price = calc_bs_price(call_params)
+                if call_price is not None and call_price > 0:
+                    call_greeks = calc_bs_greeks(call_params)
+                    spread = self._estimate_spread(call_price, moneyness, dte)
+                    calls.append(self._make_quote(
+                        underlying, expiry, strike, OptionType.CALL, "C",
+                        call_price, spread, iv, call_greeks, timestamp,
+                    ))
 
-                greeks_dict = calc_bs_greeks(params)
-
-                # Build bid/ask with realistic spread
-                spread = self._estimate_spread(price, moneyness, dte)
-                bid = max(0.01, price - spread / 2)
-                ask = price + spread / 2
-
-                # Generate option symbol: UNDERLYING_YYMMDD_C_STRIKE
-                symbol = (
-                    f"{underlying}_{expiry.strftime('%y%m%d')}_C_"
-                    f"{strike:.0f}"
-                )
-
-                contract = OptionContract(
-                    symbol=symbol,
-                    underlying=underlying,
-                    option_type=OptionType.CALL,
+                # --- Put ---
+                put_params = BSParams(
+                    spot_price=spot_adj,
                     strike_price=strike,
-                    expiry_date=expiry,
-                    lot_size=100,
+                    risk_free_rate=risk_free_rate,
+                    volatility=iv,
+                    time_to_expiry=T,
+                    is_call=False,
                 )
 
-                quote = OptionQuote(
-                    contract=contract,
-                    timestamp=timestamp,
-                    last_price=price,
-                    bid=bid,
-                    ask=ask,
-                    volume=500,
-                    open_interest=1000,
-                    iv=iv,
-                    greeks=Greeks(
-                        delta=greeks_dict.get("delta"),
-                        gamma=greeks_dict.get("gamma"),
-                        theta=greeks_dict.get("theta"),
-                        vega=greeks_dict.get("vega"),
-                        rho=greeks_dict.get("rho"),
-                    ),
-                    source="synthetic_bs",
-                    open=price,
-                    high=price * 1.01,
-                    low=price * 0.99,
-                    close=price,
-                )
-
-                calls.append(quote)
+                put_price = calc_bs_price(put_params)
+                if put_price is not None and put_price > 0:
+                    put_greeks = calc_bs_greeks(put_params)
+                    spread = self._estimate_spread(put_price, moneyness, dte)
+                    puts.append(self._make_quote(
+                        underlying, expiry, strike, OptionType.PUT, "P",
+                        put_price, spread, iv, put_greeks, timestamp,
+                    ))
 
             expiry_dates.append(expiry)
 
@@ -300,8 +286,50 @@ class SyntheticLeapsProvider:
             timestamp=timestamp,
             expiry_dates=sorted(expiry_dates),
             calls=calls,
-            puts=[],  # LEAPS strategy only needs calls
+            puts=puts,
             source="synthetic_bs",
+        )
+
+    @staticmethod
+    def _make_quote(
+        underlying: str, expiry: date, strike: float,
+        opt_type: OptionType, type_char: str,
+        price: float, spread: float, iv: float,
+        greeks_dict: dict, timestamp: datetime,
+    ) -> OptionQuote:
+        """Build an OptionQuote from BS pricing results."""
+        bid = max(0.01, price - spread / 2)
+        ask = price + spread / 2
+        symbol = f"{underlying}_{expiry.strftime('%y%m%d')}_{type_char}_{strike:.0f}"
+
+        return OptionQuote(
+            contract=OptionContract(
+                symbol=symbol,
+                underlying=underlying,
+                option_type=opt_type,
+                strike_price=strike,
+                expiry_date=expiry,
+                lot_size=100,
+            ),
+            timestamp=timestamp,
+            last_price=price,
+            bid=bid,
+            ask=ask,
+            volume=500,
+            open_interest=1000,
+            iv=iv,
+            greeks=Greeks(
+                delta=greeks_dict.get("delta"),
+                gamma=greeks_dict.get("gamma"),
+                theta=greeks_dict.get("theta"),
+                vega=greeks_dict.get("vega"),
+                rho=greeks_dict.get("rho"),
+            ),
+            source="synthetic_bs",
+            open=price,
+            high=price * 1.01,
+            low=price * 0.99,
+            close=price,
         )
 
     # --- IV Estimation ---

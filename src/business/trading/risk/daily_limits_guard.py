@@ -47,6 +47,7 @@ class DailyLimitsGuard:
             order_store = OrderStore(OrderConfig.load())
         self._tracker = DailyTradeTracker(order_store, config)
         self._config = config
+        self.last_filtered: list[str] = []  # 上次 check() 被过滤/截断的原因
 
     def check(
         self,
@@ -66,6 +67,7 @@ class DailyLimitsGuard:
             return signals
 
         approved: list[Signal] = []
+        self.last_filtered = []
         # Track within-batch accumulation
         batch_quantities: dict[str, int] = {}
         batch_values: dict[str, float] = {}
@@ -102,20 +104,24 @@ class DailyLimitsGuard:
             this_allowed = max(0, allowed_qty - batch_used)
 
             if this_allowed <= 0:
-                logger.info(
-                    f"DailyLimitsGuard: filtered {signal.type.value} "
-                    f"{signal.instrument.symbol} qty={qty}: {reason}"
+                msg = (
+                    f"{signal.instrument.symbol}: "
+                    f"filtered {signal.type.value} qty={qty} — {reason}"
                 )
+                logger.info(f"DailyLimitsGuard: {msg}")
+                self.last_filtered.append(msg)
                 continue
 
             if this_allowed < qty:
                 # Truncate: create new signal with reduced quantity
                 sign = 1 if signal.target_quantity > 0 else -1
                 signal = _truncate_signal(signal, sign * this_allowed)
-                logger.info(
-                    f"DailyLimitsGuard: truncated {signal.instrument.symbol} "
-                    f"{qty} → {this_allowed}"
+                msg = (
+                    f"{signal.instrument.symbol}: "
+                    f"truncated {qty} → {this_allowed}"
                 )
+                logger.info(f"DailyLimitsGuard: {msg}")
+                self.last_filtered.append(msg)
 
             approved.append(signal)
 
