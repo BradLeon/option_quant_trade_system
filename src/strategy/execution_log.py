@@ -107,6 +107,11 @@ class ExecutionLog:
                     parts = [f"{rk}={rv}" for rk, rv in v.items()]
                     extra_lines.append(f"       rejected: {', '.join(parts)}")
                     continue
+                if k == "reject_detail" and isinstance(v, list) and v:
+                    # Per-contract rejection details
+                    for sample in v:
+                        extra_lines.append(f"         · {sample}")
+                    continue
                 if k == "positions" and isinstance(v, list):
                     for pos_desc in v:
                         extra_lines.append(f"       {pos_desc}")

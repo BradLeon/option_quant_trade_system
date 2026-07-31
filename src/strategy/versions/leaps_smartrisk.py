@@ -143,7 +143,7 @@ class LeapsSmartRiskConfig:
     max_delta: float = 0.85
     target_dte: int = 252
     min_dte: int = 180
-    max_dte: int = 400
+    max_dte: int = 550
     max_capital_pct: float = 0.95
 
     # Theta Guard (same as V2)
@@ -377,7 +377,7 @@ class LeapsSmartRiskStrategy(MomentumMixedV2Strategy):
             lookback = market.date - timedelta(days=10)
             vix3m_data = data_provider.get_macro_data("^VIX3M", lookback, market.date)
             if vix3m_data and len(vix3m_data) > 0:
-                vix3m = vix3m_data[-1].close
+                vix3m = vix3m_data[-1].value
         except Exception:
             pass
 

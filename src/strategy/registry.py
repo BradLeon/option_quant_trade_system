@@ -366,6 +366,13 @@ def _create_leverage_rotation(**kwargs) -> StrategyProtocol:
     return LeverageRotationStrategy(config)
 
 
+def _create_all_weather(**kwargs) -> StrategyProtocol:
+    """All-Weather Multi-Asset Allocation: trend-following + inverse-vol weighting."""
+    from src.strategy.versions.all_weather import AllWeatherStrategy, AllWeatherConfig
+    config = AllWeatherConfig(**kwargs)
+    return AllWeatherStrategy(config)
+
+
 # Registry: name → factory function
 _REGISTRY: dict[str, Any] = {
     # New V2 strategies (parameterized)
@@ -421,6 +428,12 @@ _REGISTRY: dict[str, Any] = {
     # Leverage Rotation Strategy (论文 LRS: SMA200 binary + LEAPS + SHV)
     "leverage_rotation": _create_leverage_rotation,
     "lrs": _create_leverage_rotation,
+
+    # All-Weather Multi-Asset Allocation
+    "all_weather": _create_all_weather,
+    "aw": _create_all_weather,
+    "all_weather_equal": lambda **kw: _create_all_weather(use_inverse_vol=False, **kw),
+    "all_weather_no_trend": lambda **kw: _create_all_weather(use_trend_filter=False, **kw),
 
     # Short put (native V2)
     "short_put_with_assignment": _create_short_put_with,

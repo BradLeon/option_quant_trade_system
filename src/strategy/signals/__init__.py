@@ -3,10 +3,13 @@
 from src.strategy.signals.base import SignalComputer
 from src.strategy.signals.sma import SmaComputer, SmaComparison
 from src.strategy.signals.momentum import MomentumVolTargetComputer
+from src.strategy.signals.cross_asset import CrossAssetSignalComputer, CrossAssetConfig
 
 __all__ = [
     "SignalComputer",
     "SmaComputer",
     "SmaComparison",
     "MomentumVolTargetComputer",
+    "CrossAssetSignalComputer",
+    "CrossAssetConfig",
 ]

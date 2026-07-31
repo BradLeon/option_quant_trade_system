@@ -40,7 +40,7 @@ class LeapsSelectionConfig:
     # DTE
     target_dte: int = 252
     min_dte: int = 180
-    max_dte: int = 400
+    max_dte: int = 550
 
     # Delta 目标 (primary selection criterion)
     target_delta: float = 0.70
@@ -154,6 +154,7 @@ class LeapsContractSelector:
             "no_price": 0, "no_delta": 0,
             "delta_range": 0, "low_oi": 0, "wide_spread": 0,
         }
+        reject_samples: list[str] = []  # first N rejected contracts for debugging
         candidates: list[dict[str, Any]] = []
 
         for call in quotes:
@@ -166,29 +167,57 @@ class LeapsContractSelector:
                 mid = (call.bid + call.ask) / 2
             if not mid or mid <= 0:
                 reject["no_price"] += 1
+                if len(reject_samples) < 10:
+                    reject_samples.append(
+                        f"K={contract.strike_price:.0f} DTE={dte} "
+                        f"bid={call.bid} ask={call.ask} → no_price"
+                    )
                 continue
 
             # Delta check
             delta = call.greeks.delta if call.greeks else None
             if not delta or delta <= 0:
                 reject["no_delta"] += 1
+                if len(reject_samples) < 10:
+                    reject_samples.append(
+                        f"K={contract.strike_price:.0f} DTE={dte} "
+                        f"mid={mid:.2f} delta={delta} → no_delta"
+                    )
                 continue
 
             # Hard filter: delta range
             if delta < config.min_delta or delta > config.max_delta:
                 reject["delta_range"] += 1
+                if len(reject_samples) < 10:
+                    reject_samples.append(
+                        f"K={contract.strike_price:.0f} DTE={dte} "
+                        f"delta={delta:.3f} → delta_range "
+                        f"(need [{config.min_delta}-{config.max_delta}])"
+                    )
                 continue
 
             # Hard filter: OI (skip if data unavailable, e.g. synthetic)
             oi = call.open_interest or 0
             if oi > 0 and oi < config.min_open_interest:
                 reject["low_oi"] += 1
+                if len(reject_samples) < 10:
+                    reject_samples.append(
+                        f"K={contract.strike_price:.0f} DTE={dte} "
+                        f"delta={delta:.3f} oi={oi} → low_oi "
+                        f"(need >={config.min_open_interest})"
+                    )
                 continue
 
             # Hard filter: bid-ask spread
             spread_ratio = calc_bid_ask_spread_ratio(call.bid, call.ask)
             if spread_ratio is not None and spread_ratio > config.max_bid_ask_spread:
                 reject["wide_spread"] += 1
+                if len(reject_samples) < 10:
+                    reject_samples.append(
+                        f"K={contract.strike_price:.0f} DTE={dte} "
+                        f"delta={delta:.3f} spread={spread_ratio:.1%} → wide_spread "
+                        f"(max {config.max_bid_ask_spread:.0%})"
+                    )
                 continue
 
             # ── Multi-factor scoring (delta-dominant) ──
@@ -253,11 +282,13 @@ class LeapsContractSelector:
             else:
                 log_fn(f"contract_select:{symbol}", "fail",
                        total=total, passed=0,
+                       quotes_checked=len(quotes),
                        rejected_by={
                            "dte": reject_dte,
                            "strike_range": reject_strike,
                            **{k: v for k, v in reject.items() if v > 0},
                        },
+                       reject_detail=reject_samples,
                        filters=(
                            f"DTE=[{config.min_dte}-{config.max_dte}] "
                            f"delta=[{config.min_delta}-{config.max_delta}] "

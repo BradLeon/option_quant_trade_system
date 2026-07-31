@@ -394,7 +394,7 @@ class LeapsVIXTermStrategy(MomentumMixedV2Strategy):
             lookback = market.date - timedelta(days=10)
             vix3m_data = data_provider.get_macro_data("^VIX3M", lookback, market.date)
             if vix3m_data and len(vix3m_data) > 0:
-                vix3m = vix3m_data[-1].close
+                vix3m = vix3m_data[-1].value
         except Exception:
             pass
 
