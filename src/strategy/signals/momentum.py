@@ -62,6 +62,7 @@ class MomentumVolTargetComputer:
         # Cache
         self._cached_date: Optional[date] = None
         self._cached_result: dict = {}
+        self.last_sma200_series: list[float] = []
 
     def compute(self, market: MarketSnapshot, data_provider: Any) -> dict:
         """Compute momentum + vol target signal.
@@ -120,13 +121,17 @@ class MomentumVolTargetComputer:
         from src.engine.position.technical.moving_average import calc_sma_series
 
         sma_values: dict[int, Optional[float]] = {}
+        sma_series_map: dict[int, list[float]] = {}
         for period in cfg.sma_periods:
             series = calc_sma_series(prices, period)
             sma_values[period] = series[-1] if series and series[-1] is not None else None
+            if series:
+                sma_series_map[period] = [float(v) for v in series if v is not None]
 
         sma20 = sma_values.get(20)
         sma50 = sma_values.get(50)
         sma200 = sma_values.get(200)
+        self.last_sma200_series = sma_series_map.get(200, [])[-60:]
 
         if sma20 is None or sma50 is None or sma200 is None:
             return {**empty, "symbol": symbol, "close": prices[-1]}

@@ -156,12 +156,15 @@ def run(
         raise SystemExit(1)
 
     # 4. Create pipeline + risk guards
+    from src.business.trading.daily_limits import DailyLimitsConfig
+
     pipeline = TradingPipeline(risk_config=risk_config)
 
     risk_guards = [
         AccountRiskGuard(risk_config),
         DailyLimitsGuard(
             order_store=pipeline.order_store,
+            config=DailyLimitsConfig.from_risk_config(risk_config),
         ),
     ]
 

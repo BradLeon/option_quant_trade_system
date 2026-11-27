@@ -119,7 +119,18 @@ class LeapsContractSelector:
                 continue
             prefiltered.append(call)
 
-        # Cap candidates to avoid fetching too many quotes in live
+        # Cap candidates to avoid fetching too many quotes in live.
+        # CRITICAL: Sort prefiltered by proximity to (target_dte, target_delta) BEFORE
+        # slicing [:max_candidates]. Raw option chains from IBKR are sorted by
+        # (expiry_date, strike_price) ascending, so a naive [:60] slice only keeps
+        # the shortest expiry and deepest ITM strikes (Delta ~0.85+), cutting off
+        # target_dte=252 and target_delta=0.70 contracts before quotes are fetched.
+        if len(prefiltered) > config.max_candidates:
+            prefiltered.sort(
+                key=lambda call: self._prefilter_distance_key(
+                    call, spot, current_date, config
+                )
+            )
         shortlisted = prefiltered[:config.max_candidates]
 
         if not shortlisted:
@@ -296,3 +307,55 @@ class LeapsContractSelector:
                        ))
 
         return best
+
+    @staticmethod
+    def _prefilter_distance_key(
+        call: Any,
+        spot: float,
+        current_date: date,
+        config: LeapsSelectionConfig,
+    ) -> float:
+        """Estimate distance to (target_dte, target_delta) for pre-quote shortlisting.
+
+        Uses actual delta when already present on the chain (backtest), or a fast
+        analytical Black-Scholes delta estimate when quotes have not been fetched yet (live).
+        """
+        contract = call.contract
+        dte = max(1, (contract.expiry_date - current_date).days)
+
+        est_delta: Optional[float] = None
+        if getattr(call, "greeks", None) is not None and call.greeks.delta:
+            est_delta = float(call.greeks.delta)
+        else:
+            try:
+                from src.engine.bs.greeks import calc_bs_delta
+                from src.engine.models.bs_params import BSParams
+
+                params = BSParams(
+                    spot_price=spot,
+                    strike_price=contract.strike_price,
+                    risk_free_rate=0.04,
+                    volatility=0.22,
+                    time_to_expiry=dte / 365.0,
+                    is_call=True,
+                )
+                est_delta = calc_bs_delta(params)
+            except Exception:
+                est_delta = None
+
+        if est_delta is None or est_delta <= 0:
+            # Fallback moneyness proxy: delta ~0.70 at 1yr corresponds to strike ~0.92 * spot
+            est_delta = max(0.05, min(0.99, 0.50 + (spot - contract.strike_price) / (0.50 * spot)))
+
+        delta_span = max(0.05, config.max_delta - config.min_delta)
+        delta_dist = abs(est_delta - config.target_delta) / delta_span
+        dte_dist = abs(dte - config.target_dte) / max(1, config.target_dte)
+
+        # Penalize contracts outside the hard [min_delta, max_delta] band
+        out_of_band_penalty = 0.0
+        if est_delta < config.min_delta:
+            out_of_band_penalty = 5.0 * (config.min_delta - est_delta)
+        elif est_delta > config.max_delta:
+            out_of_band_penalty = 5.0 * (est_delta - config.max_delta)
+
+        return config.w_delta * delta_dist + config.w_dte * dte_dist + out_of_band_penalty
