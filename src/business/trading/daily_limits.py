@@ -67,14 +67,19 @@ class DailyLimitsConfig:
     include_pending_orders: bool = True
 
     @classmethod
-    def load(cls) -> "DailyLimitsConfig":
+    def load(cls, strategy_name: str | None = None) -> "DailyLimitsConfig":
         """加载配置
 
-        优先级: 环境变量 > RiskConfig 默认值
+        优先级: 环境变量 > RiskConfig(strategy_name) 默认值
         """
         from src.business.trading.config.risk_config import RiskConfig
 
-        rc = RiskConfig.load()
+        rc = RiskConfig.load(strategy_name)
+        return cls.from_risk_config(rc)
+
+    @classmethod
+    def from_risk_config(cls, rc: Any) -> "DailyLimitsConfig":
+        """从已加载的 RiskConfig 构建 DailyLimitsConfig（支持策略专属覆盖）"""
         return cls(
             enabled=_env_bool("DAILY_LIMITS_ENABLED", rc.daily_limits_enabled),
             max_value_pct_per_underlying=_env_float(

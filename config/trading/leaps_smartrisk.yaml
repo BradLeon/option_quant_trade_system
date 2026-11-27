@@ -1,0 +1,24 @@
+# leaps_smartrisk — LEAPS SmartRisk (QQQ/SPY) 策略风控覆盖
+#
+# 继承 base_option_strategy.yaml，覆盖与纯 Long LEAPS Call 相关的风控参数。
+#
+# 策略特征:
+# - 仅买入 LEAPS Call (BUY) + 现金管理 ETF (SHV)，无 naked short，无保证金风险
+# - LEAPS 单张合约名义价值较高，且建仓/再平衡由动量+波动率目标+5天冷却期驱动
+# - 需将单笔订单及单日交易限额与回测目标仓位对齐，避免单次建仓被人为拆分为多日碎片单
+
+risk_limits:
+  # Signal-Level: Long option 不占维持保证金
+  max_margin_utilization: 0.90
+  min_available_margin: 0
+
+  # Order-Level: 允许单笔 LEAPS 建仓/再平衡订单达到 50% NLV
+  max_order_value_pct: 0.50
+  max_projected_margin_utilization: 0.95
+
+  # Daily Limits: 允许单日完成 LEAPS 目标建仓/加减仓
+  daily_max_value_pct_per_underlying: 50.0
+  daily_max_total_value_pct: 60.0
+
+  # Kelly
+  kelly_fraction: 0.50

@@ -39,6 +39,9 @@ from src.engine.bs.core import calc_d1, calc_d2, calc_n
 from src.engine.models import BSParams
 
 
+_INV_SQRT_2PI = 1.0 / math.sqrt(2.0 * math.pi)
+
+
 def _calc_n_pdf(d: float) -> float:
     """Calculate standard normal probability density function n(d).
 
@@ -50,7 +53,7 @@ def _calc_n_pdf(d: float) -> float:
     Returns:
         PDF value at d.
     """
-    return float(norm.pdf(d))
+    return _INV_SQRT_2PI * math.exp(-0.5 * d * d)
 
 
 def calc_bs_delta(params: BSParams) -> float | None:

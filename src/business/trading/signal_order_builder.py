@@ -42,6 +42,25 @@ _SIGNAL_TYPE_TO_DECISION_TYPE: dict[SignalType, str] = {
 }
 
 
+def normalize_tick_price(
+    price: float | None,
+    asset_class: AssetClass = AssetClass.OPTION,
+    tick_size: float = 0.01,
+) -> float | None:
+    """Normalize a limit price to a valid exchange minimum tick increment.
+
+    Eliminates 3-decimal mid prices (e.g. 132.155 from odd-cent bid/ask spreads)
+    that cause IBKR Error 110 ('price does not conform to minimum price variation').
+    """
+    if price is None:
+        return None
+    if tick_size <= 0:
+        return round(float(price), 2)
+    steps = round(float(price) / tick_size)
+    return round(steps * tick_size, 2)
+
+
+
 class SignalOrderBuilder:
     """Signal → OrderRequest direct conversion.
 
@@ -229,10 +248,13 @@ class SignalOrderBuilder:
         # Order type
         if force_market:
             order_type = OrderType.MARKET
+            normalized_limit_price = None
         elif limit_price is not None:
             order_type = OrderType.LIMIT
+            normalized_limit_price = normalize_tick_price(limit_price, asset_class)
         else:
             order_type = OrderType.MARKET
+            normalized_limit_price = None
 
         # Option fields
         option_type = instrument.right.value if instrument.right else None
@@ -264,7 +286,7 @@ class SignalOrderBuilder:
             side=side,
             order_type=order_type,
             quantity=abs(quantity),
-            limit_price=limit_price,
+            limit_price=normalized_limit_price,
             time_in_force=self._config.default_time_in_force,
             contract_multiplier=instrument.lot_size,
             currency="USD",

@@ -23,9 +23,9 @@
 │   SMA200 下行 (SMA200 < SMA200_20d_ago) → cap 1.0x         │
 │   价格 < SMA200 → 在 Tier 2 cap 基础上再 × 0.5             │
 ├─────────────────────────────────────────────────────────────┤
-│ Tier 3: Vol Target (保留 V2 原有逻辑)                       │
+│ Tier 3: Vol Target (Opt-C 钝化常态 VIX 缩放)                │
 │   已在 MomentumVolTargetComputer 中计算                     │
-│   vol_scalar = min(2.0, 15.0/VIX)                          │
+│   vol_scalar = min(1.0, 20.0/VIX) (VIX≤20 不缩仓，>20 降杠杆)│
 ├─────────────────────────────────────────────────────────────┤
 │ Vega Guard (保留自 V2):                                     │
 │   VIX > 1.3 × SMA20(VIX) → 减仓 50%                       │
@@ -134,8 +134,15 @@ class LeapsSmartRiskConfig:
     panic: PanicBreakerConfig = field(default_factory=PanicBreakerConfig)
     bear: BearLimiterConfig = field(default_factory=BearLimiterConfig)
 
-    # Momentum config — Vol Target ENABLED (Tier 3, default V2 behavior)
-    momentum: MomentumConfig = field(default_factory=MomentumConfig)
+    # Momentum config — Tier 3 Opt-C Smooth Vol Target:
+    # VIX <= 20 keeps 1.0x scaling (avoids normal-regime VIX whipsaw), VIX > 20 scales down (20/VIX)
+    momentum: MomentumConfig = field(
+        default_factory=lambda: MomentumConfig(
+            vol_target=20.0,
+            vol_scalar_max=1.0,
+            entry_min_score=3,
+        )
+    )
 
     # LEAPS contract parameters (same as V2)
     target_delta: float = 0.70
@@ -236,6 +243,9 @@ class LeapsSmartRiskStrategy(MomentumMixedV2Strategy):
         self, market: MarketSnapshot, data_provider: Any
     ) -> None:
         """Apply Tier 1 (Panic) + Tier 2 (Bear) filters on top of Vol Target."""
+        # Pre-warm VIX history from data_provider if running statelessly (live CLI)
+        self._ensure_vix_history(market, data_provider)
+
         result = self._momentum.compute(market, data_provider)
 
         if result.get("_smartrisk_filtered"):
@@ -316,6 +326,17 @@ class LeapsSmartRiskStrategy(MomentumMixedV2Strategy):
         if sma200 is None or sma200 <= 0:
             return None, "no_data"
 
+        # Pre-warm SMA200 history from momentum computer's full SMA200 series
+        # so stateless daily CLI execution has 20-day slope history on Day 1.
+        if len(self._sma200_history) <= bcfg.sma200_lookback:
+            series = getattr(self._momentum, "last_sma200_series", [])
+            if series and len(series) > bcfg.sma200_lookback:
+                # Reconstruct pseudo-dated entries ending at market.date
+                self._sma200_history = [
+                    (market.date - timedelta(days=len(series) - 1 - idx), val)
+                    for idx, val in enumerate(series)
+                ]
+
         # Record SMA200 for slope detection
         self._record_sma200(market.date, sma200)
 
@@ -358,9 +379,20 @@ class LeapsSmartRiskStrategy(MomentumMixedV2Strategy):
     def _get_vix_5d_change(self, current_vix: float) -> float | None:
         """Get VIX change over last 5 trading days.
 
-        Parent's _vix_history may not include today's value yet,
-        so we compare current_vix against history[-5].
+        Handles both cases: whether today's VIX is already at _vix_history[-1]
+        (from on_day_start / _ensure_vix_history) or not yet appended.
         """
+        if not self._vix_history:
+            return None
+        # Check if today's date/value is already at the tail of _vix_history
+        has_today = (
+            bool(getattr(self, "_vix_history_dates", None))
+            and getattr(self, "_cached_vix_as_of", None) is not None
+        ) or (abs(self._vix_history[-1] - current_vix) < 1e-9 and len(self._vix_history) >= 6)
+        if has_today:
+            if len(self._vix_history) < 6:
+                return None
+            return current_vix - self._vix_history[-6]
         if len(self._vix_history) < 5:
             return None
         return current_vix - self._vix_history[-5]
@@ -372,12 +404,16 @@ class LeapsSmartRiskStrategy(MomentumMixedV2Strategy):
         if market.date in self._vix3m_cache:
             return self._vix3m_cache[market.date]
 
-        vix3m = 20.0
+        # Fallback to current VIX (neutral ratio=1.0) rather than hardcoded 20.0
+        # so missing VIX3M data never triggers false backwardation when VIX > 21
+        vix3m = market.vix if (market.vix and market.vix > 0) else 20.0
         try:
             lookback = market.date - timedelta(days=10)
             vix3m_data = data_provider.get_macro_data("^VIX3M", lookback, market.date)
             if vix3m_data and len(vix3m_data) > 0:
-                vix3m = vix3m_data[-1].value
+                val = getattr(vix3m_data[-1], "value", None) or getattr(vix3m_data[-1], "close", None)
+                if val and val > 0:
+                    vix3m = float(val)
         except Exception:
             pass
 

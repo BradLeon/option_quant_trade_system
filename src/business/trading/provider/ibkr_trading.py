@@ -318,11 +318,12 @@ class IBKRTradingProvider(TradingProvider):
             # 短暂等待让错误事件有机会被接收
             self._ib.sleep(0.2)
 
-            # 等待订单状态确认（最多 5 秒）
+            # 等待订单状态确认（默认最多 15 秒，可通过 _submit_wait_seconds 覆盖）
             # IBKR 需要时间处理订单，状态从 PendingSubmit -> Submitted/Inactive
-            max_wait_seconds = 5
+            max_wait_seconds = getattr(self, "_submit_wait_seconds", 15)
+            n_polls = max(1, int(max_wait_seconds * 10))
 
-            for _ in range(max_wait_seconds * 10):  # 每 0.1 秒检查一次
+            for _ in range(n_polls):  # 每 0.1 秒检查一次
                 self._ib.sleep(0.1)
                 status = trade.orderStatus.status
 
@@ -355,8 +356,21 @@ class IBKRTradingProvider(TradingProvider):
                         broker_order_id=broker_order_id,
                     )
 
-            # 超时：状态仍为 PendingSubmit 或其他中间状态
+            # 超时后若状态仍为 PendingSubmit/PreSubmitted 且无错误回调，说明订单仍在券商队列中处理
+            # 严禁在未撤单的情况下标记为 REJECTED，否则同日重跑会导致重复下单 (双倍买入或裸卖空)
             final_status = trade.orderStatus.status
+            has_error = trade.order.orderId in self._order_errors
+            if final_status in ("PendingSubmit", "PreSubmitted", "Submitted", "Filled") and not has_error:
+                logger.warning(
+                    f"Order still in working state {final_status} after {max_wait_seconds}s "
+                    f"(no IBKR error); recording as submitted: {order.order_id} -> broker_id={broker_order_id}"
+                )
+                return TradingResult.success_result(
+                    internal_order_id=order.order_id,
+                    broker_order_id=broker_order_id,
+                    broker_status=final_status,
+                )
+
             logger.warning(
                 f"Order status timeout: {order.order_id} -> broker_id={broker_order_id}, "
                 f"status={final_status} after {max_wait_seconds}s"
@@ -473,11 +487,12 @@ class IBKRTradingProvider(TradingProvider):
         if order.order_type == OrderType.MARKET:
             ib_order = MarketOrder(action=action, totalQuantity=quantity)
         else:
-            # 默认使用限价单
+            # 默认使用限价单，确保价格对齐到 2 位小数 (最小 tick $0.01)
+            lmt_price = round(float(order.limit_price), 2) if order.limit_price is not None else None
             ib_order = LimitOrder(
                 action=action,
                 totalQuantity=quantity,
-                lmtPrice=order.limit_price,
+                lmtPrice=lmt_price,
             )
 
         # 设置有效期

@@ -159,10 +159,12 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
         self._last_nlv: float = 0.0
         self._last_cash: float = 0.0
         self._last_rebalance_day: int = -9999
+        self._last_rebalance_date: Optional[date] = None
 
         # Cross-method coordination
         self._pending_rebalance: bool = False
         self._pending_leaps_topup: int = 0
+        self._pending_leaps_topup_pct: float = 0.0
         self._pending_stock_topup_pct: float = 0.0
 
         # Cash interest tracking (for LeapsOnly mode)
@@ -171,6 +173,8 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
 
         # [V2] VIX history for spike detection
         self._vix_history: list[float] = []
+        self._vix_history_dates: list[date] = []
+        self._cached_vix_as_of: Optional[date] = None
 
         # Cash sweep mixin
         self._cash_sweep_config = self._config.cash_sweep_config
@@ -238,13 +242,66 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
         self._last_cash_equiv_value = portfolio.cash_equivalent_value
         self._pending_rebalance = False
         self._pending_leaps_topup = 0
+        self._pending_leaps_topup_pct = 0.0
         self._pending_stock_topup_pct = 0.0
 
-        # [V2] Track VIX history
+        # [V2] Track VIX history (avoid duplicate same-day append after pre-warm)
         if market.vix and market.vix > 0:
-            self._vix_history.append(market.vix)
+            if not self._vix_history_dates or self._vix_history_dates[-1] < market.date:
+                self._vix_history.append(market.vix)
+                self._vix_history_dates.append(market.date)
 
         # day_start log handled by base class _auto_log_portfolio
+
+    def _ensure_vix_history(self, market: MarketSnapshot, data_provider: Any) -> None:
+        """Pre-warm VIX history from data_provider for stateless daily CLI execution."""
+        min_needed = max(self._config.vega_guard_vix_lookback, 6)
+        if len(self._vix_history) >= min_needed or self._cached_vix_as_of == market.date:
+            return
+        self._cached_vix_as_of = market.date
+        if data_provider is None:
+            return
+        try:
+            lookback_start = market.date - timedelta(days=45)
+            vix_data = data_provider.get_macro_data("^VIX", lookback_start, market.date)
+            if vix_data:
+                vals: list[float] = []
+                dates: list[date] = []
+                for item in vix_data:
+                    v = getattr(item, "value", None) or getattr(item, "close", None)
+                    d = getattr(item, "date", None)
+                    if v and float(v) > 0:
+                        vals.append(float(v))
+                        if isinstance(d, date):
+                            dates.append(d)
+                if vals:
+                    if market.vix and market.vix > 0:
+                        if (dates and dates[-1] < market.date) or (
+                            not dates and abs(vals[-1] - market.vix) > 1e-6
+                        ):
+                            vals.append(float(market.vix))
+                            dates.append(market.date)
+                    self._vix_history = vals
+                    self._vix_history_dates = dates
+        except Exception:
+            pass
+
+    def _is_rebalance_cooldown_ok(self, current_date: date, min_interval: int) -> bool:
+        """Check rebalance cooldown across both in-memory day count and calendar business days."""
+        if not self._rebalance_cooldown_ok(self._last_rebalance_day, min_interval):
+            return False
+        if self._last_rebalance_date is not None and min_interval > 0:
+            import numpy as np
+
+            b_days = int(
+                np.busday_count(
+                    self._last_rebalance_date.isoformat(),
+                    current_date.isoformat(),
+                )
+            )
+            if b_days < min_interval:
+                return False
+        return True
 
     def compute_exit_signals(
         self, market: MarketSnapshot, portfolio: PortfolioState, data_provider: Any
@@ -339,9 +396,11 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
             target_leaps_pct = target_pct if not cfg.use_stock_component else max(0.0, target_pct - 1.0)
             if target_leaps_pct > 0 and self._last_nlv > 0 and leaps_pos:
                 target_contracts = self._compute_leaps_target(
-                    target_leaps_pct, leaps_pos[0], market
+                    target_leaps_pct, leaps_pos, market
                 )
                 self._pending_leaps_topup = max(0, target_contracts - surviving_qty)
+                surviving_pct = self._compute_current_exposure([], surviving, market)
+                self._pending_leaps_topup_pct = max(0.0, target_leaps_pct - surviving_pct)
             self.log("exit_scan:roll", "pass",
                      closing=len(signals), surviving=surviving_qty,
                      pending_topup=self._pending_leaps_topup,
@@ -350,6 +409,7 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
 
         # c) [V2] Vega Guard — VIX spike detection
         if cfg.vega_guard_enabled and leaps_pos:
+            self._ensure_vix_history(market, data_provider)
             vega_signals = self._check_vega_guard(leaps_pos, market)
             if vega_signals:
                 return vega_signals
@@ -362,7 +422,7 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
                      threshold=cfg.rebalance_threshold,
                      reason=f"|{delta_pct:.2f}| <= {cfg.rebalance_threshold}")
             return []
-        if not self._rebalance_cooldown_ok(self._last_rebalance_day, cfg.min_rebalance_interval):
+        if not self._is_rebalance_cooldown_ok(market.date, cfg.min_rebalance_interval):
             self.log("exit_scan:rebalance", "skip",
                      reason=f"冷却期未满 (间隔要求={cfg.min_rebalance_interval}天)")
             return []
@@ -377,6 +437,7 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
 
         if signals or self._pending_stock_topup_pct > 0 or self._pending_rebalance:
             self._last_rebalance_day = self._trading_day_count
+            self._last_rebalance_date = market.date
 
         return signals
 
@@ -563,11 +624,26 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
         return total / self._last_nlv
 
     def _compute_leaps_target(
-        self, target_pct: float, rep: PositionView, market: MarketSnapshot
+        self,
+        target_pct: float,
+        rep: PositionView | list[PositionView],
+        market: MarketSnapshot,
     ) -> int:
-        delta = rep.delta or 0.8
-        spot = market.get_price_or_zero(rep.instrument.underlying)
-        lot_size = rep.lot_size
+        if isinstance(rep, list):
+            if not rep:
+                return 0
+            total_qty = sum(max(0, p.quantity) for p in rep)
+            if total_qty > 0:
+                delta = sum((p.delta or 0.8) * max(0, p.quantity) for p in rep) / total_qty
+            else:
+                delta = rep[0].delta or 0.8
+            first = rep[0]
+            spot = market.get_price_or_zero(first.instrument.underlying)
+            lot_size = first.lot_size
+        else:
+            delta = rep.delta or 0.8
+            spot = market.get_price_or_zero(rep.instrument.underlying)
+            lot_size = rep.lot_size
         if delta <= 0 or spot <= 0 or self._last_nlv <= 0:
             return 0
         return math.floor(target_pct * self._last_nlv / (delta * lot_size * spot))
@@ -580,7 +656,7 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
         current_pct: float,
         market: MarketSnapshot,
     ) -> list[Signal]:
-        """Generate rebalance signals (reduce or flag topup)."""
+        """Generate rebalance signals (reduce across multiple contracts or flag topup)."""
         cfg = self._config
         signals: list[Signal] = []
 
@@ -588,24 +664,33 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
         target_leaps_pct = target_pct if not cfg.use_stock_component else max(0.0, target_pct - 1.0)
         if leaps_pos:
             total_current = sum(p.quantity for p in leaps_pos)
-            rep = leaps_pos[0]
-            target_contracts = self._compute_leaps_target(target_leaps_pct, rep, market)
+            target_contracts = self._compute_leaps_target(target_leaps_pct, leaps_pos, market)
             diff = target_contracts - total_current
 
             if diff <= -1:
-                sell_qty = min(abs(diff), total_current)
-                pos = max(leaps_pos, key=lambda p: p.quantity)
-                sell_qty = min(sell_qty, pos.quantity)
-                if sell_qty > 0:
-                    signals.append(Signal(
-                        type=SignalType.EXIT, instrument=pos.instrument,
-                        target_quantity=-sell_qty,
-                        reason=f"LEAPS reduce: {total_current}→{target_contracts}",
-                        position_id=pos.position_id, priority=3,
-                        alert_type=AlertType.REBALANCE,
-                    ))
+                remaining_sell = min(abs(diff), total_current)
+                # Sort by largest quantity first, then shortest DTE first
+                ordered_pos = sorted(
+                    leaps_pos,
+                    key=lambda p: (-p.quantity, p.dte if p.dte is not None else 9999),
+                )
+                for pos in ordered_pos:
+                    if remaining_sell <= 0:
+                        break
+                    sell_qty = min(remaining_sell, pos.quantity)
+                    if sell_qty > 0:
+                        signals.append(Signal(
+                            type=SignalType.EXIT, instrument=pos.instrument,
+                            target_quantity=-sell_qty,
+                            reason=f"LEAPS reduce: {total_current}→{target_contracts}",
+                            position_id=pos.position_id, priority=3,
+                            alert_type=AlertType.REBALANCE,
+                        ))
+                        remaining_sell -= sell_qty
             elif diff >= 1:
                 self._pending_leaps_topup = diff
+                current_leaps_pct = self._compute_current_exposure([], leaps_pos, market)
+                self._pending_leaps_topup_pct = max(0.0, target_leaps_pct - current_leaps_pct)
                 self._pending_rebalance = True
         elif target_leaps_pct > 0:
             self._pending_rebalance = True
@@ -669,9 +754,10 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
         contract = best.contract
         greeks = best.greeks
         delta = greeks.delta if greeks else 0.0
-        mid = best.last_price
+        mid = round(float(best.last_price), 2) if best.last_price else 0.0
         if best.bid is not None and best.ask is not None and best.ask > 0:
-            mid = (best.bid + best.ask) / 2
+            # Round to 2 decimal places (minimum tick size $0.01) to prevent IBKR Error 110 on .xx5
+            mid = round((best.bid + best.ask) / 2.0, 2)
         lot_size = contract.lot_size or 100
 
         if delta <= 0 or mid <= 0:
@@ -679,8 +765,17 @@ class MomentumMixedV2Strategy(BacktestStrategy, CashSweepMixin):
 
         # ── Sizing ──
         if self._pending_leaps_topup > 0:
-            contracts = self._pending_leaps_topup
+            if self._pending_leaps_topup_pct > 0 and self._last_nlv > 0:
+                contracts = max(
+                    1,
+                    math.floor(
+                        self._pending_leaps_topup_pct * self._last_nlv / (delta * lot_size * spot)
+                    ),
+                )
+            else:
+                contracts = self._pending_leaps_topup
             self._pending_leaps_topup = 0
+            self._pending_leaps_topup_pct = 0.0
         else:
             contracts = math.floor(leaps_pct * self._last_nlv / (delta * lot_size * spot))
 
